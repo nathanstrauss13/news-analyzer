@@ -1,0 +1,31 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Innate C3 - AI Media Analysis Tool</title>
+</head>
+<body>
+    <h1>Innate C3 - AI Media Analysis Tool</h1>
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <ul style="color:red;">
+          {% for message in messages %}
+            <li>{{ message }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+    <form method="post" action="{{ url_for('index') }}">
+        <label for="user_prompt">Enter your news query:</label><br>
+        <textarea name="user_prompt" id="user_prompt" rows="4" cols="50" placeholder="Type your prompt here..."></textarea><br><br>
+        <button type="submit">Submit</button>
+    </form>
+    <h3>Example Prompts:</h3>
+    <ul>
+        {% for prompt in example_prompts %}
+            <li>{{ prompt }}</li>
+        {% endfor %}
+    </ul>
+</body>
+</html>

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Innate C3 - Search and Copy Interface</title>
+  <style>
+    body { font-family: Arial, sans-serif; }
+    #container {
+      width: 80%;
+      max-width: 800px;
+      margin: 20px auto;
+      text-align: center;
+    }
+    input[type="text"] {
+      width: 70%;
+      padding: 8px;
+      font-size: 1rem;
+    }
+    button {
+      padding: 8px 16px;
+      margin: 5px;
+      font-size: 1rem;
+    }
+    #message {
+      margin-top: 10px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <h1>Innate C3 - Search and Copy</h1>
+    <input type="text" id="query-input" placeholder="Enter your query...">
+    <div>
+      <button id="search-copy-btn">Search and Copy Results</button>
+      <button id="open-claude-btn">Open Claude</button>
+    </div>
+    <div id="message"></div>
+  </div>
+
+  <script>
+    const queryInput = document.getElementById("query-input");
+    const searchCopyBtn = document.getElementById("search-copy-btn");
+    const openClaudeBtn = document.getElementById("open-claude-btn");
+    const messageDiv = document.getElementById("message");
+
+    async function searchAndCopy() {
+      const query = queryInput.value.trim();
+      if (!query) {
+        messageDiv.innerText = "Please enter a query.";
+        return;
+      }
+      messageDiv.innerText = "Searching...";
+      try {
+        const response = await fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_prompt: query })
+        });
+        if (!response.ok) {
+          throw new Error("Server error");
+        }
+        const data = await response.json();
+        const jsonStr = JSON.stringify(data, null, 2);
+        await navigator.clipboard.writeText(jsonStr);
+        messageDiv.innerText = "Results copied to clipboard!";
+      } catch (error) {
+        messageDiv.innerText = "Error: " + error.message;
+      }
+    }
+
+    searchCopyBtn.addEventListener("click", searchAndCopy);
+
+    openClaudeBtn.addEventListener("click", () => {
+      window.open("https://claude.ai", "_blank");
+    });
+  </script>
+</body>
+</html>

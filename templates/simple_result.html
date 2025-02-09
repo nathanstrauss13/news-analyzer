@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Query Results for "{{ q }}"</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+    }
+    #button-container {
+      width: 80%;
+      max-width: 800px;
+      margin: 10px auto;
+      display: flex;
+      gap: 10px;
+      justify-content: flex-start;
+    }
+    pre {
+      width: 80%;
+      max-width: 800px;
+      margin: 10px auto;
+      background-color: #f4f4f4;
+      padding: 10px;
+      border-radius: 5px;
+      overflow: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>Query Results for "{{ q }}"</h1>
+  <div id="button-container">
+    <button id="copy-btn">Copy JSON</button>
+    <button id="open-claude-btn">Open Claude</button>
+  </div>
+  <pre id="json-data">{{ json_data }}</pre>
+  
+  <script>
+    const copyBtn = document.getElementById("copy-btn");
+    const openClaudeBtn = document.getElementById("open-claude-btn");
+
+    copyBtn.addEventListener("click", async () => {
+      const textToCopy = document.getElementById("json-data").innerText;
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        alert("JSON data copied to clipboard!");
+      } catch (err) {
+        alert("Failed to copy JSON data: " + err);
+      }
+    });
+
+    openClaudeBtn.addEventListener("click", () => {
+      window.open("https://claude.ai", "_blank");
+    });
+  </script>
+</body>
+</html>

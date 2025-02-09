@@ -1,0 +1,14 @@
+<!-- templates/result.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Innate C3 - Analysis Result</title>
+</head>
+<body>
+    <h1>Analysis Result</h1>
+    <p><strong>Search Parameters:</strong> {{ query_params }}</p>
+    <pre style="background-color: #f4f4f4; padding: 10px;">{{ analysis }}</pre>
+    <a href="{{ url_for('index') }}">Back to Home</a>
+</body>
+</html>
