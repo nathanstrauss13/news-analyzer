@@ -15,23 +15,23 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = "your_secret_key_here"  # Replace with your secure key
 
-# Set API keys from environment
+# Set API keys from environment variables
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
-##########################
+#############################
 # NLP Extraction Functions
-##########################
+#############################
 
 def extract_query_parameters(user_prompt):
     prompt = f"""
 You are an assistant that extracts search parameters for a news query.
-Given the user's request, output a JSON object with the following keys:
+Output a JSON object with these keys:
 - "keywords": a string for the search term.
-- "relative_time": if the user mentions a relative time period (e.g., "past_week" or "past_month"), output that value; otherwise, leave it empty.
-- "from_date": if an absolute start date is provided, output it in YYYY-MM-DD format; otherwise, leave it empty.
-- "to_date": if an absolute end date is provided, output it in YYYY-MM-DD format; otherwise, leave it empty.
+- "relative_time": if the query mentions a relative time period (e.g., "past_week" or "past_month"), output that value; otherwise, empty.
+- "from_date": if an absolute start date is provided, output it in YYYY-MM-DD format; otherwise, empty.
+- "to_date": if an absolute end date is provided, output it in YYYY-MM-DD format; otherwise, empty.
 - "language": the news language (default "en").
 - "domains": a string representing the news source domain (e.g., "gizmodo.com"), optional.
 
@@ -49,7 +49,7 @@ JSON Output:
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "Extract structured search parameters for a News API query."},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": prompt}
             ],
             temperature=0,
         )
@@ -62,14 +62,14 @@ JSON Output:
 def extract_comparative_query_parameters(user_prompt):
     prompt = f"""
 You are an assistant that extracts search parameters for two news queries from a single prompt.
-The user's request will include two separate queries separated by "vs".
-For each dataset, output a JSON object with the following keys:
-- "keywords": a string for the search term.
-- "relative_time": if a relative time is mentioned (e.g., "past_week" or "past_month"), output that value; otherwise, leave it empty.
-- "from_date": if an absolute start date is provided, output it in YYYY-MM-DD format; otherwise, leave it empty.
-- "to_date": if an absolute end date is provided, output it in YYYY-MM-DD format; otherwise, leave it empty.
-- "language": the news language (default "en").
-- "domains": a string representing the news source domain (e.g., "gizmodo.com"), optional.
+The request includes two queries separated by "vs".
+Output a JSON object with two keys: "dataset1" and "dataset2". Each value should be a JSON object with these keys:
+- "keywords"
+- "relative_time"
+- "from_date"
+- "to_date"
+- "language"
+- "domains" (optional)
 
 Example: For "analyze recent coverage of Apple vs Google in gizmodo.com over the past month" output:
 {{
@@ -85,7 +85,7 @@ JSON Output:
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "Extract structured search parameters for two News API queries."},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": prompt}
             ],
             temperature=0,
         )
@@ -95,13 +95,11 @@ JSON Output:
         print("Error extracting comparative parameters:", e)
         raise
 
-##########################
+#############################
 # Utility Functions
-##########################
+#############################
 
 def apply_relative_dates(params):
-    if params.get("from_date") and params.get("to_date"):
-        return params
     today = datetime.today()
     params["to_date"] = today.strftime("%Y-%m-%d")
     relative_time = params.get("relative_time", "").lower()
@@ -119,7 +117,7 @@ def fetch_news(params):
         "q": params.get("keywords", ""),
         "language": params.get("language", "en"),
         "apiKey": NEWS_API_KEY,
-        "sortBy": "relevancy"  # sort by relevancy
+        "sortBy": "relevancy"
     }
     if params.get("from_date"):
         query_params["from"] = params["from_date"]
@@ -134,11 +132,110 @@ def fetch_news(params):
     data = response.json()
     return data.get("articles", [])
 
-##########################
-# Endpoints
-##########################
+def analyze_articles(articles, user_prompt):
+    articles_summary = "\n\n".join(
+        [f"Title: {article.get('title', 'No Title')}\nDescription: {article.get('description', 'No Description')}"
+         for article in articles[:5]]
+    )
+    analysis_prompt = f"""
+The user asked: "{user_prompt}"
 
-# This simple UI will show a form to enter the query and then display the raw JSON result.
+Here are some news articles that match the query:
+{articles_summary}
+
+Provide a summary and analysis highlighting key points and overall sentiment.
+    """
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are an expert news analyst."},
+                {"role": "user", "content": analysis_prompt}
+            ],
+            temperature=0.7,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print("Error analyzing articles:", e)
+        raise
+
+def compute_chart_data(articles):
+    counts = {}
+    for article in articles:
+        outlet = article.get("source", {}).get("name", "Unknown")
+        counts[outlet] = counts.get(outlet, 0) + 1
+    labels = list(counts.keys())
+    values = list(counts.values())
+    return {"labels": labels, "values": values}
+
+def compute_comparative_chart_data(articles1, articles2):
+    def count_by_outlet(articles):
+        counts = {}
+        for article in articles:
+            outlet = article.get("source", {}).get("name", "Unknown")
+            counts[outlet] = counts.get(outlet, 0) + 1
+        return counts
+    counts1 = count_by_outlet(articles1)
+    counts2 = count_by_outlet(articles2)
+    all_outlets = set(counts1.keys()).union(set(counts2.keys()))
+    labels = sorted(list(all_outlets))
+    values1 = [counts1.get(label, 0) for label in labels]
+    values2 = [counts2.get(label, 0) for label in labels]
+    return {"labels": labels, "values1": values1, "values2": values2}
+
+def compute_volume_chart_data(articles1, articles2):
+    def count_by_date(articles):
+        counts = defaultdict(int)
+        for article in articles:
+            published = article.get("publishedAt")
+            if published:
+                try:
+                    date_obj = dateutil.parser.parse(published)
+                    date_str = date_obj.strftime("%Y-%m-%d")
+                    counts[date_str] += 1
+                except Exception:
+                    pass
+        return counts
+    counts1 = count_by_date(articles1)
+    counts2 = count_by_date(articles2)
+    all_dates = set(counts1.keys()).union(set(counts2.keys()))
+    labels = sorted(list(all_dates))
+    values1 = [counts1.get(date, 0) for date in labels]
+    values2 = [counts2.get(date, 0) for date in labels]
+    return {"labels": labels, "values1": values1, "values2": values2}
+
+def compute_volume_chart_annotations(articles, volume_data):
+    values = volume_data["values1"]
+    if not values:
+        return {}
+    avg = statistics.mean(values)
+    stdev = statistics.stdev(values) if len(values) > 1 else 0
+    annotations = {}
+    for i, date in enumerate(volume_data["labels"]):
+        if values[i] > avg + stdev:
+            headlines = [article.get("title", "") for article in articles 
+                         if article.get("publishedAt") and 
+                         dateutil.parser.parse(article.get("publishedAt")).strftime("%Y-%m-%d") == date]
+            prompt = f"On {date}, there was a spike in coverage with these headlines: {headlines}. What event or trend likely drove this spike?"
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a media analyst."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                )
+                explanation = response.choices[0].message.content.strip()
+            except Exception as e:
+                explanation = "Explanation not available."
+            annotations[date] = explanation
+    return annotations
+
+#####################################
+# Endpoints
+#####################################
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
@@ -156,8 +253,7 @@ def result():
         flash("No query provided.")
         return redirect(url_for("index"))
     
-    # Determine if the query is comparative based on a simple heuristic.
-    if (" vs " in user_query.lower()) or (" compare " in user_query.lower()):
+    if ("vs" in user_query.lower()) or ("compare" in user_query.lower()):
         query_params = extract_comparative_query_parameters(user_query)
         query_params["dataset1"] = apply_relative_dates(query_params["dataset1"])
         query_params["dataset2"] = apply_relative_dates(query_params["dataset2"])
@@ -178,7 +274,6 @@ def result():
             "query_params": query_params,
             "articles": articles
         }
-    # Format the JSON response for display
     formatted_json = json.dumps(response_data, indent=2)
     return render_template("simple_result.html", q=user_query, json_data=formatted_json)
 
