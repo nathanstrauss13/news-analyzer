@@ -15,23 +15,41 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = "your_secret_key_here"  # Replace with your secure key
 
+<<<<<<< HEAD
 # Set API keys from environment variables
+=======
+# Set API keys from environment
+>>>>>>> d2380ea (Initial commit for Heroku deployment)
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
+<<<<<<< HEAD
 #############################
 # NLP Extraction Functions
 #############################
+=======
+##########################
+# NLP Extraction Functions
+##########################
+>>>>>>> d2380ea (Initial commit for Heroku deployment)
 
 def extract_query_parameters(user_prompt):
     prompt = f"""
 You are an assistant that extracts search parameters for a news query.
+<<<<<<< HEAD
 Output a JSON object with these keys:
 - "keywords": a string for the search term.
 - "relative_time": if the query mentions a relative time period (e.g., "past_week" or "past_month"), output that value; otherwise, empty.
 - "from_date": if an absolute start date is provided, output it in YYYY-MM-DD format; otherwise, empty.
 - "to_date": if an absolute end date is provided, output it in YYYY-MM-DD format; otherwise, empty.
+=======
+Given the user's request, output a JSON object with the following keys:
+- "keywords": a string for the search term.
+- "relative_time": if the user mentions a relative time period (e.g., "past_week" or "past_month"), output that value; otherwise, leave it empty.
+- "from_date": if an absolute start date is provided, output it in YYYY-MM-DD format; otherwise, leave it empty.
+- "to_date": if an absolute end date is provided, output it in YYYY-MM-DD format; otherwise, leave it empty.
+>>>>>>> d2380ea (Initial commit for Heroku deployment)
 - "language": the news language (default "en").
 - "domains": a string representing the news source domain (e.g., "gizmodo.com"), optional.
 
@@ -49,7 +67,11 @@ JSON Output:
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "Extract structured search parameters for a News API query."},
+<<<<<<< HEAD
                 {"role": "user", "content": prompt}
+=======
+                {"role": "user", "content": prompt},
+>>>>>>> d2380ea (Initial commit for Heroku deployment)
             ],
             temperature=0,
         )
@@ -62,6 +84,7 @@ JSON Output:
 def extract_comparative_query_parameters(user_prompt):
     prompt = f"""
 You are an assistant that extracts search parameters for two news queries from a single prompt.
+<<<<<<< HEAD
 The request includes two queries separated by "vs".
 Output a JSON object with two keys: "dataset1" and "dataset2". Each value should be a JSON object with these keys:
 - "keywords"
@@ -70,6 +93,16 @@ Output a JSON object with two keys: "dataset1" and "dataset2". Each value should
 - "to_date"
 - "language"
 - "domains" (optional)
+=======
+The user's request will include two separate queries separated by "vs".
+For each dataset, output a JSON object with the following keys:
+- "keywords": a string for the search term.
+- "relative_time": if a relative time is mentioned (e.g., "past_week" or "past_month"), output that value; otherwise, leave it empty.
+- "from_date": if an absolute start date is provided, output it in YYYY-MM-DD format; otherwise, leave it empty.
+- "to_date": if an absolute end date is provided, output it in YYYY-MM-DD format; otherwise, leave it empty.
+- "language": the news language (default "en").
+- "domains": a string representing the news source domain (e.g., "gizmodo.com"), optional.
+>>>>>>> d2380ea (Initial commit for Heroku deployment)
 
 Example: For "analyze recent coverage of Apple vs Google in gizmodo.com over the past month" output:
 {{
@@ -85,7 +118,11 @@ JSON Output:
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "Extract structured search parameters for two News API queries."},
+<<<<<<< HEAD
                 {"role": "user", "content": prompt}
+=======
+                {"role": "user", "content": prompt},
+>>>>>>> d2380ea (Initial commit for Heroku deployment)
             ],
             temperature=0,
         )
@@ -95,11 +132,21 @@ JSON Output:
         print("Error extracting comparative parameters:", e)
         raise
 
+<<<<<<< HEAD
 #############################
 # Utility Functions
 #############################
 
 def apply_relative_dates(params):
+=======
+##########################
+# Utility Functions
+##########################
+
+def apply_relative_dates(params):
+    if params.get("from_date") and params.get("to_date"):
+        return params
+>>>>>>> d2380ea (Initial commit for Heroku deployment)
     today = datetime.today()
     params["to_date"] = today.strftime("%Y-%m-%d")
     relative_time = params.get("relative_time", "").lower()
@@ -117,7 +164,11 @@ def fetch_news(params):
         "q": params.get("keywords", ""),
         "language": params.get("language", "en"),
         "apiKey": NEWS_API_KEY,
+<<<<<<< HEAD
         "sortBy": "relevancy"
+=======
+        "sortBy": "relevancy"  # sort by relevancy
+>>>>>>> d2380ea (Initial commit for Heroku deployment)
     }
     if params.get("from_date"):
         query_params["from"] = params["from_date"]
@@ -132,6 +183,7 @@ def fetch_news(params):
     data = response.json()
     return data.get("articles", [])
 
+<<<<<<< HEAD
 def analyze_articles(articles, user_prompt):
     articles_summary = "\n\n".join(
         [f"Title: {article.get('title', 'No Title')}\nDescription: {article.get('description', 'No Description')}"
@@ -236,6 +288,13 @@ def compute_volume_chart_annotations(articles, volume_data):
 # Endpoints
 #####################################
 
+=======
+##########################
+# Endpoints
+##########################
+
+# This simple UI will show a form to enter the query and then display the raw JSON result.
+>>>>>>> d2380ea (Initial commit for Heroku deployment)
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
@@ -253,7 +312,12 @@ def result():
         flash("No query provided.")
         return redirect(url_for("index"))
     
+<<<<<<< HEAD
     if ("vs" in user_query.lower()) or ("compare" in user_query.lower()):
+=======
+    # Determine if the query is comparative based on a simple heuristic.
+    if (" vs " in user_query.lower()) or (" compare " in user_query.lower()):
+>>>>>>> d2380ea (Initial commit for Heroku deployment)
         query_params = extract_comparative_query_parameters(user_query)
         query_params["dataset1"] = apply_relative_dates(query_params["dataset1"])
         query_params["dataset2"] = apply_relative_dates(query_params["dataset2"])
@@ -274,6 +338,10 @@ def result():
             "query_params": query_params,
             "articles": articles
         }
+<<<<<<< HEAD
+=======
+    # Format the JSON response for display
+>>>>>>> d2380ea (Initial commit for Heroku deployment)
     formatted_json = json.dumps(response_data, indent=2)
     return render_template("simple_result.html", q=user_query, json_data=formatted_json)
 
