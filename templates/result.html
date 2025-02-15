@@ -1,14 +1,189 @@
-<!-- templates/result.html -->
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>Innate C3 - Analysis Result</title>
+    <title>Analysis Results</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
 </head>
-<body>
-    <h1>Analysis Result</h1>
-    <p><strong>Search Parameters:</strong> {{ query_params }}</p>
-    <pre style="background-color: #f4f4f4; padding: 10px;">{{ analysis }}</pre>
-    <a href="{{ url_for('index') }}">Back to Home</a>
+<body class="bg-gray-100 min-h-screen p-8">
+    <div class="max-w-6xl mx-auto">
+        <div class="mb-4">
+            <a href="{{ url_for('index') }}" class="text-blue-500 hover:text-blue-700">← Back to Search</a>
+        </div>
+        
+        <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+            <h1 class="text-2xl font-bold mb-4">Analysis Results for "{{ query }}"</h1>
+            
+            <!-- Overview Stats -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                <div class="bg-blue-50 p-4 rounded-lg">
+                    <div class="text-2xl font-bold text-blue-600">{{ analysis.total_articles }}</div>
+                    <div class="text-sm text-gray-600">Total Articles</div>
+                </div>
+                <div class="bg-blue-50 p-4 rounded-lg">
+                    <div class="text-2xl font-bold text-blue-600">{{ analysis.sources|length }}</div>
+                    <div class="text-sm text-gray-600">Unique Sources</div>
+                </div>
+                <div class="bg-blue-50 p-4 rounded-lg">
+                    <div class="text-2xl font-bold text-blue-600">{{ analysis.date_range.start }}</div>
+                    <div class="text-sm text-gray-600">First Article</div>
+                </div>
+                <div class="bg-blue-50 p-4 rounded-lg">
+                    <div class="text-2xl font-bold text-blue-600">{{ analysis.date_range.end }}</div>
+                    <div class="text-sm text-gray-600">Latest Article</div>
+                </div>
+            </div>
+            
+            <!-- Visualizations -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+                <!-- Publication Timeline -->
+                <div class="bg-white p-6 rounded-lg shadow-sm">
+                    <h3 class="text-lg font-semibold mb-4">Article Publication Timeline</h3>
+                    <div class="h-64">
+                        <canvas id="timelineChart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Top Sources -->
+                <div class="bg-white p-6 rounded-lg shadow-sm">
+                    <h3 class="text-lg font-semibold mb-4">Top News Sources</h3>
+                    <div class="h-64">
+                        <canvas id="sourcesChart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Top Topics -->
+                <div class="bg-white p-6 rounded-lg shadow-sm col-span-2">
+                    <h3 class="text-lg font-semibold mb-4">Most Mentioned Topics</h3>
+                    <div class="flex flex-wrap gap-2">
+                        {% for topic in analysis.topics[:30] %}
+                            <span class="px-3 py-1 rounded-full text-sm"
+                                  style="font-size: {{ 12 + (topic.count / analysis.topics[0].count * 12) }}px;
+                                         background-color: rgba(37, 99, 235, {{ 0.1 + (topic.count / analysis.topics[0].count * 0.5) }});">
+                                {{ topic.topic }} ({{ topic.count }})
+                            </span>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Claude's Analysis -->
+            <div class="mb-8 prose max-w-none">
+                <h2 class="text-xl font-semibold mb-4">Key Insights</h2>
+                {{ textual_analysis | safe }}
+            </div>
+            
+            <!-- Source Articles -->
+            <div>
+                <h2 class="text-xl font-semibold mb-4">Source Articles</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {% for article in articles %}
+                    <div class="border p-4 rounded-lg hover:shadow-md transition-shadow">
+                        <h3 class="font-medium">
+                            <a href="{{ article.url }}" target="_blank" class="text-blue-500 hover:text-blue-700">
+                                {{ article.title }}
+                            </a>
+                        </h3>
+                        <p class="text-sm text-gray-600 mt-1">{{ article.source.name }} - {{ article.publishedAt }}</p>
+                        <p class="mt-2 text-gray-700">{{ article.description }}</p>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.onload = function() {
+            // Format dates for timeline
+            const dates = {{ analysis.timeline | map(attribute='date') | list | tojson | safe }};
+            const counts = {{ analysis.timeline | map(attribute='count') | list | tojson | safe }};
+            
+            // Timeline Chart
+            new Chart(document.getElementById('timelineChart'), {
+                type: 'line',
+                data: {
+                    labels: dates,
+                    datasets: [{
+                        label: 'Articles Published',
+                        data: counts,
+                        borderColor: 'rgb(37, 99, 235)',
+                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                        tension: 0.1,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 45
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Sources Chart
+            const sources = {{ analysis.sources | map(attribute='name') | list | tojson | safe }};
+            const sourceCounts = {{ analysis.sources | map(attribute='count') | list | tojson | safe }};
+            
+            new Chart(document.getElementById('sourcesChart'), {
+                type: 'bar',
+                data: {
+                    labels: sources,
+                    datasets: [{
+                        label: 'Articles',
+                        data: sourceCounts,
+                        backgroundColor: 'rgb(37, 99, 235)',
+                        barThickness: 20
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            ticks: {
+                                autoSkip: false,
+                                maxRotation: 0,
+                                padding: 10
+                            }
+                        },
+                        x: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
+                        }
+                    }
+                }
+            });
+        };
+    </script>
 </body>
 </html>

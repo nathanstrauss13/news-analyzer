@@ -1,31 +1,50 @@
-<!-- templates/index.html -->
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>Innate C3 - AI Media Analysis Tool</title>
+    <title>News Analysis</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
 </head>
-<body>
-    <h1>Innate C3 - AI Media Analysis Tool</h1>
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}
-        <ul style="color:red;">
-          {% for message in messages %}
-            <li>{{ message }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    {% endwith %}
-    <form method="post" action="{{ url_for('index') }}">
-        <label for="user_prompt">Enter your news query:</label><br>
-        <textarea name="user_prompt" id="user_prompt" rows="4" cols="50" placeholder="Type your prompt here..."></textarea><br><br>
-        <button type="submit">Submit</button>
-    </form>
-    <h3>Example Prompts:</h3>
-    <ul>
-        {% for prompt in example_prompts %}
-            <li>{{ prompt }}</li>
-        {% endfor %}
-    </ul>
+<body class="bg-gray-100 min-h-screen p-8">
+    <div class="max-w-2xl mx-auto">
+        <h1 class="text-3xl font-bold mb-8 text-center">News Analysis</h1>
+        
+        <form method="POST" class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+            <div class="mb-4">
+                <label class="block text-gray-700 text-sm font-bold mb-2" for="query">
+                    What news would you like to analyze?
+                </label>
+                <input class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                       id="query" name="query" type="text" placeholder="Enter your query...">
+            </div>
+            
+            <div class="mb-6">
+                <label class="block text-gray-700 text-sm font-bold mb-2" for="time_frame">
+                    Time Frame
+                </label>
+                <select class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                        id="time_frame" name="time_frame">
+                    <option value="past_week">Past Week</option>
+                    <option value="past_month">Past Month</option>
+                </select>
+            </div>
+            
+            <div class="flex items-center justify-between">
+                <button class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+                        type="submit">
+                    Analyze
+                </button>
+            </div>
+        </form>
+        
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+                        <span class="block sm:inline">{{ message }}</span>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+    </div>
 </body>
 </html>
