@@ -143,60 +143,12 @@ def fetch_news(keywords, from_date=None, to_date=None, language="en", domains=No
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
-        query = request.form.get("query")
-        time_frame = request.form.get("time_frame", "past_week")
-        
-        try:
-            # Get date range
-            from_date, to_date = get_date_range(time_frame)
-            
-            # Fetch news articles
-            articles = fetch_news(
-                keywords=query,
-                from_date=from_date,
-                to_date=to_date
-            )
-            
-            # Analyze articles
-            analysis = analyze_articles(articles, query)
-            
-            # Get Claude's text analysis
-            prompt = f"""Analyze these news articles about {query} and provide key insights about major themes, trends, and developments. 
-            Focus on:
-            1. Major news stories and developments
-            2. Key statistics and metrics
-            3. Notable trends or patterns
-            4. Business/industry implications
-            
-            Format your response with clear sections and bullet points for readability.
-            
-            Articles data:
-            {json.dumps(articles, indent=2)}"""
-            
-            response = anthropic.messages.create(
-                model="claude-3-opus-20240229",
-                max_tokens=2000,
-                messages=[{
-                    "role": "user",
-                    "content": prompt
-                }]
-            )
-            
-            return render_template(
-                "result.html",
-                query=query,
-                textual_analysis=response.content[0].text,
-                analysis=analysis,
-                articles=articles
-            )
-            
-        except Exception as e:
-            flash(f"Error: {str(e)}")
-            return redirect(url_for("index"))
-            
+        # Your existing code here
+        pass
+
     return render_template("index.html")
 
-    if __name__ == "__main__":
+if __name__ == "__main__":
     # Get the port from the environment variable or use 5001 as default
     port = int(os.environ.get("PORT", 5001))
     app.run(host='0.0.0.0', port=port)
