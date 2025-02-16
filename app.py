@@ -143,8 +143,20 @@ def fetch_news(keywords, from_date=None, to_date=None, language="en", domains=No
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
-        # Your existing code here
-        pass
+        try:
+            # Add your existing code here
+            print("POST request received")
+            # Example: process form data
+            data = request.form.get("data")
+            print(f"Form data received: {data}")
+            # Add more processing as needed
+            # Example: if you have a function to handle the data, call it here
+            # result = process_data(data)
+            # print(f"Processing result: {result}")
+        except Exception as e:
+            print(f"Error processing POST request: {e}")
+            flash("An error occurred while processing your request.", "danger")
+            return redirect(url_for("index"))
 
     return render_template("index.html")
 
