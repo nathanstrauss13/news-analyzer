@@ -10,6 +10,14 @@ from dotenv import load_dotenv
 from anthropic import Anthropic
 from dateutil.relativedelta import relativedelta
 from dateutil.parser import parse
+import os
+from anthropic import Anthropic
+
+api_key = os.environ.get("ANTHROPIC_API_KEY")
+if not api_key:
+    raise Exception("Anthropic API key not found!")
+
+client = Anthropic(api_key=api_key)
 
 load_dotenv()
 
