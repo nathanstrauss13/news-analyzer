@@ -10,14 +10,6 @@ from dotenv import load_dotenv
 from anthropic import Anthropic
 from dateutil.relativedelta import relativedelta
 from dateutil.parser import parse
-import os
-from anthropic import Anthropic
-
-api_key = os.environ.get("ANTHROPIC_API_KEY")
-if not api_key:
-    raise Exception("Anthropic API key not found!")
-
-client = Anthropic(api_key=api_key)
 
 load_dotenv()
 
@@ -142,22 +134,59 @@ def fetch_news(keywords, from_date=None, to_date=None, language="en", domains=No
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    if request.method =="POST":
+    if request.method == "POST":
+        query = request.form.get("query")
+        time_frame = request.form.get("time_frame", "past_week")
+        
         try:
-            print("POST request received")
-            # Process form data
-            data = request.form.get("data")
-            if data:
-                print(f"Form data received: {data}")
-            else:
-                print("No form data received")
-            # Add more processing as needed
+            # Get date range
+            from_date, to_date = get_date_range(time_frame)
+            
+            # Fetch news articles
+            articles = fetch_news(
+                keywords=query,
+                from_date=from_date,
+                to_date=to_date
+            )
+            
+            # Analyze articles
+            analysis = analyze_articles(articles, query)
+            
+            # Get Claude's text analysis
+            prompt = f"""Analyze these news articles about {query} and provide key insights about major themes, trends, and developments. 
+            Focus on:
+            1. Major news stories and developments
+            2. Key statistics and metrics
+            3. Notable trends or patterns
+            4. Business/industry implications
+            
+            Format your response with clear sections and bullet points for readability.
+            
+            Articles data:
+            {json.dumps(articles, indent=2)}"""
+            
+            response = anthropic.messages.create(
+                model="claude-3-opus-20240229",
+                max_tokens=2000,
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }]
+            )
+            
+            return render_template(
+                "result.html",
+                query=query,
+                textual_analysis=response.content[0].text,
+                analysis=analysis,
+                articles=articles
+            )
+            
         except Exception as e:
-            print(f"Error processing POST request: {e}")
-            flash("An error occurred while processing your request.", "danger")
+            flash(f"Error: {str(e)}")
             return redirect(url_for("index"))
-
+            
     return render_template("index.html")
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0', port=5001)
