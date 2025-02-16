@@ -142,7 +142,7 @@ def fetch_news(keywords, from_date=None, to_date=None, language="en", domains=No
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    if request.method == "POST":
+    if request.method =="POST":
         try:
             print("POST request received")
             # Process form data
