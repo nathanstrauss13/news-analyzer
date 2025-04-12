@@ -1,1 +1,9 @@
 anthropic
+flask
+gunicorn
+flask_sqlalchemy
+python-dotenv
+requests
+python-dateutil
+apscheduler
+markupsafe
