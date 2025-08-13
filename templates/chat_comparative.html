@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Innate C3 - Comparative Chat Interface</title>
+  <style>
+    body { font-family: Arial, sans-serif; }
+    #chat-container {
+      width: 80%;
+      max-width: 800px;
+      margin: 20px auto;
+      border: 1px solid #ccc;
+      padding: 10px;
+      border-radius: 5px;
+      height: 500px;
+      overflow-y: auto;
+    }
+    .message {
+      margin: 10px 0;
+      padding: 10px;
+      border-radius: 5px;
+    }
+    .user { background-color: #e1f5fe; text-align: right; }
+    .bot { background-color: #f1f8e9; text-align: left; }
+    .chart-container { margin: 20px 0; }
+  </style>
+  <!-- Include Chart.js Annotation Plugin -->
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@latest"></script>
+</head>
+<body>
+  <h1>Innate C3 - Comparative Chat Interface</h1>
+  <div id="chat-container"></div>
+  <div style="width:80%; max-width:800px; margin: 0 auto;">
+    <input type="text" id="chat-input" style="width:70%;" placeholder="Type your comparative query here...">
+    <button id="send-btn">Send</button>
+  </div>
+  
+  <!-- Include Chart.js from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    const chatContainer = document.getElementById("chat-container");
+    const chatInput = document.getElementById("chat-input");
+    const sendBtn = document.getElementById("send-btn");
+
+    function appendMessage(text, sender = "bot") {
+      const messageDiv = document.createElement("div");
+      messageDiv.classList.add("message", sender);
+      messageDiv.innerText = text;
+      chatContainer.appendChild(messageDiv);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    function appendComparativeChart(chartData, label1, label2) {
+      const chartDiv = document.createElement("div");
+      chartDiv.classList.add("chart-container");
+      const canvas = document.createElement("canvas");
+      chartDiv.appendChild(canvas);
+      chatContainer.appendChild(chartDiv);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+      
+      new Chart(canvas, {
+        type: 'bar',
+        data: {
+          labels: chartData.labels,
+          datasets: [
+            {
+              label: 'Articles by Outlet (' + label1 + ')',
+              data: chartData.values1,
+              backgroundColor: 'rgba(54, 162, 235, 0.5)'
+            },
+            {
+              label: 'Articles by Outlet (' + label2 + ')',
+              data: chartData.values2,
+              backgroundColor: 'rgba(255, 99, 132, 0.5)'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          scales: { y: { beginAtZero: true } }
+        }
+      });
+    }
+
+    function appendVolumeChart(chartData, label1, label2, annotations) {
+      const chartDiv = document.createElement("div");
+      chartDiv.classList.add("chart-container");
+      const canvas = document.createElement("canvas");
+      chartDiv.appendChild(canvas);
+      chatContainer.appendChild(chartDiv);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+      
+      // Build annotation objects from the annotations dictionary
+      const annotationObjects = {};
+      if (annotations) {
+        for (const date in annotations) {
+          annotationObjects[date] = {
+            type: 'line',
+            mode: 'vertical',
+            scaleID: 'x',
+            value: date,
+            borderColor: 'red',
+            borderWidth: 2,
+            label: {
+              enabled: true,
+              content: annotations[date],
+              position: 'start'
+            }
+          };
+        }
+      }
+      
+      new Chart(canvas, {
+        type: 'line',
+        data: {
+          labels: chartData.labels,
+          datasets: [
+            {
+              label: 'Volume (' + label1 + ')',
+              data: chartData.values1,
+              borderColor: 'rgba(54, 162, 235, 1)',
+              backgroundColor: 'rgba(54, 162, 235, 0.2)',
+              fill: false,
+              tension: 0.1
+            },
+            {
+              label: 'Volume (' + label2 + ')',
+              data: chartData.values2,
+              borderColor: 'rgba(255, 99, 132, 1)',
+              backgroundColor: 'rgba(255, 99, 132, 0.2)',
+              fill: false,
+              tension: 0.1
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            annotation: {
+              annotations: annotationObjects
+            }
+          },
+          scales: {
+            y: { beginAtZero: true },
+            x: { title: { display: true, text: "Date" } }
+          }
+        }
+      });
+    }
+
+    function appendMetrics(metrics, label1, label2) {
+      let metricsText = `Total articles for ${label1}: ${metrics.total_articles_dataset1}\n` +
+                        `Total articles for ${label2}: ${metrics.total_articles_dataset2}\n`;
+      appendMessage(metricsText, "bot");
+    }
+
+    async function sendPrompt() {
+      const userPrompt = chatInput.value.trim();
+      if (!userPrompt) return;
+      appendMessage(userPrompt, "user");
+      chatInput.value = "";
+
+      try {
+        const response = await fetch("/chat_comparative", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_prompt: userPrompt })
+        });
+        const data = await response.json();
+        if (data.error) {
+          appendMessage("Error: " + data.error);
+        } else {
+          const label1 = data.query_params.dataset1.keywords;
+          const label2 = data.query_params.dataset2.keywords;
+          appendMessage(data.analysis, "bot");
+          if (data.comparative_chart) {
+            appendComparativeChart(data.comparative_chart, label1, label2);
+          }
+          if (data.volume_chart) {
+            // Pass annotations if available
+            appendVolumeChart(data.volume_chart, label1, label2, data.volume_annotations);
+          }
+          if (data.metrics) {
+            appendMetrics(data.metrics, label1, label2);
+          }
+        }
+      } catch (error) {
+        appendMessage("Error: " + error.message);
+      }
+    }
+
+    sendBtn.addEventListener("click", sendPrompt);
+    chatInput.addEventListener("keyup", function(event) {
+      if (event.key === "Enter") sendPrompt();
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>innate c3 | media analysis examples</title>
+  {% if ga_measurement_id %}
+  <!-- Google Analytics Tag -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', '{{ ga_measurement_id }}');
+  </script>
+  {% endif %}
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary-color: #005e30;
+      --secondary-color: #f5f2e9;
+      --accent-color: #00a651;
+      --text-color: #333333;
+    }
+    body {
+      font-family: 'IBM Plex Sans', sans-serif;
+      background-color: var(--secondary-color);
+      color: var(--text-color);
+    }
+    .divider {
+      height: 2px; background-color: var(--primary-color); margin: 2rem 0;
+    }
+    h1, h2, h3 { color: var(--primary-color); }
+    .btn-primary {
+      background-color: var(--primary-color);
+      color: #fff;
+    }
+    .btn-primary:hover { background-color: #004020; }
+    .card {
+      background: #fff; border-radius: .75rem; box-shadow: 0 4px 6px rgba(0,0,0,.07); transition: box-shadow .2s ease;
+    }
+    .card:hover { box-shadow: 0 8px 16px rgba(0,0,0,.1); }
+    .topic-pill {
+      background-color: rgba(0, 94, 48, 0.08);
+      color: #064e3b;
+      padding: .25rem .5rem;
+      border-radius: 9999px;
+      font-size: .75rem;
+      margin-right: .25rem;
+      margin-bottom: .25rem;
+      display: inline-block;
+    }
+    .stat {
+      background-color: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: .5rem;
+      padding: .5rem .75rem;
+      font-size: .875rem;
+    }
+    .share-link {
+      color: var(--primary-color);
+    }
+    .share-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body class="min-h-screen p-6 md:p-10">
+  <div class="max-w-6xl mx-auto">
+    <div class="flex justify-between items-center">
+      <h1 class="text-3xl font-bold">Media Analysis Examples</h1>
+      <div class="flex gap-2">
+        <a href="/" class="btn-primary font-bold py-2 px-4 rounded">New Analysis</a>
+        <a href="/upload" class="btn-primary font-bold py-2 px-4 rounded">Upload Files</a>
+      </div>
+    </div>
+    <div class="divider"></div>
+
+    {% if cards and cards|length > 0 %}
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      {% for c in cards %}
+      <div class="card p-5 flex flex-col">
+        <div class="flex items-start justify-between">
+          <h3 class="text-xl font-semibold mr-3">
+            {{ c.title }}
+          </h3>
+        </div>
+
+        <div class="mt-3 text-sm text-gray-600">
+          {% if c.date_start and c.date_end %}
+            <div class="stat inline-block mr-2 mb-2">
+              Date: {{ c.date_start }} → {{ c.date_end }}
+            </div>
+          {% endif %}
+          <div class="stat inline-block mr-2 mb-2">
+            Articles: <strong>{{ c.total_articles }}</strong>
+          </div>
+          <div class="stat inline-block mr-2 mb-2">
+            Avg Sentiment: <strong>{{ '%.2f'|format(c.avg_sentiment) }}</strong>
+          </div>
+        </div>
+
+        {% if c.topics and c.topics|length > 0 %}
+        <div class="mt-3">
+          <div class="text-sm font-semibold mb-1">Top Topics</div>
+          <div class="flex flex-wrap">
+            {% for t in c.topics %}
+              <span class="topic-pill">{{ t }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+
+        <div class="mt-4 flex items-center gap-3">
+          <a href="{{ c.share_url }}" target="_blank" class="btn-primary py-2 px-4 rounded text-sm font-semibold">Open Result</a>
+          <button class="py-2 px-4 rounded text-sm font-semibold border border-green-900 text-green-900 hover:bg-green-50"
+                  onclick="copyLink('{{ c.share_url }}', this)">Copy Link</button>
+          <button class="py-2 px-4 rounded text-sm font-semibold border border-gray-300 hover:bg-gray-50"
+                  onclick="webShare('{{ c.title|escape }}', '{{ c.share_url }}')">Share</button>
+        </div>
+
+        {% if c.created_at %}
+        <div class="mt-3 text-xs text-gray-500">
+          Saved: {{ c.created_at }}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+      <div class="card p-8">
+        <h3 class="text-xl font-semibold mb-2">No examples yet</h3>
+        <p class="text-gray-600 mb-4">Run an analysis and share it to populate the gallery.</p>
+        <a href="/" class="btn-primary font-bold py-2 px-4 rounded inline-block">Run an Analysis</a>
+      </div>
+    {% endif %}
+
+    <div class="divider"></div>
+    <div class="text-center text-sm text-gray-600">
+      for more information about innate c3, visit
+      <a href="https://innatec3.com" target="_blank" class="share-link">innatec3.com</a>
+    </div>
+  </div>
+
+  <script>
+    function copyLink(url, btn) {
+      try {
+        const i = document.createElement('input');
+        i.value = url;
+        document.body.appendChild(i);
+        i.select();
+        document.execCommand('copy');
+        document.body.removeChild(i);
+        const original = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = original; }, 1500);
+        try {
+          if (typeof gtag === 'function') {
+            gtag('event', 'examples_copy_link', { app: 'media_analyzer' });
+          }
+        } catch (e) {}
+      } catch (e) {}
+    }
+    function webShare(title, url) {
+      try {
+        if (navigator.share) {
+          navigator.share({ title: title, text: 'Media Analysis', url: url })
+            .catch(() => {});
+        } else {
+          copyLink(url, { textContent: 'Copied!' });
+        }
+        try {
+          if (typeof gtag === 'function') {
+            gtag('event', 'examples_share', { app: 'media_analyzer' });
+          }
+        } catch (e) {}
+      } catch (e) {}
+    }
+  </script>
+</body>
+</html>

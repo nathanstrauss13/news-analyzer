@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.DS_Store
+
+# Envs and secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Local state
+instance/
+uploads/
+logs/
+.cache/
+coverage/
+
+# Node/Frontend (if present)
+node_modules/
+dist/
+build/

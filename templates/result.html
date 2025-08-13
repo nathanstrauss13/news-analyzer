@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>innate c3 | media analysis</title>
+    {% if share_url %}
+    {% set _og_title = (query1 ~ (query2 and (' vs ' ~ query2) or '') ~ ' | Media Analysis') %}
+    {% set _og_desc = (query1 ~ (query2 and (' vs ' ~ query2) or '') ~ ' • ' ~ (analysis1.total_articles if analysis1 and analysis1.total_articles is not none else 0) ~ ' articles' ~ (query2 and (', ' ~ (analysis2.total_articles if analysis2 and analysis2.total_articles is not none else 0) ~ ' for ' ~ query2) or '') ~ ' • Sentiment ' ~ ('%.2f' % (analysis1.avg_sentiment if analysis1 and analysis1.avg_sentiment is not none else 0.0))) %}
+    <meta property="og:title" content="{{ _og_title }}">
+    <meta property="og:description" content="{{ _og_desc }}">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="innate c3">
+    <meta property="og:url" content="{{ share_url }}">
+    <meta property="og:image" content="{{ slug and (share_url|replace('/results/' ~ slug, '/og/' ~ slug ~ '.png')) or 'https://placehold.co/1200x630/005e30/ffffff?text=innate+c3+media+analysis' }}">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="{{ _og_title }}">
+    <meta name="twitter:description" content="{{ _og_desc }}">
+    <meta name="twitter:image" content="{{ slug and (share_url|replace('/results/' ~ slug, '/og/' ~ slug ~ '.png')) or 'https://placehold.co/1200x630/005e30/ffffff?text=innate+c3+media+analysis' }}">
+    <link rel="canonical" href="{{ share_url }}">
+    {% endif %}
+    {% if ga_measurement_id %}
+    <!-- Google Analytics Tag -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', '{{ ga_measurement_id }}');
+    </script>
+    {% endif %}
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@2.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.28.0.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #005e30;
+            --secondary-color: #f5f2e9;
+            --accent-color: #00a651;
+            --text-color: #333333;
+        }
+        body {
+            font-family: 'IBM Plex Sans', sans-serif;
+            background-color: var(--secondary-color);
+            color: var(--text-color);
+        }
+        .divider {
+            height: 2px;
+            background-color: var(--primary-color);
+            margin: 2rem 0;
+        }
+        h1, h2, h3, h4 {
+            color: var(--primary-color);
+        }
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .btn-primary:hover {
+            background-color: #004020;
+        }
+        .card {
+            display: block;
+            width: 100%;
+            background-color: white;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .green-bullet {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background-color: var(--primary-color);
+            margin-right: 8px;
+        }
+        .back-link {
+            color: var(--primary-color);
+        }
+        .back-link:hover {
+            color: #004020;
+        }
+        /* Force vertical stacking and prevent horizontal overflow */
+        #resultsRoot {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 2rem;
+            overflow-x: hidden;
+        }
+        #resultsRoot > * {
+            width: 100%;
+        }
+        .card {
+            display: block;
+            width: 100%;
+            clear: both; /* ensure each card starts on a new row */
+        }
+        html, body {
+            overflow-x: hidden;
+        }
+        /* Prevent grids/plots from forcing horizontal growth */
+        .grid, .prose {
+            min-width: 0;
+        }
+        canvas, #sentimentScatter {
+            max-width: 100%;
+        }
+        /* Enforce single-column flow and responsive plots */
+        #resultsRoot .grid { grid-auto-flow: row; }
+        #resultsRoot .grid > * { min-width: 0; }
+        #resultsRoot .card { float: none; display: block; width: 100%; max-width: 100%; }
+        #resultsRoot .flex { flex-wrap: wrap; }
+        .js-plotly-plot, .plot-container, #sentimentScatter { width: 100% !important; max-width: 100% !important; }
+        .js-plotly-plot .main-svg { max-width: 100% !important; }
+        img, svg { max-width: 100%; height: auto; }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+    <div id="resultsRoot" class="max-w-6xl mx-auto flex flex-col space-y-8">
+        <div class="divider"></div>
+        <div class="flex justify-between items-center">
+            <h1 class="text-3xl font-bold mb-4 mt-4">innate c3 | media analysis</h1>
+            <div class="flex gap-2">
+                <a href="/examples" class="btn-primary font-bold py-2 px-4 rounded" title="View recent shared analyses">
+                    Examples
+                </a>
+                <a href="https://www.innatec3.com/#contact" class="btn-primary font-bold py-2 px-4 rounded">
+                    Bespoke Analysis
+                </a>
+            </div>
+        </div>
+        <div class="divider"></div>
+        
+        <div class="mb-4">
+            <a href="{{ url_for('index') }}" class="back-link">← Back to Search</a>
+        </div>
+        
+        <div class="card px-8 pt-6 pb-8 mb-4">
+            <h1 class="text-2xl font-bold mb-2">
+                {% if query2 %}
+                Media Analysis: "{{ query1 }}" vs "{{ query2 }}"
+                {% else %}
+                Media Analysis: "{{ query1 }}"
+                {% endif %}
+            </h1>
+            <div class="text-sm text-gray-600 mb-4">
+                {% if query2 %}
+                Comparing "{{ query1 }}" ({{ analysis1.date_range.start }} to {{ analysis1.date_range.end }})
+                with "{{ query2 }}" ({{ analysis2.date_range.start }} to {{ analysis2.date_range.end }})
+                {% else %}
+                Date range: {{ analysis1.date_range.start }} to {{ analysis1.date_range.end }}
+                {% endif %}
+            </div>
+            
+            <!-- Search Parameters Info with Copy to Claude Button and Share Button -->
+            <div class="flex flex-col md:flex-row gap-4 mb-4 items-start">
+                <div class="flex-grow grid {% if query2 %}grid-cols-2{% else %}grid-cols-1{% endif %} gap-4">
+                    <!-- First Query Parameters -->
+                    <div style="background-color: rgba(0, 94, 48, 0.1);" class="p-3 rounded-lg text-sm">
+                        <p class="font-medium" style="color: var(--primary-color);">Search Parameters: {{ query1 }}</p>
+                        
+                        <div class="mt-2 grid grid-cols-2 gap-2">
+                            <div class="col-span-2">
+                                <p class="text-xs text-gray-600">Language: <span class="font-medium">{{ request.form.get('language1', 'English') }}</span></p>
+                                {% if request.form.get('source1') %}
+                                <p class="text-xs text-gray-600">Sources: <span class="font-medium">{{ request.form.get('source1') }}</span></p>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {% if query2 %}
+                    <!-- Second Query Parameters -->
+                    <div style="background-color: rgba(0, 166, 81, 0.1);" class="p-3 rounded-lg text-sm">
+                        <p class="font-medium" style="color: var(--accent-color);">Search Parameters: {{ query2 }}</p>
+                        
+                        <div class="mt-2 grid grid-cols-2 gap-2">
+                            <div class="col-span-2">
+                                <p class="text-xs text-gray-600">Language: <span class="font-medium">{{ request.form.get('language2', 'English') }}</span></p>
+                                {% if request.form.get('source2') %}
+                                <p class="text-xs text-gray-600">Sources: <span class="font-medium">{{ request.form.get('source2') }}</span></p>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <!-- Action Buttons -->
+                <div class="flex flex-col md:flex-row gap-2 self-start md:self-center">
+                    <!-- Share Button -->
+                    <div class="relative inline-block group">
+                        <button id="shareBtn" class="btn-primary font-bold py-2 px-4 rounded shadow-md transition-colors flex items-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z" />
+                            </svg>
+                            Share Results
+                        </button>
+                        <div class="opacity-0 group-hover:opacity-100 transition-opacity duration-300 absolute bottom-full right-0 mb-2 w-72 bg-gray-800 text-white text-sm rounded-lg p-3 shadow-lg z-10">
+                            <div class="relative">
+                                <div class="absolute -bottom-2 right-4 transform w-4 h-4 bg-gray-800 rotate-45"></div>
+                                <p>Copy a permanent link to these results to share with others</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Copy to Claude Button -->
+                    <div class="relative inline-block group">
+                        <button id="copyToClaudeBtn" class="btn-primary font-bold py-2 px-4 rounded shadow-md transition-colors flex items-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                                <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+                            </svg>
+                            Copy Results to Claude
+                        </button>
+                        <div class="opacity-0 group-hover:opacity-100 transition-opacity duration-300 absolute bottom-full right-0 mb-2 w-72 bg-gray-800 text-white text-sm rounded-lg p-3 shadow-lg z-10">
+                            <div class="relative">
+                                <div class="absolute -bottom-2 right-4 transform w-4 h-4 bg-gray-800 rotate-45"></div>
+                                <p>Paste contents into Claude and try a prompt such as, "analyze this press coverage and visualize its data"</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Downloads and Email -->
+                    <div class="flex gap-2">
+                        <button id="downloadCsvBtn" class="btn-primary font-bold py-2 px-4 rounded shadow-md transition-colors">Download CSV</button>
+                        <button id="downloadPdfBtn" class="btn-primary font-bold py-2 px-4 rounded shadow-md transition-colors">Download PDF</button>
+                        <button id="emailMeBtn" class="btn-primary font-bold py-2 px-4 rounded shadow-md transition-colors">Email me this analysis</button>
+                    </div>
+                </div>
+            </div>
+
+            {% if articles1|length == 0 %}
+            <!-- No Results Found -->
+            <div class="card p-6 mb-8">
+                <div class="text-center py-8">
+                    <h3 class="text-xl font-semibold mb-4">No Results Found</h3>
+                    <p class="text-gray-600">No articles were found matching your search criteria.</p>
+                    <p class="text-gray-600 mt-2">Try adjusting your search terms or date range.</p>
+                    <div class="mt-6">
+                        <a href="{{ url_for('index') }}" class="btn-primary font-bold py-2 px-4 rounded">
+                            Try Another Search
+                        </a>
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <!-- Coverage Metrics -->
+            <div class="card p-6 mb-8">
+                <h3 class="text-lg font-semibold mb-4">Coverage Metrics</h3>
+                <div class="grid {% if query2 %}grid-cols-2 md:grid-cols-4{% else %}grid-cols-1 md:grid-cols-2{% endif %} gap-4 md:gap-8 text-center">
+                    <!-- First Query Stats -->
+                    <div>
+                        <div class="text-3xl font-bold" style="color: var(--primary-color);">{{ analysis1.total_articles }}</div>
+                        <div class="text-sm text-gray-600">{{ query1 }} Articles</div>
+                    </div>
+                    <div>
+                        <div class="text-3xl font-bold" style="color: var(--primary-color);">{{ '{:.2f}'.format(analysis1.avg_sentiment) }}</div>
+                        <div class="text-sm text-gray-600">{{ query1 }} Sentiment</div>
+                    </div>
+                    {% if query2 %}
+                    <!-- Second Query Stats -->
+                    <div>
+                        <div class="text-3xl font-bold" style="color: var(--accent-color);">{{ analysis2.total_articles }}</div>
+                        <div class="text-sm text-gray-600">{{ query2 }} Articles</div>
+                    </div>
+                    <div>
+                        <div class="text-3xl font-bold" style="color: var(--accent-color);">{{ '{:.2f}'.format(analysis2.avg_sentiment) }}</div>
+                        <div class="text-sm text-gray-600">{{ query2 }} Sentiment</div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <!-- Key Insights -->
+            <div class="card p-6 mb-8">
+                <h3 class="text-lg font-semibold mb-4">Key Insights</h3>
+                <ul class="list-disc pl-5 space-y-2">
+                    <!-- Total Coverage and Sentiment -->
+                    {% if query2 %}
+                    <li><strong>Total coverage:</strong>
+                        <ul class="list-disc pl-5 mt-1">
+                            <li><strong>{{ query1 }}:</strong> {{ analysis1.total_articles }} articles with an average sentiment score of {{ '{:.2f}'.format(analysis1.avg_sentiment) }} ({{ 'positive' if analysis1.avg_sentiment > 0.2 else ('negative' if analysis1.avg_sentiment < -0.2 else 'neutral') }})</li>
+                            <li><strong>{{ query2 }}:</strong> {{ analysis2.total_articles }} articles with an average sentiment score of {{ '{:.2f}'.format(analysis2.avg_sentiment) }} ({{ 'positive' if analysis2.avg_sentiment > 0.2 else ('negative' if analysis2.avg_sentiment < -0.2 else 'neutral') }})</li>
+                        </ul>
+                    </li>
+                    {% else %}
+                    <li><strong>Total coverage:</strong> {{ analysis1.total_articles }} articles with an average sentiment score of {{ '{:.2f}'.format(analysis1.avg_sentiment) }} ({{ 'positive' if analysis1.avg_sentiment > 0.2 else ('negative' if analysis1.avg_sentiment < -0.2 else 'neutral') }})</li>
+                    {% endif %}
+                    
+                    <!-- Highest Volume Day removed as it's shown in the graph below -->
+                    
+                    <!-- Top Sources -->
+                    {% if query2 %}
+                    <li><strong>Top sources:</strong>
+                        <ul class="list-disc pl-5 mt-1">
+                            <li><strong>{{ query1 }}:</strong> {% for source in analysis1.sources[:5] %}{{ source.name }} ({{ source.count }}){% if not loop.last %}, {% endif %}{% endfor %}</li>
+                            <li><strong>{{ query2 }}:</strong> {% for source in analysis2.sources[:5] %}{{ source.name }} ({{ source.count }}){% if not loop.last %}, {% endif %}{% endfor %}</li>
+                        </ul>
+                    </li>
+                    {% else %}
+                    <li><strong>Top sources:</strong> {% for source in analysis1.sources[:5] %}{{ source.name }} ({{ source.count }}){% if not loop.last %}, {% endif %}{% endfor %}</li>
+                    {% endif %}
+                    
+                    <!-- Top Topics -->
+                    <li><strong>{{ analysis1.topics[:3]|map(attribute='topic')|join(', ')|capitalize }}</strong> dominated with {% for topic in analysis1.topics[:3] %}{{ topic.count }}{% if not loop.last %}, {% endif %}{% endfor %} mentions{% if analysis1.topics|length > 3 %}, followed by {{ analysis1.topics[3:5]|map(attribute='topic')|join(', ') }} ({{ analysis1.topics[3:5]|map(attribute='count')|join(', ') }}){% endif %}</li>
+                    
+                    <!-- Sentiment Analysis -->
+                    {% set positive_articles = articles1|selectattr('sentiment', '>', 0.2)|list|length %}
+                    {% set negative_articles = articles1|selectattr('sentiment', '<', -0.2)|list|length %}
+                    {% set neutral_articles = articles1|length - positive_articles - negative_articles %}
+                    
+                    {% set pos_percent = (positive_articles / articles1|length * 100)|round|int %}
+                    {% set neg_percent = (negative_articles / articles1|length * 100)|round|int %}
+                    {% set neu_percent = (neutral_articles / articles1|length * 100)|round|int %}
+                    
+                    <li>
+                        <strong>Sentiment analysis</strong> shows a mix of {{ 'positive' if pos_percent > neg_percent and pos_percent > neu_percent else ('negative' if neg_percent > pos_percent and neg_percent > neu_percent else 'neutral') }} ({{ pos_percent }}%) and {{ 'positive' if pos_percent > neg_percent and pos_percent < neu_percent else ('negative' if neg_percent > pos_percent and neg_percent < neu_percent else 'neutral') }} ({{ neg_percent if neg_percent > pos_percent and neg_percent < neu_percent else pos_percent }}%) content, with {{ 'limited' if neu_percent < 30 else 'substantial' }} neutral coverage ({{ neu_percent }}%)
+                        {% if query2 %}
+                        <ul class="list-disc pl-5 space-y-1 mt-1">
+                            <li>{{ query1 }} received {{ 'more' if analysis1.avg_sentiment > analysis2.avg_sentiment else 'less' }} positive coverage than {{ query2 }} (avg. sentiment {{ '{:.2f}'.format(analysis1.avg_sentiment) }} vs {{ '{:.2f}'.format(analysis2.avg_sentiment) }})</li>
+                            <li>{{ 'Both entities had similar article volumes' if 0.8 < (analysis1.total_articles / analysis2.total_articles) < 1.2 else (query1 if analysis1.total_articles > analysis2.total_articles else query2) + ' had significantly more coverage' }} ({{ analysis1.total_articles }} vs {{ analysis2.total_articles }} articles)</li>
+                            
+                            <!-- Peak coverage information removed as it's shown in the graph below -->
+                            
+                            {% if analysis2.topics|length > 0 %}
+                            <li>{{ query2 }} coverage heavily influenced by {{ analysis2.topics[:3]|map(attribute='topic')|join(', ') }}</li>
+                            {% endif %}
+                        </ul>
+                        {% endif %}
+                    </li>
+                    
+                    <!-- Content Categories -->
+                    {% set categories = {
+                        'music': ['music', 'song', 'artist', 'album', 'band', 'singer', 'concert'],
+                        'technology': ['technology', 'tech', 'digital', 'online', 'platform', 'streaming', 'video'],
+                        'business': ['business', 'company', 'market', 'industry', 'revenue', 'growth'],
+                        'awards': ['award', 'nomination', 'winner', 'ceremony', 'prize'],
+                        'entertainment': ['entertainment', 'media', 'film', 'movie', 'tv', 'television']
+                    } %}
+                    
+                    {% set category_counts = {} %}
+                    {% for topic in analysis1.topics %}
+                        {% for category, keywords in categories.items() %}
+                            {% if topic.topic in keywords %}
+                                {% if category in category_counts %}
+                                    {% set _ = category_counts.update({category: category_counts[category] + topic.count}) %}
+                                {% else %}
+                                    {% set _ = category_counts.update({category: topic.count}) %}
+                                {% endif %}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                    
+                    {% set sorted_categories = category_counts.items()|sort(attribute='1', reverse=True) %}
+                    {% if sorted_categories|length > 0 %}
+                    <li><strong>Content was primarily about</strong> {% for category, count in sorted_categories[:3] %}{{ category }} ({{ (count / analysis1.total_articles * 100)|round|int }}%){% if not loop.last %}, {% endif %}{% endfor %}</li>
+                    {% endif %}
+                    
+                    <!-- Content Categories (moved up from below) -->
+                </ul>
+            </div>
+
+            <!-- Sentiment Scatter Plot -->
+            <div class="card p-6 mb-8">
+                <h3 class="text-lg font-semibold mb-4">Sentiment Analysis</h3>
+                <div id="sentimentScatter" class="h-96"></div>
+            </div>
+
+            <!-- Coverage Timeline -->
+            <div class="card p-6 mb-8">
+                <h3 class="text-lg font-semibold mb-4">Daily Coverage Timeline</h3>
+                <div class="h-64">
+                    <canvas id="timelineChart"></canvas>
+                </div>
+            </div>
+            
+            <!-- Visualizations -->
+            <div class="grid grid-cols-1 gap-8 mb-8">
+                <!-- Top Sources -->
+                <div class="card p-6">
+                    <h3 class="text-lg font-semibold mb-4">Top News Sources</h3>
+                    <div class="h-64">
+                        <canvas id="sourcesChart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Sentiment Distribution -->
+                <div class="card p-6">
+                    <h3 class="text-lg font-semibold mb-4">Sentiment Distribution</h3>
+                    <div class="grid {% if query2 %}grid-cols-1 sm:grid-cols-2{% else %}grid-cols-1{% endif %} gap-4">
+                        <div>
+                            <h4 class="text-md font-medium mb-2 text-center" style="color: var(--primary-color);">{{ query1 }}</h4>
+                            <div class="h-48">
+                                <canvas id="sentimentPieChart1"></canvas>
+                            </div>
+                        </div>
+                        {% if query2 %}
+                        <div>
+                            <h4 class="text-md font-medium mb-2 text-center" style="color: var(--accent-color);">{{ query2 }}</h4>
+                            <div class="h-48">
+                                <canvas id="sentimentPieChart2"></canvas>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Sentiment by Outlet (Updated) -->
+            <div class="card p-6 mb-8">
+                <h3 class="text-lg font-semibold mb-4">Sentiment by News Outlet</h3>
+                <div class="grid grid-cols-1 gap-8">
+                    <!-- First Query Sentiment by Outlet -->
+                    <div>
+                        <h4 class="text-md font-medium mb-2" style="color: var(--primary-color);">{{ query1 }}</h4>
+                        <div class="h-64">
+                            <canvas id="sentimentByOutletChart1"></canvas>
+                        </div>
+                    </div>
+                    {% if query2 %}
+                    <!-- Second Query Sentiment by Outlet -->
+                    <div>
+                        <h4 class="text-md font-medium mb-2" style="color: var(--accent-color);">{{ query2 }}</h4>
+                        <div class="h-64">
+                            <canvas id="sentimentByOutletChart2"></canvas>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Claude's Analysis -->
+            <div class="card p-6 mb-8">
+                <h3 class="text-lg font-semibold mb-4">Coverage Analysis</h3>
+                <div class="prose max-w-none">
+                    {% if textual_analysis %}
+                    {{ textual_analysis | safe }}
+                    {% else %}
+                    <p><strong>Analysis of {{ query1 }} coverage:</strong></p>
+                    
+                    <p><strong>Major Coverage Differences:</strong></p>
+                    <p>1. <strong>Sentiment and Tone:</strong> The coverage of {{ query1 }} shows an overall sentiment of {{ '{:.2f}'.format(analysis1.avg_sentiment) }} 
+                    (on a scale from -1 to +1), indicating a {% if analysis1.avg_sentiment > 0.2 %}positive media narrative that emphasizes achievements, growth, and opportunities{% elif analysis1.avg_sentiment < -0.2 %}negative media narrative focused on challenges, criticisms, and potential issues{% else %}balanced media narrative that presents factual information without strong bias{% endif %}.</p>
+                    
+                    <p>2. <strong>Media Source Influence:</strong> Coverage is primarily driven by {{ analysis1.sources[:3]|map(attribute='name')|join(', ') }}, 
+                    which collectively shape the narrative around {{ query1 }}. {% if analysis1.sources|length > 5 %}The diversity of sources ({{ analysis1.sources|length }} unique outlets) suggests broad media interest across different platforms and audiences.{% else %}The limited number of sources ({{ analysis1.sources|length }} unique outlets) indicates a more concentrated media focus.{% endif %}</p>
+                    
+                    <p>3. <strong>Thematic Focus:</strong> The coverage centers around key themes including {{ analysis1.topics[:5]|map(attribute='topic')|join(', ') }}. 
+                    {% if analysis1.topics|length > 10 %}The wide range of topics suggests multifaceted coverage addressing various aspects of {{ query1 }}.{% else %}The relatively narrow range of topics indicates focused coverage on specific aspects of {{ query1 }}.{% endif %}</p>
+                    
+                    <p><strong>Key Trends:</strong></p>
+                    <p>1. <strong>Coverage Volume Patterns:</strong> {% if analysis1.timeline %}{% set max_count = 0 %}{% set max_date_item = None %}{% for item in analysis1.timeline %}{% if item.count > max_count %}{% set max_count = item.count %}{% set max_date_item = item %}{% endif %}{% endfor %}{% if max_date_item %}The coverage spans from {{ analysis1.date_range.start }} to {{ analysis1.date_range.end }}, with peak coverage on {{ max_date_item.date }} ({{ max_date_item.count }} articles). {% if analysis1.timeline|length > 1 %}{% if max_count > (analysis1.total_articles / analysis1.timeline|length) * 2 %}The significant spike in coverage suggests a major event or announcement that triggered heightened media interest.{% else %}The relatively consistent distribution of articles indicates sustained media attention throughout the period rather than event-driven coverage.{% endif %}{% endif %}{% endif %}{% endif %}</p>
+                    
+                    <p>2. <strong>Sentiment Evolution:</strong> 
+                    {% set positive_articles = 0 %}
+                    {% set negative_articles = 0 %}
+                    {% set neutral_articles = 0 %}
+                    {% for article in articles1 %}
+                        {% if article.sentiment > 0.2 %}
+                            {% set positive_articles = positive_articles + 1 %}
+                        {% elif article.sentiment < -0.2 %}
+                            {% set negative_articles = negative_articles + 1 %}
+                        {% else %}
+                            {% set neutral_articles = neutral_articles + 1 %}
+                        {% endif %}
+                    {% endfor %}
+                    
+                    {% set dominant_sentiment = "neutral" %}
+                    {% set dominant_count = neutral_articles %}
+                    {% if positive_articles > negative_articles and positive_articles > neutral_articles %}
+                        {% set dominant_sentiment = "positive" %}
+                        {% set dominant_count = positive_articles %}
+                    {% elif negative_articles > positive_articles and negative_articles > neutral_articles %}
+                        {% set dominant_sentiment = "negative" %}
+                        {% set dominant_count = negative_articles %}
+                    {% endif %}
+                    
+                    {% set pos_percent = (positive_articles / articles1|length * 100)|round|int %}
+                    {% set neg_percent = (negative_articles / articles1|length * 100)|round|int %}
+                    {% set neu_percent = (neutral_articles / articles1|length * 100)|round|int %}
+                    
+                    The coverage shows a mix of sentiments with {{ pos_percent }}% positive, {{ neg_percent }}% negative, and {{ neu_percent }}% neutral articles. The predominant tone is {{ dominant_sentiment }} ({{ dominant_count }} out of {{ articles1|length }} articles), 
+                    {% if dominant_sentiment == "positive" %}
+                    suggesting a favorable media environment that could enhance {{ query1 }}'s reputation and public perception.
+                    {% elif dominant_sentiment == "negative" %}
+                    indicating potential reputation challenges that might require strategic communication efforts.
+                    {% else %}
+                    reflecting balanced reporting that presents facts without strong emotional framing.
+                    {% endif %}</p>
+                    
+                    <p>3. <strong>Source Diversity and Reach:</strong> 
+                    {% if analysis1.sources|length > 10 %}
+                    The wide range of media sources ({{ analysis1.sources|length }} unique outlets) covering {{ query1 }} indicates broad interest across different media segments and potential audience reach.
+                    {% elif analysis1.sources|length > 5 %}
+                    The moderate diversity of sources ({{ analysis1.sources|length }} outlets) suggests solid media presence across several key publications.
+                    {% else %}
+                    The limited number of sources ({{ analysis1.sources|length }} outlets) indicates a concentrated media presence that may limit broader audience reach.
+                    {% endif %}
+                    The most influential sources by volume are {{ analysis1.sources[:3]|map(attribute='name')|join(', ') }}.</p>
+                    
+                    <p><strong>Business Implications:</strong></p>
+                    <p>1. <strong>Market Perception:</strong> 
+                    {% if analysis1.avg_sentiment > 0.3 %}
+                    The strongly positive media sentiment suggests favorable market perception that could translate to business advantages such as increased customer trust, stronger partnerships, and potential investment interest.
+                    {% elif analysis1.avg_sentiment > 0 %}
+                    The moderately positive media sentiment indicates generally favorable market perception, though with some balanced coverage that acknowledges challenges alongside opportunities.
+                    {% elif analysis1.avg_sentiment > -0.3 %}
+                    The neutral to slightly negative media sentiment suggests a mixed market perception that may require targeted communication strategies to address specific concerns.
+                    {% else %}
+                    The negative media sentiment indicates potential reputation challenges that could impact business relationships, customer perception, and market positioning if not addressed.
+                    {% endif %}</p>
+                    
+                    <p>2. <strong>Competitive Positioning:</strong> 
+                    The media narrative around {{ query1 }} focuses primarily on {{ analysis1.topics[:3]|map(attribute='topic')|join(', ') }}, 
+                    {% if "innovation" in analysis1.topics|map(attribute='topic')|join(' ') or "technology" in analysis1.topics|map(attribute='topic')|join(' ') or "new" in analysis1.topics|map(attribute='topic')|join(' ') %}
+                    with an emphasis on innovation and development that could strengthen competitive positioning in the market.
+                    {% elif "problem" in analysis1.topics|map(attribute='topic')|join(' ') or "issue" in analysis1.topics|map(attribute='topic')|join(' ') or "challenge" in analysis1.topics|map(attribute='topic')|join(' ') %}
+                    with attention to challenges and issues that competitors might leverage if not addressed effectively.
+                    {% else %}
+                    creating a narrative that shapes how {{ query1 }} is perceived relative to competitors in the same space.
+                    {% endif %}</p>
+                    
+                    <p>3. <strong>Strategic Opportunities:</strong> 
+                    Based on the media coverage analysis, potential strategic opportunities include:
+                    <ul>
+                        {% if analysis1.avg_sentiment > 0 %}
+                        <li>Leveraging positive sentiment to strengthen brand positioning and market presence</li>
+                        <li>Amplifying key positive themes in marketing and communication materials</li>
+                        {% else %}
+                        <li>Developing targeted communication strategies to address specific concerns in media coverage</li>
+                        <li>Creating content that reframes the narrative around challenging topics</li>
+                        {% endif %}
+                        <li>Engaging with key media outlets ({{ analysis1.sources[:2]|map(attribute='name')|join(', ') }}) to shape future coverage</li>
+                        <li>Focusing on high-visibility topics ({{ analysis1.topics[:3]|map(attribute='topic')|join(', ') }}) in external communications</li>
+                        {% if analysis1.timeline|length > 1 %}
+                        {% set max_count = 0 %}
+                        {% set max_date_item = None %}
+                        {% for item in analysis1.timeline %}
+                            {% if item.count > max_count %}
+                                {% set max_count = item.count %}
+                                {% set max_date_item = item %}
+                            {% endif %}
+                        {% endfor %}
+                        {% if max_date_item %}
+                        <li>Understanding and potentially leveraging the factors that drove peak coverage on {{ max_date_item.date }}</li>
+                        {% endif %}
+                        {% endif %}
+                    </ul>
+                    </p>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <!-- Top Topics -->
+            <div class="card p-6 mb-8">
+                <h3 class="text-lg font-semibold mb-4">Most Mentioned Topics</h3>
+                <div class="grid grid-cols-1 gap-8">
+                    <!-- First Query Topics -->
+                    <div>
+                        <h4 class="text-md font-medium mb-2" style="color: var(--primary-color);">{{ query1 }}</h4>
+                        <div class="flex flex-wrap gap-2">
+                            {% for topic in analysis1.topics[:30] %}
+                                <span class="px-3 py-1 rounded-full text-sm" 
+                                      style="background-color: rgba(0, 94, 48, 0.1); font-size: {{ '{:.1f}'.format(12 + (topic.count / analysis1.topics[0].count * 12)) }}px">
+                                    {{ topic.topic }} ({{ topic.count }})
+                                </span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% if query2 %}
+                    <!-- Second Query Topics -->
+                    <div>
+                        <h4 class="text-md font-medium mb-2" style="color: var(--accent-color);">{{ query2 }}</h4>
+                        <div class="flex flex-wrap gap-2">
+                            {% for topic in analysis2.topics[:30] %}
+                                <span class="px-3 py-1 rounded-full text-sm" 
+                                      style="background-color: rgba(0, 166, 81, 0.1); font-size: {{ '{:.1f}'.format(12 + (topic.count / analysis2.topics[0].count * 12)) }}px">
+                                    {{ topic.topic }} ({{ topic.count }})
+                                </span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            
+            {% endif %}
+
+            {% if articles1|length > 0 %}
+            <!-- Source Articles -->
+            <div class="grid grid-cols-1 gap-8">
+                <!-- First Query Articles -->
+                <div>
+                    <h2 class="text-xl font-semibold mb-4" style="color: var(--primary-color);">{{ query1 }} Articles</h2>
+                    <div class="space-y-4">
+                        {% for article in articles1 %}
+                        <div class="border p-4 rounded-lg hover:shadow-md transition-shadow">
+                            <h3 class="font-medium">
+                                <a href="{{ article.url }}" target="_blank" style="color: var(--primary-color);" class="hover:underline">
+                                    {{ article.title }}
+                                </a>
+                            </h3>
+                            <p class="text-sm text-gray-600 mt-1">
+                                {{ article.source.name }} - {{ article.publishedAt.split('T')[0] }}
+                                {% if article.api_source %}
+                                <span class="ml-2 px-2 py-0.5 text-xs rounded-full" style="background-color: rgba(0, 94, 48, 0.1);">{{ article.api_source }}</span>
+                                {% endif %}
+                            </p>
+                            <p class="mt-2 text-gray-700">{{ article.description }}</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% if query2 %}
+                <!-- Second Query Articles -->
+                <div>
+                    <h2 class="text-xl font-semibold mb-4" style="color: var(--accent-color);">{{ query2 }} Articles</h2>
+                    <div class="space-y-4">
+                        {% for article in articles2 %}
+                        <div class="border p-4 rounded-lg hover:shadow-md transition-shadow">
+                            <h3 class="font-medium">
+                                <a href="{{ article.url }}" target="_blank" style="color: var(--primary-color);" class="hover:underline">
+                                    {{ article.title }}
+                                </a>
+                            </h3>
+                            <p class="text-sm text-gray-600 mt-1">
+                                {{ article.source.name }} - {{ article.publishedAt.split('T')[0] }}
+                                {% if article.api_source %}
+                                <span class="ml-2 px-2 py-0.5 text-xs rounded-full" style="background-color: rgba(0, 166, 81, 0.1);">{{ article.api_source }}</span>
+                                {% endif %}
+                            </p>
+                            <p class="mt-2 text-gray-700">{{ article.description }}</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Email Modal -->
+        <div id="emailModal" class="fixed inset-0 bg-black bg-opacity-60 hidden items-center justify-center z-50">
+            <div class="bg-white rounded-lg p-6 w-96">
+                <h3 class="text-lg font-semibold mb-2" style="color: var(--primary-color);">Email this analysis</h3>
+                <p class="text-sm text-gray-600 mb-3">Enter your email to receive a summary and the share link.</p>
+                <input type="email" id="emailInput" class="w-full border rounded px-3 py-2 mb-3" placeholder="you@company.com" />
+                <div class="flex justify-end gap-2">
+                    <button id="emailCancelBtn" class="px-4 py-2 border rounded">Cancel</button>
+                    <button id="emailSubmitBtn" class="btn-primary px-4 py-2 rounded">Send</button>
+                </div>
+                <div id="emailMsg" class="text-sm mt-2"></div>
+            </div>
+        </div>
+
+    <!-- Pass data from template to JavaScript -->
+    <script>
+        // Helper function to decode HTML entities
+        function decodeHtmlEntities(text) {
+            var element = document.createElement('div');
+            element.innerHTML = text;
+            return element.textContent || element.innerText || text;
+        }
+        
+        // Apply HTML entity decoding to source names
+        document.addEventListener('DOMContentLoaded', function() {
+            // Wait for charts to be rendered
+            setTimeout(function() {
+                // Find all chart labels and decode them
+                var chartLabels = document.querySelectorAll('.chartjs-axis-labels text');
+                chartLabels.forEach(function(label) {
+                    if (label.textContent.includes('&#')) {
+                        label.textContent = decodeHtmlEntities(label.textContent);
+                    }
+                });
+            }, 1000);
+        });
+        (function() {
+            // Expose data as safe JSON
+            window.articles1 = {{ articles1 | tojson | safe }};
+            window.articles2 = {{ articles2 | default(None) | tojson | safe }};
+            window.analysis1 = {{ analysis1 | tojson | safe }};
+            window.analysis2 = {{ analysis2 | default(None) | tojson | safe }};
+            window.query1 = {{ query1 | tojson }};
+            window.query2 = {{ (query2 if query2 else '') | tojson }};
+            window.shareUrl = {{ (share_url if share_url else '') | tojson }};
+            window.slug = {{ (slug if slug else '') | tojson }};
+
+            // Analytics events
+            document.addEventListener('DOMContentLoaded', function() {
+                try {
+                    if (typeof gtag === 'function') {
+                        gtag('event', 'view_result', {
+                            app: 'media_analyzer',
+                            query1: window.query1 || '',
+                            query2: window.query2 || '',
+                            total_articles_1: window.analysis1 ? window.analysis1.total_articles : 0,
+                            total_articles_2: window.analysis2 ? window.analysis2.total_articles : 0
+                        });
+                        var shareBtn = document.getElementById('shareBtn');
+                        if (shareBtn) shareBtn.addEventListener('click', function() {
+                            try {
+                                if (typeof gtag === 'function') {
+                                    gtag('event', 'share_clicked', {
+                                        app: 'media_analyzer',
+                                        query1: window.query1 || '',
+                                        query2: window.query2 || ''
+                                    });
+                                }
+                            } catch (e) { /* no-op */ }
+                            var url = window.shareUrl || window.location.href;
+                            if (navigator.share) {
+                                navigator.share({
+                                    title: 'Media Analysis',
+                                    text: 'View this media analysis',
+                                    url: url
+                                }).catch(function(){ 
+                                    try {
+                                        var original = shareBtn.innerHTML;
+                                        var tempInput = document.createElement('input');
+                                        tempInput.value = url;
+                                        document.body.appendChild(tempInput);
+                                        tempInput.select();
+                                        document.execCommand('copy');
+                                        document.body.removeChild(tempInput);
+                                        shareBtn.innerHTML = 'Link Copied!';
+                                        setTimeout(function(){ shareBtn.innerHTML = original; }, 1800);
+                                    } catch (e) {}
+                                });
+                            } else {
+                                try {
+                                    var original = shareBtn.innerHTML;
+                                    var tempInput = document.createElement('input');
+                                    tempInput.value = url;
+                                    document.body.appendChild(tempInput);
+                                    tempInput.select();
+                                    document.execCommand('copy');
+                                    document.body.removeChild(tempInput);
+                                    shareBtn.innerHTML = 'Link Copied!';
+                                    setTimeout(function(){ shareBtn.innerHTML = original; }, 1800);
+                                } catch (e) {}
+                            }
+                        });
+                        var copyBtn = document.getElementById('copyToClaudeBtn');
+                        if (copyBtn) copyBtn.addEventListener('click', function() {
+                            gtag('event', 'copy_to_claude_clicked', {
+                                app: 'media_analyzer',
+                                query1: window.query1 || '',
+                                query2: window.query2 || ''
+                            });
+                        });
+                    }
+                } catch (e) {
+                    // no-op
+                }
+            });
+        })();
+
+        // Lead gen and export utilities
+        function toCSVRow(values) {
+            return values.map(v => {
+                if (v === null || v === undefined) return '';
+                const s = String(v).replace(/"/g, '""');
+                return `"${s}"`;
+            }).join(',');
+        }
+
+        function downloadCSV() {
+            const rows = [];
+            rows.push(toCSVRow(['Query','Title','Source','Published','Sentiment','URL','API Source']));
+            const add = (arr, label) => {
+                (arr || []).forEach(a => {
+                    rows.push(toCSVRow([
+                        label || window.query1,
+                        a.title,
+                        a.source && a.source.name,
+                        (a.publishedAt || '').split('T')[0],
+                        typeof a.sentiment === 'number' ? a.sentiment.toFixed(2) : '',
+                        a.url,
+                        a.api_source || ''
+                    ]));
+                });
+            };
+            add(window.articles1, window.query1);
+            if (window.articles2 && window.articles2.length) add(window.articles2, window.query2);
+            const blob = new Blob([rows.join('\n')], {type: 'text/csv;charset=utf-8;'});
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = (window.query1 || 'analysis') + (window.query2 ? `_vs_${window.query2}` : '') + '.csv';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            try { if (typeof gtag==='function') gtag('event','download_csv',{app:'media_analyzer'}); } catch(e){}
+            try {
+                fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'',slug:window.slug || '',action:'download_csv'})});
+            } catch(e){}
+        }
+
+        async function downloadPDF() {
+            try {
+                const { jsPDF } = window.jspdf || {};
+                const root = document.getElementById('resultsRoot');
+                const canvas = await html2canvas(root, {scale: 2, useCORS: true, windowWidth: root.scrollWidth});
+                const imgData = canvas.toDataURL('image/png');
+                const pdf = new jsPDF('p','pt','a4');
+                const pageWidth = 595.28;
+                const ratio = canvas.width / canvas.height;
+                const imgWidth = pageWidth - 40;
+                const imgHeight = imgWidth / ratio;
+                let y = 20;
+                if (imgHeight > 842) {
+                    const pageHeight = 842;
+                    let remaining = imgHeight;
+                    let srcY = 0;
+                    const sliceHeight = canvas.height * ((pageHeight - 40) / imgHeight);
+                    while (remaining > 0) {
+                        const sliceCanvas = document.createElement('canvas');
+                        sliceCanvas.width = canvas.width;
+                        sliceCanvas.height = Math.min(sliceHeight, canvas.height - srcY);
+                        const ctx = sliceCanvas.getContext('2d');
+                        ctx.drawImage(canvas, 0, srcY, canvas.width, sliceCanvas.height, 0, 0, sliceCanvas.width, sliceCanvas.height);
+                        const sliceData = sliceCanvas.toDataURL('image/png');
+                        if (y !== 20) pdf.addPage();
+                        pdf.addImage(sliceData, 'PNG', 20, 20, imgWidth, (pageHeight - 40));
+                        srcY += sliceHeight;
+                        remaining -= (pageHeight - 40);
+                        y += pageHeight;
+                    }
+                } else {
+                    pdf.addImage(imgData, 'PNG', 20, y, imgWidth, imgHeight);
+                }
+                const name = (window.query1 || 'analysis') + (window.query2 ? `_vs_${window.query2}` : '') + '.pdf';
+                pdf.save(name);
+                try { if (typeof gtag==='function') gtag('event','download_pdf',{app:'media_analyzer'}); } catch(e){}
+                try { fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'',slug:window.slug || '',action:'download_pdf'})}); } catch(e){}
+            } catch (e) {
+                console.error('PDF export failed', e);
+                alert('PDF export failed. Please try again.');
+            }
+        }
+
+        function openEmailModal() {
+            const m = document.getElementById('emailModal');
+            if (m) { m.classList.remove('hidden'); m.classList.add('flex'); }
+        }
+        function closeEmailModal() {
+            const m = document.getElementById('emailModal');
+            if (m) { m.classList.add('hidden'); m.classList.remove('flex'); }
+        }
+        function submitEmail() {
+            const input = document.getElementById('emailInput');
+            const msg = document.getElementById('emailMsg');
+            const email = (input.value || '').trim();
+            if (!email) { msg.textContent = 'Please enter your email.'; msg.className='text-red-600 text-sm mt-2'; return; }
+            msg.textContent = 'Sending...'; msg.className='text-gray-600 text-sm mt-2';
+            fetch('/api/email_summary', {
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ email: email, slug: window.slug || '' })
+            }).then(r=>r.json()).then(data=>{
+                if (data.ok) {
+                    msg.textContent = data.sent ? 'Sent! Check your inbox.' : 'Saved. We will follow up shortly.';
+                    msg.className='text-green-700 text-sm mt-2';
+                    try { if (typeof gtag==='function') gtag('event','email_summary_submit',{app:'media_analyzer'}); } catch(e){}
+                    setTimeout(closeEmailModal, 1500);
+                } else {
+                    msg.textContent = 'Failed to send. Please try again.'; msg.className='text-red-600 text-sm mt-2';
+                }
+            }).catch(()=>{
+                msg.textContent = 'Failed to send. Please try again.'; msg.className='text-red-600 text-sm mt-2';
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            var csvBtn = document.getElementById('downloadCsvBtn');
+            if (csvBtn) csvBtn.addEventListener('click', downloadCSV);
+            var pdfBtn = document.getElementById('downloadPdfBtn');
+            if (pdfBtn) pdfBtn.addEventListener('click', downloadPDF);
+            var emailBtn = document.getElementById('emailMeBtn');
+            if (emailBtn) emailBtn.addEventListener('click', openEmailModal);
+            var emailCancelBtn = document.getElementById('emailCancelBtn');
+            if (emailCancelBtn) emailCancelBtn.addEventListener('click', closeEmailModal);
+            var emailSubmitBtn = document.getElementById('emailSubmitBtn');
+            if (emailSubmitBtn) emailSubmitBtn.addEventListener('click', submitEmail);
+        });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <script src="{{ url_for('static', filename='js/result-charts.js') }}"></script>
+</body>
+</html>

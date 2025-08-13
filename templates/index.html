@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>innate c3 | media analysis</title>
+    {% if ga_measurement_id %}
+    <!-- Google Analytics Tag -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', '{{ ga_measurement_id }}');
+    </script>
+    {% endif %}
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <style>
+        :root {
+            --primary-color: #005e30;
+            --secondary-color: #f5f2e9;
+            --accent-color: #00a651;
+            --text-color: #333333;
+        }
+        body {
+            font-family: 'IBM Plex Sans', sans-serif;
+            background-color: var(--secondary-color);
+            color: var(--text-color);
+        }
+        .divider {
+            height: 2px;
+            background-color: var(--primary-color);
+            margin: 2rem 0;
+        }
+        h1, h2, h3, h4 {
+            color: var(--primary-color);
+        }
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .btn-primary:hover {
+            background-color: #004020;
+        }
+        .card {
+            background-color: white;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .green-bullet {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background-color: var(--primary-color);
+            margin-right: 8px;
+        }
+        /* Loading Overlay Styles */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            flex-direction: column;
+            color: white;
+        }
+        .spinner {
+            border: 5px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 5px solid white;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+    <div class="max-w-4xl mx-auto">
+        <div class="divider"></div>
+        <div class="flex justify-between items-center">
+            <h1 class="text-3xl font-bold mb-4 mt-4">innate c3 | media analysis</h1>
+            <div class="flex gap-2">
+                <a href="/upload" class="btn-primary font-bold py-2 px-4 rounded">
+                    Upload Files
+                </a>
+                <a href="/examples" class="btn-primary font-bold py-2 px-4 rounded" title="View recent shared analyses">
+                    Examples
+                </a>
+                <a href="https://www.innatec3.com/#contact" class="btn-primary font-bold py-2 px-4 rounded">
+                    Bespoke Analysis
+                </a>
+            </div>
+        </div>
+        <div class="divider"></div>
+        
+        {% if analytics_data %}
+        <div class="card px-8 pt-6 pb-8 mb-8">
+            <h2 class="text-xl font-bold mb-4">Website Analytics</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                <div class="bg-blue-50 p-4 rounded">
+                    <h3 class="text-sm font-semibold text-blue-800">Total Users</h3>
+                    <p class="text-2xl font-bold text-blue-600">{{ analytics_data.total_users }}</p>
+                </div>
+                <div class="bg-green-50 p-4 rounded">
+                    <h3 class="text-sm font-semibold text-green-800">Total Pageviews</h3>
+                    <p class="text-2xl font-bold text-green-600">{{ analytics_data.total_pageviews }}</p>
+                </div>
+                <div class="bg-purple-50 p-4 rounded">
+                    <h3 class="text-sm font-semibold text-purple-800">Avg. Session Duration</h3>
+                    <p class="text-2xl font-bold text-purple-600">{{ "%.2f"|format(analytics_data.avg_session_duration) }}s</p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        <form method="POST" class="card px-8 pt-6 pb-8 mb-4">
+            <div class="mb-4">
+                <div class="flex flex-col md:flex-row md:items-start gap-4">
+                    <!-- Primary Search Query -->
+                    <div class="flex-grow">
+                        <label class="block text-gray-700 text-sm font-bold mb-2" for="query1">
+                            Search Query
+                        </label>
+                        <input class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                               id="query1" name="query1" type="text" placeholder="e.g., Apple">
+                    </div>
+                    
+                    <!-- Comparative Search (Hidden by Default) -->
+                    <div id="comparative-search" class="hidden flex-grow">
+                        <label class="block text-gray-700 text-sm font-bold mb-2" for="query2">
+                            Comparative Search
+                        </label>
+                        <input class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                               id="query2" name="query2" type="text" placeholder="e.g., Google">
+                    </div>
+                </div>
+                
+                <!-- Compare Toggle Button -->
+                <div class="mt-2 mb-4">
+                    <button type="button" id="compare-toggle" class="text-sm font-medium flex items-center" style="color: var(--primary-color);">
+                        <span id="compare-text">Compare</span>
+                        <svg id="compare-icon" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                        </svg>
+                    </button>
+                </div>
+                <!-- AI-enhanced search copy removed -->
+            </div>
+            
+            <!-- Advanced Search Toggle -->
+            <div class="mb-4">
+                <button type="button" id="advanced-toggle" class="text-sm font-medium flex items-center" style="color: var(--primary-color);">
+                    <span id="toggle-text">Show Advanced Filters</span>
+                    <svg id="toggle-icon" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- Advanced Search Filters -->
+            <div id="advanced-filters" class="mb-6 bg-gray-50 p-4 rounded-lg hidden">
+                <h3 class="text-gray-700 text-sm font-bold mb-3">Advanced Filters</h3>
+                
+                <div id="advanced-filters-container">
+                    <!-- First Query Filters -->
+                    <div class="w-full">
+                        <h4 class="text-xs font-semibold text-gray-600 mb-2">First Query Filters</h4>
+                        
+                        <!-- Language -->
+                        <div class="mb-3">
+                            <label class="block text-gray-600 text-xs mb-1">Language</label>
+                            <select name="language1" id="language1" class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                                <option value="en" selected>English</option>
+                                <option value="ar">Arabic</option>
+                                <option value="de">German</option>
+                                <option value="es">Spanish</option>
+                                <option value="fr">French</option>
+                                <option value="he">Hebrew</option>
+                                <option value="it">Italian</option>
+                                <option value="nl">Dutch</option>
+                                <option value="no">Norwegian</option>
+                                <option value="pt">Portuguese</option>
+                                <option value="ru">Russian</option>
+                                <option value="sv">Swedish</option>
+                                <option value="zh">Chinese</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Source -->
+                        <div class="mb-3">
+                            <label class="block text-gray-600 text-xs mb-1">Source</label>
+                            <input type="text" name="source1" id="source1" placeholder="e.g., bbc-news, cnn" class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                            <p class="text-xs text-gray-500 mt-1">Comma-separated list of news sources</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Second Query Filters (Hidden by Default) -->
+                    <div id="second-query-filters" class="hidden mt-4 pt-4 border-t">
+                        <h4 class="text-xs font-semibold text-gray-600 mb-2">Second Query Filters</h4>
+                        
+                        <!-- Language -->
+                        <div class="mb-3">
+                            <label class="block text-gray-600 text-xs mb-1">Language</label>
+                            <select name="language2" id="language2" class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                                <option value="en" selected>English</option>
+                                <option value="ar">Arabic</option>
+                                <option value="de">German</option>
+                                <option value="es">Spanish</option>
+                                <option value="fr">French</option>
+                                <option value="he">Hebrew</option>
+                                <option value="it">Italian</option>
+                                <option value="nl">Dutch</option>
+                                <option value="no">Norwegian</option>
+                                <option value="pt">Portuguese</option>
+                                <option value="ru">Russian</option>
+                                <option value="sv">Swedish</option>
+                                <option value="zh">Chinese</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Source -->
+                        <div class="mb-3">
+                            <label class="block text-gray-600 text-xs mb-1">Source</label>
+                            <input type="text" name="source2" id="source2" placeholder="e.g., bbc-news, cnn" class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                            <p class="text-xs text-gray-500 mt-1">Comma-separated list of news sources</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Date Range Section -->
+            <div id="date-range-section" class="mb-6">
+                <!-- First Query Date Range -->
+                <div class="w-full">
+                    <label class="block text-gray-700 text-sm font-bold mb-2">
+                        Date Range for First Query
+                        <span class="text-xs text-gray-500">(Limited to 30 days in free tier)</span>
+                    </label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="block text-gray-600 text-xs mb-1" for="from_date1">From</label>
+                            <input type="date" id="from_date1" name="from_date1" 
+                                   class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                        </div>
+                        <div>
+                            <label class="block text-gray-600 text-xs mb-1" for="to_date1">To</label>
+                            <input type="date" id="to_date1" name="to_date1" 
+                                   class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Second Query Date Range (Hidden by Default) -->
+                <div id="second-date-range" class="hidden mt-4">
+                    <label class="block text-gray-700 text-sm font-bold mb-2">
+                        Date Range for Second Query
+                    </label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="block text-gray-600 text-xs mb-1" for="from_date2">From</label>
+                            <input type="date" id="from_date2" name="from_date2" 
+                                   class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                        </div>
+                        <div>
+                            <label class="block text-gray-600 text-xs mb-1" for="to_date2">To</label>
+                            <input type="date" id="to_date2" name="to_date2" 
+                                   class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flex items-center justify-between">
+                <button class="btn-primary font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+                        type="submit">
+                    Analyze
+                </button>
+            </div>
+        </form>
+        
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+                        <span class="block sm:inline">{{ message }}</span>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+    </div>
+    
+    <!-- Loading Overlay (Hidden by Default) -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <p class="text-xl">🤖 Analyzing media...</p>
+        <p class="text-sm mt-2">This may take a minute or two.</p>
+    </div>
+
+    <!-- Include Premium Modal -->
+    {% include 'premium_modal.html' %}
+    
+    <!-- Footer -->
+    <div class="max-w-4xl mx-auto mt-12 mb-4 text-center">
+        <div class="divider"></div>
+        <p class="text-sm text-gray-600">
+            for more information about innate c3, visit <a href="https://innatec3.com" target="_blank" class="text-primary-600 hover:underline" style="color: var(--primary-color);">innatec3.com</a>
+        </p>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Advanced filters toggle
+            const advancedToggle = document.getElementById('advanced-toggle');
+            const advancedFilters = document.getElementById('advanced-filters');
+            const toggleText = document.getElementById('toggle-text');
+            const toggleIcon = document.getElementById('toggle-icon');
+            
+            // Comparative search toggle
+            const compareToggle = document.getElementById('compare-toggle');
+            const comparativeSearch = document.getElementById('comparative-search');
+            const compareText = document.getElementById('compare-text');
+            const compareIcon = document.getElementById('compare-icon');
+            
+            // Function to toggle advanced filters visibility
+            function toggleAdvancedFilters() {
+                advancedFilters.classList.toggle('hidden');
+                if (advancedFilters.classList.contains('hidden')) {
+                    toggleText.textContent = 'Show Advanced Filters';
+                    toggleIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />';
+                } else {
+                    toggleText.textContent = 'Hide Advanced Filters';
+                    toggleIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />';
+                }
+                try {
+                    if (typeof gtag === 'function') {
+                        gtag('event', 'advanced_filters_toggle', {
+                            app: 'media_analyzer',
+                            state: advancedFilters.classList.contains('hidden') ? 'hidden' : 'shown'
+                        });
+                    }
+                } catch (e) { /* no-op */ }
+            }
+            
+            // Function to update UI based on comparative search visibility
+            function updateUIForComparison() {
+                const secondDateRange = document.getElementById('second-date-range');
+                const secondQueryFilters = document.getElementById('second-query-filters');
+                
+                if (!comparativeSearch.classList.contains('hidden')) {
+                    // Show second date range and filters when comparative search is visible
+                    secondDateRange.classList.remove('hidden');
+                    secondQueryFilters.classList.remove('hidden');
+                } else {
+                    // Hide second date range and filters when comparative search is hidden
+                    secondDateRange.classList.add('hidden');
+                    secondQueryFilters.classList.add('hidden');
+                }
+            }
+            
+            // Function to toggle comparative search visibility
+            function toggleComparativeSearch() {
+                comparativeSearch.classList.toggle('hidden');
+                if (comparativeSearch.classList.contains('hidden')) {
+                    compareText.textContent = 'Compare';
+                    compareIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />';
+                } else {
+                    compareText.textContent = 'Hide Compare';
+                    compareIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />';
+                }
+                
+                // Update the UI based on comparative search visibility
+                updateUIForComparison();
+
+                // Analytics
+                try {
+                    if (typeof gtag === 'function') {
+                        gtag('event', 'compare_toggle', {
+                            app: 'media_analyzer',
+                            state: comparativeSearch.classList.contains('hidden') ? 'off' : 'on'
+                        });
+                    }
+                } catch (e) { /* no-op */ }
+            }
+            
+            // Add click event listeners
+            advancedToggle.addEventListener('click', toggleAdvancedFilters);
+            compareToggle.addEventListener('click', toggleComparativeSearch);
+            
+            // Ensure advanced filters are hidden on page load
+            if (!advancedFilters.classList.contains('hidden')) {
+                advancedFilters.classList.add('hidden');
+            }
+            
+            // Ensure comparative search is hidden on page load
+            if (!comparativeSearch.classList.contains('hidden')) {
+                comparativeSearch.classList.add('hidden');
+            }
+            
+            // Set default dates (last 28 days to ensure we're within API limits)
+            const today = new Date();
+            const twentyEightDaysAgo = new Date(today);
+            twentyEightDaysAgo.setDate(today.getDate() - 28);
+            
+            // Format dates for input fields
+            const formatDate = date => date.toISOString().split('T')[0];
+            
+            // Set default values
+            document.getElementById('from_date1').value = formatDate(twentyEightDaysAgo);
+            document.getElementById('to_date1').value = formatDate(today);
+            document.getElementById('from_date2').value = formatDate(twentyEightDaysAgo);
+            document.getElementById('to_date2').value = formatDate(today);
+            
+            // Initialize UI for comparison
+            updateUIForComparison();
+
+            // Set min/max dates for the date inputs
+            const maxDate = formatDate(today);
+            const minDate = formatDate(new Date(today.setDate(today.getDate() - 28)));
+            
+            // Apply min/max constraints to date inputs
+            ['from_date1', 'to_date1', 'from_date2', 'to_date2'].forEach(id => {
+                const input = document.getElementById(id);
+                input.min = minDate;
+                input.max = maxDate;
+            });
+            
+            // No country or search type selectors to initialize
+            
+            // Date range validation for premium features
+            function validateDateRange() {
+                const fromDate1 = new Date(document.getElementById('from_date1').value);
+                const toDate1 = new Date(document.getElementById('to_date1').value);
+                
+                // Calculate the difference in days
+                const diffTime = Math.abs(toDate1 - fromDate1);
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                
+                // If more than 30 days, show premium modal
+                if (diffDays > 30) {
+                    showPremiumModal();
+                    // Reset to 30 days
+                    const newFromDate = new Date(toDate1);
+                    newFromDate.setDate(toDate1.getDate() - 30);
+                    document.getElementById('from_date1').value = newFromDate.toISOString().split('T')[0];
+                    return false;
+                }
+                
+                return true;
+            }
+            
+            // Get loading overlay element
+            const loadingOverlay = document.getElementById('loading-overlay');
+            
+            // Add form validation and show loading overlay on submit
+            document.querySelector('form').addEventListener('submit', function(e) {
+                const query1 = document.getElementById('query1').value.trim();
+                const fromDate1 = document.getElementById('from_date1').value;
+                const toDate1 = document.getElementById('to_date1').value;
+                const query2 = document.getElementById('query2').value.trim();
+                const fromDate2 = document.getElementById('from_date2').value;
+                const toDate2 = document.getElementById('to_date2').value;
+
+                if (!query1) {
+                    e.preventDefault();
+                    alert('Please enter at least one search term');
+                    return;
+                }
+
+                if (!fromDate1 || !toDate1) {
+                    e.preventDefault();
+                    alert('Please select a date range for the first query');
+                    return;
+                }
+
+                if (query2 && (!fromDate2 || !toDate2)) {
+                    e.preventDefault();
+                    alert('Please select a date range for the second query');
+                    return;
+                }
+                
+                // Check date range for premium features
+                if (!validateDateRange()) {
+                    e.preventDefault();
+                    return;
+                }
+
+                // Analytics
+                try {
+                    if (typeof gtag === 'function') {
+                        gtag('event', 'analyze_submit', {
+                            app: 'media_analyzer',
+                            query1: query1,
+                            query2: query2 || '',
+                            from_date1: fromDate1,
+                            to_date1: toDate1,
+                            from_date2: fromDate2 || '',
+                            to_date2: toDate2 || ''
+                        });
+                    }
+                } catch (e) { /* no-op */ }
+                
+                // Show loading overlay when form is submitted and validation passes
+                loadingOverlay.classList.remove('hidden');
+            });
+        });
+    </script>
+</body>
+</html>
