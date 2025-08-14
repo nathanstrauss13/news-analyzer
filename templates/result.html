@@ -6,7 +6,7 @@
     <title>innate c3 | media analysis</title>
     {% if share_url %}
     {% set _og_title = (query1 ~ (query2 and (' vs ' ~ query2) or '') ~ ' | Media Analysis') %}
-    {% set _og_desc = (query1 ~ (query2 and (' vs ' ~ query2) or '') ~ ' • ' ~ (analysis1.total_articles if analysis1 and analysis1.total_articles is not none else 0) ~ ' articles' ~ (query2 and (', ' ~ (analysis2.total_articles if analysis2 and analysis2.total_articles is not none else 0) ~ ' for ' ~ query2) or '') ~ ' • Sentiment ' ~ ('%.2f' % (analysis1.avg_sentiment if analysis1 and analysis1.avg_sentiment is not none else 0.0))) %}
+    {% set _og_desc = (query1 ~ (query2 and (' vs ' ~ query2) or '') ~ ' • ' ~ (analysis1.total_articles if analysis1 and analysis1.total_articles is not none else 0) ~ ' articles' ~ (query2 and (', ' ~ (analysis2.total_articles if analysis2 and analysis2.total_articles is not none else 0) ~ ' for ' ~ query2) or '')) %}
     <meta property="og:title" content="{{ _og_title }}">
     <meta property="og:description" content="{{ _og_desc }}">
     <meta property="og:type" content="website">
@@ -227,7 +227,8 @@
                     <div class="flex gap-2">
                         <button id="downloadCsvBtn" class="btn-primary font-bold py-2 px-4 rounded shadow-md transition-colors">Download CSV</button>
                         <button id="downloadPdfBtn" class="btn-primary font-bold py-2 px-4 rounded shadow-md transition-colors">Download PDF</button>
-                        <button id="emailMeBtn" class="btn-primary font-bold py-2 px-4 rounded shadow-md transition-colors">Email me this analysis</button>
+                        <button id="emailMeBtn" class="btn-primary font-bold py-2 px-4 rounded shadow-md transition-colors">Email analysis</button>
+                        <button id="subscribeBtn" class="btn-primary font-bold py-2 px-4 rounded shadow-md transition-colors">Email new coverage</button>
                     </div>
                 </div>
             </div>
@@ -250,25 +251,17 @@
             <!-- Coverage Metrics -->
             <div class="card p-6 mb-8">
                 <h3 class="text-lg font-semibold mb-4">Coverage Metrics</h3>
-                <div class="grid {% if query2 %}grid-cols-2 md:grid-cols-4{% else %}grid-cols-1 md:grid-cols-2{% endif %} gap-4 md:gap-8 text-center">
+                <div class="grid {% if query2 %}grid-cols-2{% else %}grid-cols-1{% endif %} gap-4 md:gap-8 text-center">
                     <!-- First Query Stats -->
                     <div>
                         <div class="text-3xl font-bold" style="color: var(--primary-color);">{{ analysis1.total_articles }}</div>
                         <div class="text-sm text-gray-600">{{ query1 }} Articles</div>
-                    </div>
-                    <div>
-                        <div class="text-3xl font-bold" style="color: var(--primary-color);">{{ '{:.2f}'.format(analysis1.avg_sentiment) }}</div>
-                        <div class="text-sm text-gray-600">{{ query1 }} Sentiment</div>
                     </div>
                     {% if query2 %}
                     <!-- Second Query Stats -->
                     <div>
                         <div class="text-3xl font-bold" style="color: var(--accent-color);">{{ analysis2.total_articles }}</div>
                         <div class="text-sm text-gray-600">{{ query2 }} Articles</div>
-                    </div>
-                    <div>
-                        <div class="text-3xl font-bold" style="color: var(--accent-color);">{{ '{:.2f}'.format(analysis2.avg_sentiment) }}</div>
-                        <div class="text-sm text-gray-600">{{ query2 }} Sentiment</div>
                     </div>
                     {% endif %}
                 </div>
@@ -282,12 +275,12 @@
                     {% if query2 %}
                     <li><strong>Total coverage:</strong>
                         <ul class="list-disc pl-5 mt-1">
-                            <li><strong>{{ query1 }}:</strong> {{ analysis1.total_articles }} articles with an average sentiment score of {{ '{:.2f}'.format(analysis1.avg_sentiment) }} ({{ 'positive' if analysis1.avg_sentiment > 0.2 else ('negative' if analysis1.avg_sentiment < -0.2 else 'neutral') }})</li>
-                            <li><strong>{{ query2 }}:</strong> {{ analysis2.total_articles }} articles with an average sentiment score of {{ '{:.2f}'.format(analysis2.avg_sentiment) }} ({{ 'positive' if analysis2.avg_sentiment > 0.2 else ('negative' if analysis2.avg_sentiment < -0.2 else 'neutral') }})</li>
+                            <li><strong>{{ query1 }}:</strong> {{ analysis1.total_articles }} articles</li>
+                            <li><strong>{{ query2 }}:</strong> {{ analysis2.total_articles }} articles</li>
                         </ul>
                     </li>
                     {% else %}
-                    <li><strong>Total coverage:</strong> {{ analysis1.total_articles }} articles with an average sentiment score of {{ '{:.2f}'.format(analysis1.avg_sentiment) }} ({{ 'positive' if analysis1.avg_sentiment > 0.2 else ('negative' if analysis1.avg_sentiment < -0.2 else 'neutral') }})</li>
+                    <li><strong>Total coverage:</strong> {{ analysis1.total_articles }} articles</li>
                     {% endif %}
                     
                     <!-- Highest Volume Day removed as it's shown in the graph below -->
@@ -317,18 +310,19 @@
                     {% set neu_percent = (neutral_articles / articles1|length * 100)|round|int %}
                     
                     <li>
-                        <strong>Sentiment analysis</strong> shows a mix of {{ 'positive' if pos_percent > neg_percent and pos_percent > neu_percent else ('negative' if neg_percent > pos_percent and neg_percent > neu_percent else 'neutral') }} ({{ pos_percent }}%) and {{ 'positive' if pos_percent > neg_percent and pos_percent < neu_percent else ('negative' if neg_percent > pos_percent and neg_percent < neu_percent else 'neutral') }} ({{ neg_percent if neg_percent > pos_percent and neg_percent < neu_percent else pos_percent }}%) content, with {{ 'limited' if neu_percent < 30 else 'substantial' }} neutral coverage ({{ neu_percent }}%)
+                        <strong>Comparative coverage</strong>
                         {% if query2 %}
                         <ul class="list-disc pl-5 space-y-1 mt-1">
-                            <li>{{ query1 }} received {{ 'more' if analysis1.avg_sentiment > analysis2.avg_sentiment else 'less' }} positive coverage than {{ query2 }} (avg. sentiment {{ '{:.2f}'.format(analysis1.avg_sentiment) }} vs {{ '{:.2f}'.format(analysis2.avg_sentiment) }})</li>
-                            <li>{{ 'Both entities had similar article volumes' if 0.8 < (analysis1.total_articles / analysis2.total_articles) < 1.2 else (query1 if analysis1.total_articles > analysis2.total_articles else query2) + ' had significantly more coverage' }} ({{ analysis1.total_articles }} vs {{ analysis2.total_articles }} articles)</li>
-                            
-                            <!-- Peak coverage information removed as it's shown in the graph below -->
-                            
+                            <li>{{ 'Both entities had similar article volumes' if 0.8 < (analysis1.total_articles / (analysis2.total_articles or 1)) < 1.2 else (query1 if analysis1.total_articles > analysis2.total_articles else query2) + ' had higher coverage' }} ({{ analysis1.total_articles }} vs {{ analysis2.total_articles }} articles)</li>
+                            {% if analysis1.topics|length > 0 %}
+                            <li>{{ query1 }} focus: {{ analysis1.topics[:3]|map(attribute='topic')|join(', ') }}</li>
+                            {% endif %}
                             {% if analysis2.topics|length > 0 %}
-                            <li>{{ query2 }} coverage heavily influenced by {{ analysis2.topics[:3]|map(attribute='topic')|join(', ') }}</li>
+                            <li>{{ query2 }} focus: {{ analysis2.topics[:3]|map(attribute='topic')|join(', ') }}</li>
                             {% endif %}
                         </ul>
+                        {% else %}
+                        <span>Top topics include {{ analysis1.topics[:3]|map(attribute='topic')|join(', ') }}.</span>
                         {% endif %}
                     </li>
                     
@@ -363,11 +357,6 @@
                 </ul>
             </div>
 
-            <!-- Sentiment Scatter Plot -->
-            <div class="card p-6 mb-8">
-                <h3 class="text-lg font-semibold mb-4">Sentiment Analysis</h3>
-                <div id="sentimentScatter" class="h-96"></div>
-            </div>
 
             <!-- Coverage Timeline -->
             <div class="card p-6 mb-8">
@@ -387,50 +376,8 @@
                     </div>
                 </div>
                 
-                <!-- Sentiment Distribution -->
-                <div class="card p-6">
-                    <h3 class="text-lg font-semibold mb-4">Sentiment Distribution</h3>
-                    <div class="grid {% if query2 %}grid-cols-1 sm:grid-cols-2{% else %}grid-cols-1{% endif %} gap-4">
-                        <div>
-                            <h4 class="text-md font-medium mb-2 text-center" style="color: var(--primary-color);">{{ query1 }}</h4>
-                            <div class="h-48">
-                                <canvas id="sentimentPieChart1"></canvas>
-                            </div>
-                        </div>
-                        {% if query2 %}
-                        <div>
-                            <h4 class="text-md font-medium mb-2 text-center" style="color: var(--accent-color);">{{ query2 }}</h4>
-                            <div class="h-48">
-                                <canvas id="sentimentPieChart2"></canvas>
-                            </div>
-                        </div>
-                        {% endif %}
-                    </div>
-                </div>
             </div>
             
-            <!-- Sentiment by Outlet (Updated) -->
-            <div class="card p-6 mb-8">
-                <h3 class="text-lg font-semibold mb-4">Sentiment by News Outlet</h3>
-                <div class="grid grid-cols-1 gap-8">
-                    <!-- First Query Sentiment by Outlet -->
-                    <div>
-                        <h4 class="text-md font-medium mb-2" style="color: var(--primary-color);">{{ query1 }}</h4>
-                        <div class="h-64">
-                            <canvas id="sentimentByOutletChart1"></canvas>
-                        </div>
-                    </div>
-                    {% if query2 %}
-                    <!-- Second Query Sentiment by Outlet -->
-                    <div>
-                        <h4 class="text-md font-medium mb-2" style="color: var(--accent-color);">{{ query2 }}</h4>
-                        <div class="h-64">
-                            <canvas id="sentimentByOutletChart2"></canvas>
-                        </div>
-                    </div>
-                    {% endif %}
-                </div>
-            </div>
 
             <!-- Claude's Analysis -->
             <div class="card p-6 mb-8">
@@ -656,6 +603,24 @@
             </div>
         </div>
 
+        <!-- Subscribe Modal -->
+        <div id="subscribeModal" class="fixed inset-0 bg-black bg-opacity-60 hidden items-center justify-center z-50">
+            <div class="bg-white rounded-lg p-6 w-96">
+                <h3 class="text-lg font-semibold mb-2" style="color: var(--primary-color);">Email new coverage</h3>
+                <p class="text-sm text-gray-600 mb-3">Get alerts when new articles appear for this analysis.</p>
+                <input type="email" id="subscribeEmailInput" class="w-full border rounded px-3 py-2 mb-3" placeholder="you@company.com" />
+                <div class="mb-3">
+                    <label class="mr-4 text-sm"><input type="radio" name="subscribeFrequency" value="realtime" checked> Real-time</label>
+                    <label class="text-sm"><input type="radio" name="subscribeFrequency" value="daily"> Daily</label>
+                </div>
+                <div class="flex justify-end gap-2">
+                    <button id="subscribeCancelBtn" class="px-4 py-2 border rounded">Cancel</button>
+                    <button id="subscribeSubmitBtn" class="btn-primary px-4 py-2 rounded">Subscribe</button>
+                </div>
+                <div id="subscribeMsg" class="text-sm mt-2"></div>
+            </div>
+        </div>
+
     <!-- Pass data from template to JavaScript -->
     <script>
         // Helper function to decode HTML entities
@@ -666,6 +631,43 @@
         }
         
         // Apply HTML entity decoding to source names
+        // Subscribe modal helpers
+        function openSubscribeModal() {
+            const m = document.getElementById('subscribeModal');
+            if (m) { m.classList.remove('hidden'); m.classList.add('flex'); }
+        }
+        function closeSubscribeModal() {
+            const m = document.getElementById('subscribeModal');
+            if (m) { m.classList.add('hidden'); m.classList.remove('flex'); }
+        }
+        function submitSubscribe() {
+            const emailEl = document.getElementById('subscribeEmailInput');
+            const msg = document.getElementById('subscribeMsg');
+            const email = (emailEl.value || '').trim();
+            const freqEl = document.querySelector('input[name="subscribeFrequency"]:checked');
+            const frequency = freqEl ? freqEl.value : 'realtime';
+            if (!email) { msg.textContent = 'Please enter your email.'; msg.className='text-red-600 text-sm mt-2'; return; }
+            msg.textContent = 'Saving...'; msg.className='text-gray-600 text-sm mt-2';
+            fetch('/api/subscribe', {
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ email: email, slug: window.slug || '', frequency: frequency })
+            }).then(r=>r.json()).then(data=>{
+                if (data.ok) {
+                    msg.textContent = 'Subscribed. You will receive ' + (frequency==='daily'?'daily':'real-time') + ' alerts.';
+                    msg.className='text-green-700 text-sm mt-2';
+                    try { if (typeof gtag==='function') gtag('event','subscribe_alerts',{app:'media_analyzer',frequency:frequency}); } catch(e){}
+                    setTimeout(closeSubscribeModal, 1500);
+                } else {
+                    msg.textContent = (data && data.error) ? data.error : 'Failed to subscribe. Please try again.';
+                    msg.className='text-red-600 text-sm mt-2';
+                }
+            }).catch(()=>{
+                msg.textContent = 'Failed to subscribe. Please try again.';
+                msg.className='text-red-600 text-sm mt-2';
+            });
+        }
+
         document.addEventListener('DOMContentLoaded', function() {
             // Wait for charts to be rendered
             setTimeout(function() {
@@ -770,7 +772,7 @@
 
         function downloadCSV() {
             const rows = [];
-            rows.push(toCSVRow(['Query','Title','Source','Published','Sentiment','URL','API Source']));
+            rows.push(toCSVRow(['Query','Title','Source','Published','URL','API Source']));
             const add = (arr, label) => {
                 (arr || []).forEach(a => {
                     rows.push(toCSVRow([
@@ -778,7 +780,6 @@
                         a.title,
                         a.source && a.source.name,
                         (a.publishedAt || '').split('T')[0],
-                        typeof a.sentiment === 'number' ? a.sentiment.toFixed(2) : '',
                         a.url,
                         a.api_source || ''
                     ]));
@@ -883,6 +884,14 @@
             if (emailCancelBtn) emailCancelBtn.addEventListener('click', closeEmailModal);
             var emailSubmitBtn = document.getElementById('emailSubmitBtn');
             if (emailSubmitBtn) emailSubmitBtn.addEventListener('click', submitEmail);
+
+            // Subscribe events
+            var subscribeBtn = document.getElementById('subscribeBtn');
+            if (subscribeBtn) subscribeBtn.addEventListener('click', openSubscribeModal);
+            var subscribeCancelBtn = document.getElementById('subscribeCancelBtn');
+            if (subscribeCancelBtn) subscribeCancelBtn.addEventListener('click', closeSubscribeModal);
+            var subscribeSubmitBtn = document.getElementById('subscribeSubmitBtn');
+            if (subscribeSubmitBtn) subscribeSubmitBtn.addEventListener('click', submitSubscribe);
         });
     </script>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
