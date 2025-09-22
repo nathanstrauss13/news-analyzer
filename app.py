@@ -1962,10 +1962,11 @@ def index():
                         fb1 = fetch_guardian_articles(query1, ffrom1, fto1, max_items=60)
                     if not fb1:
                         fb1 = fetch_rss_articles(query1, ffrom1, fto1, max_items=60)
-                    # If a pinned provider is unavailable or returned no items, fall back to RSS with a clear notice
-                    if not fb1 and provider1 in ("nyt", "guardian", "newsapi"):
-                        fb1 = fetch_rss_articles(query1, ffrom1, fto1, max_items=60)
-                        fallback_reason1 = f"Requested provider '{provider1}' unavailable or returned no results; showing recent RSS coverage instead."
+
+                # Provider-specific fallback for query1 when pinned and still empty
+                if not fb1 and provider1 in ("nyt", "guardian", "newsapi"):
+                    fb1 = fetch_rss_articles(query1, ffrom1, fto1, max_items=60)
+                    fallback_reason1 = f"Requested provider '{provider1}' unavailable or returned no results; showing recent RSS coverage instead."
 
                 fb2 = []
                 if query2:
@@ -1990,10 +1991,11 @@ def index():
                             fb2 = fetch_guardian_articles(query2, ffrom2, fto2, max_items=60)
                         if not fb2:
                             fb2 = fetch_rss_articles(query2, ffrom2, fto2, max_items=60)
-                        # If a pinned provider is unavailable or returned no items, fall back to RSS with a clear notice
-                        if not fb2 and provider2 in ("nyt", "guardian", "newsapi"):
-                            fb2 = fetch_rss_articles(query2, ffrom2, fto2, max_items=60)
-                            fallback_reason2 = f"Requested provider '{provider2}' unavailable or returned no results; showing recent RSS coverage instead."
+
+                # Provider-specific fallback for query2 when pinned and still empty
+                if query2 and (not fb2) and provider2 in ("nyt", "guardian", "newsapi"):
+                    fb2 = fetch_rss_articles(query2, ffrom2, fto2, max_items=60)
+                    fallback_reason2 = f"Requested provider '{provider2}' unavailable or returned no results; showing recent RSS coverage instead."
 
                 # Apply sector filter if present
                 try:
