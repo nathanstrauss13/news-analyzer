@@ -1962,6 +1962,10 @@ def index():
                         fb1 = fetch_guardian_articles(query1, ffrom1, fto1, max_items=60)
                     if not fb1:
                         fb1 = fetch_rss_articles(query1, ffrom1, fto1, max_items=60)
+                    # If a pinned provider is unavailable or returned no items, fall back to RSS with a clear notice
+                    if not fb1 and provider1 in ("nyt", "guardian", "newsapi"):
+                        fb1 = fetch_rss_articles(query1, ffrom1, fto1, max_items=60)
+                        fallback_reason1 = f"Requested provider '{provider1}' unavailable or returned no results; showing recent RSS coverage instead."
 
                 fb2 = []
                 if query2:
@@ -1986,6 +1990,10 @@ def index():
                             fb2 = fetch_guardian_articles(query2, ffrom2, fto2, max_items=60)
                         if not fb2:
                             fb2 = fetch_rss_articles(query2, ffrom2, fto2, max_items=60)
+                        # If a pinned provider is unavailable or returned no items, fall back to RSS with a clear notice
+                        if not fb2 and provider2 in ("nyt", "guardian", "newsapi"):
+                            fb2 = fetch_rss_articles(query2, ffrom2, fto2, max_items=60)
+                            fallback_reason2 = f"Requested provider '{provider2}' unavailable or returned no results; showing recent RSS coverage instead."
 
                 # Apply sector filter if present
                 try:
@@ -2001,8 +2009,21 @@ def index():
                     analysis2 = analyze_articles(sort_articles_desc(fb2), query2) if query2 else None
 
                     # Build info note and render results
-                    note = Markup("<p><strong>Note:</strong> No results were returned for the selected historical range. "
-                                  "Showing recent coverage from the last 30 days instead due to provider limitations.</p>")
+                    _note_parts = [
+                        "<p><strong>Note:</strong> No results were returned for the selected historical range. "
+                        "Showing recent coverage from the last 30 days instead due to provider limitations.</p>"
+                    ]
+                    try:
+                        if 'fallback_reason1' in locals() and fallback_reason1:
+                            _note_parts.append("<p>" + html.escape(fallback_reason1) + "</p>")
+                    except Exception:
+                        pass
+                    try:
+                        if query2 and 'fallback_reason2' in locals() and fallback_reason2:
+                            _note_parts.append("<p>" + html.escape(fallback_reason2) + "</p>")
+                    except Exception:
+                        pass
+                    note = Markup("".join(_note_parts))
 
                     form_data = {
                         'language1': language1, 'language2': language2,
