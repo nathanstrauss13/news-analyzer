@@ -1,0 +1,169 @@
+{
+  "beauty_fashion": {
+    "label": "Beauty/Fashion",
+    "domains": [
+      "wwd.com",
+      "businessoffashion.com",
+      "vogue.com",
+      "glamour.com",
+      "elle.com",
+      "allure.com",
+      "cosmopolitan.com"
+    ],
+    "keywords": [
+      "beauty",
+      "skincare",
+      "makeup",
+      "cosmetics",
+      "fragrance",
+      "fashion",
+      "apparel",
+      "runway",
+      "brand",
+      "collection"
+    ]
+  },
+  "technology": {
+    "label": "Technology",
+    "domains": [
+      "techcrunch.com",
+      "theverge.com",
+      "wired.com",
+      "arstechnica.com",
+      "engadget.com",
+      "venturebeat.com"
+    ],
+    "keywords": [
+      "ai",
+      "software",
+      "chip",
+      "cloud",
+      "semiconductor",
+      "data center",
+      "compute",
+      "startup",
+      "product launch",
+      "platform"
+    ]
+  },
+  "finance": {
+    "label": "Finance",
+    "domains": [
+      "wsj.com",
+      "barrons.com",
+      "ft.com",
+      "bloomberg.com",
+      "reuters.com",
+      "cnbc.com"
+    ],
+    "keywords": [
+      "earnings",
+      "revenue",
+      "ipo",
+      "m&a",
+      "merger",
+      "acquisition",
+      "guidance",
+      "analyst",
+      "equity",
+      "market"
+    ]
+  },
+  "healthcare": {
+    "label": "Healthcare",
+    "domains": [
+      "statnews.com",
+      "medicalnewstoday.com",
+      "fiercepharma.com",
+      "fiercebiotech.com"
+    ],
+    "keywords": [
+      "pharma",
+      "clinical",
+      "fda",
+      "trial",
+      "biotech",
+      "vaccine",
+      "therapy",
+      "drug",
+      "medical",
+      "health"
+    ]
+  },
+  "retail": {
+    "label": "Retail",
+    "domains": [
+      "retaildive.com",
+      "retailwire.com",
+      "nationalretail.org"
+    ],
+    "keywords": [
+      "retail",
+      "store",
+      "ecommerce",
+      "point of sale",
+      "foot traffic",
+      "omnichannel",
+      "d2c",
+      "inventory",
+      "supply chain"
+    ]
+  },
+  "energy": {
+    "label": "Energy",
+    "domains": [
+      "reuters.com",
+      "energyintel.com",
+      "oilprice.com"
+    ],
+    "keywords": [
+      "oil",
+      "gas",
+      "solar",
+      "wind",
+      "grid",
+      "renewable",
+      "battery",
+      "utility",
+      "nuclear"
+    ]
+  },
+  "automotive": {
+    "label": "Automotive",
+    "domains": [
+      "autonews.com",
+      "motortrend.com",
+      "caranddriver.com"
+    ],
+    "keywords": [
+      "ev",
+      "battery",
+      "autonomous",
+      "automotive",
+      "vehicle",
+      "car",
+      "dealership",
+      "charging",
+      "mobility"
+    ]
+  },
+  "media_entertainment": {
+    "label": "Media/Entertainment",
+    "domains": [
+      "variety.com",
+      "hollywoodreporter.com",
+      "deadline.com"
+    ],
+    "keywords": [
+      "streaming",
+      "box office",
+      "studio",
+      "content",
+      "film",
+      "tv",
+      "series",
+      "media",
+      "production"
+    ]
+  }
+}

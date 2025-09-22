@@ -1,0 +1,28 @@
+{
+  "community": [
+    "github.com",
+    "pypi.org",
+    "pytorch.org",
+    "huggingface.co",
+    "medium.com",
+    "substack.com",
+    "reddit.com",
+    "old.reddit.com",
+    "news.ycombinator.com",
+    "ycombinator.com",
+    "stackexchange.com",
+    "stackoverflow.com"
+  ],
+  "corporate": [
+    "openai.com",
+    "anthropic.com",
+    "googleblog.com",
+    "blog.google",
+    "aws.amazon.com",
+    "azure.microsoft.com",
+    "meta.com",
+    "about.fb.com",
+    "openai.com/blog",
+    "anthropic.com/news"
+  ]
+}

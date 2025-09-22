@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: news-analyzer
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: NEWS_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: FLASK_SECRET_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11
+    routes:
+      - type: rewrite
+        source: /media-analysis
+        destination: /media-analysis
+    domains:
+      - innatec3.com

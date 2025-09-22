@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Simple NLP News API Query Tool</title>
+</head>
+<body>
+  <h1>Simple NLP News API Query Tool</h1>
+  <form action="/" method="POST">
+    <label for="query">Enter your query:</label>
+    <input type="text" id="query" name="query" placeholder="e.g., compare coverage of Apple vs Google over the past month">
+    <button type="submit">Submit</button>
+  </form>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <ul style="color:red;">
+        {% for message in messages %}
+          <li>{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+</body>
+</html>

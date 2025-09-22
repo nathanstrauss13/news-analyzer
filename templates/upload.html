@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>innate c3 | file upload analysis</title>
+    {% if ga_measurement_id %}
+    <!-- Google Analytics Tag -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', '{{ ga_measurement_id }}');
+    </script>
+    {% endif %}
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #005e30;
+            --secondary-color: #f5f2e9;
+            --accent-color: #00a651;
+            --text-color: #333333;
+        }
+        body {
+            font-family: 'IBM Plex Sans', sans-serif;
+            background-color: var(--secondary-color);
+            color: var(--text-color);
+        }
+        .divider {
+            height: 2px;
+            background-color: var(--primary-color);
+            margin: 2rem 0;
+        }
+        h1, h2, h3, h4 {
+            color: var(--primary-color);
+        }
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .btn-primary:hover {
+            background-color: #004020;
+        }
+        .card {
+            background-color: white;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .file-drop-zone {
+            border: 2px dashed var(--primary-color);
+            border-radius: 0.5rem;
+            padding: 2rem;
+            text-align: center;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        .file-drop-zone:hover {
+            background-color: rgba(0, 94, 48, 0.05);
+        }
+        .file-drop-zone.dragover {
+            background-color: rgba(0, 94, 48, 0.1);
+            border-color: var(--accent-color);
+        }
+        .file-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            flex-direction: column;
+            color: white;
+        }
+        .spinner {
+            border: 5px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 5px solid white;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+    <div class="max-w-4xl mx-auto">
+        <div class="divider"></div>
+        <div class="flex justify-between items-center">
+            <h1 class="text-3xl font-bold mb-4 mt-4">innate c3 | file upload analysis</h1>
+            <a href="https://www.innatec3.com/#contact" class="btn-primary font-bold py-2 px-4 rounded">
+                Bespoke Analysis
+            </a>
+        </div>
+        <div class="divider"></div>
+        
+        <div class="mb-4">
+            <a href="{{ url_for('index') }}" class="text-primary-600 hover:underline" style="color: var(--primary-color);">← Back to Search</a>
+        </div>
+        
+        <form method="POST" enctype="multipart/form-data" class="card px-8 pt-6 pb-8 mb-4" id="uploadForm">
+            <div class="mb-6">
+                <h2 class="text-xl font-bold mb-4">Upload Media Coverage Files</h2>
+                <p class="text-gray-600 mb-4">
+                    Upload Excel (.xlsx, .xls), PDF, or PowerPoint (.pptx) files containing media coverage data. 
+                    Our AI will automatically analyze the content and extract relevant information.
+                </p>
+                
+                <!-- File Drop Zone -->
+                <div class="file-drop-zone mb-4" id="dropZone">
+                    <div class="mb-4">
+                        <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                            <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                    </div>
+                    <p class="text-lg font-medium mb-2">Drop files here or click to browse</p>
+                    <p class="text-sm text-gray-500">Supports: Excel (.xlsx, .xls), PDF, PowerPoint (.pptx)</p>
+                    <p class="text-xs text-gray-400 mt-2">Maximum file size: 16MB per file</p>
+                    <input type="file" name="files" multiple accept=".xlsx,.xls,.pdf,.pptx" class="hidden" id="fileInput">
+                </div>
+                
+                <!-- Selected Files List -->
+                <div id="fileList" class="hidden">
+                    <h3 class="text-md font-medium mb-2">Selected Files:</h3>
+                    <div class="file-list border rounded p-3 bg-gray-50" id="fileListContent">
+                        <!-- Files will be listed here -->
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Supported File Types Info -->
+            <div class="mb-6 p-4 bg-blue-50 rounded-lg">
+                <h3 class="text-md font-semibold mb-2" style="color: var(--primary-color);">What We Can Analyze:</h3>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                    <div>
+                        <h4 class="font-medium">Excel Files</h4>
+                        <p class="text-gray-600">Spreadsheets with columns for headlines, dates, outlets, content, etc.</p>
+                    </div>
+                    <div>
+                        <h4 class="font-medium">PDF Documents</h4>
+                        <p class="text-gray-600">Media reports, press clippings, coverage summaries</p>
+                    </div>
+                    <div>
+                        <h4 class="font-medium">PowerPoint Files</h4>
+                        <p class="text-gray-600">Presentation slides with media coverage data</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flex items-center justify-between">
+                <button class="btn-primary font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline disabled:opacity-50"
+                        type="submit" id="submitBtn" disabled>
+                    Analyze Files
+                </button>
+                <button type="button" id="clearBtn" class="text-gray-600 hover:text-gray-800 disabled:opacity-50" disabled>
+                    Clear Files
+                </button>
+            </div>
+        </form>
+        
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
+                        <span class="block sm:inline">{{ message }}</span>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+    </div>
+    
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <p class="text-xl">Processing files...</p>
+        <p class="text-sm mt-2">This may take a few minutes depending on file size and content.</p>
+    </div>
+
+    <!-- Footer -->
+    <div class="max-w-4xl mx-auto mt-12 mb-4 text-center">
+        <div class="divider"></div>
+        <p class="text-sm text-gray-600">
+            for more information about innate c3, visit <a href="https://innatec3.com" target="_blank" class="text-primary-600 hover:underline" style="color: var(--primary-color);">innatec3.com</a>
+        </p>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const dropZone = document.getElementById('dropZone');
+            const fileInput = document.getElementById('fileInput');
+            const fileList = document.getElementById('fileList');
+            const fileListContent = document.getElementById('fileListContent');
+            const submitBtn = document.getElementById('submitBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            const uploadForm = document.getElementById('uploadForm');
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            
+            let selectedFiles = [];
+            
+            // File type validation
+            const allowedTypes = ['.xlsx', '.xls', '.pdf', '.pptx'];
+            const maxFileSize = 16 * 1024 * 1024; // 16MB
+            
+            function isValidFile(file) {
+                const extension = '.' + file.name.split('.').pop().toLowerCase();
+                return allowedTypes.includes(extension) && file.size <= maxFileSize;
+            }
+            
+            function updateFileList() {
+                if (selectedFiles.length === 0) {
+                    fileList.classList.add('hidden');
+                    submitBtn.disabled = true;
+                    clearBtn.disabled = true;
+                    return;
+                }
+                
+                fileList.classList.remove('hidden');
+                submitBtn.disabled = false;
+                clearBtn.disabled = false;
+                
+                fileListContent.innerHTML = '';
+                selectedFiles.forEach((file, index) => {
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'flex items-center justify-between py-2 border-b last:border-b-0';
+                    
+                    const fileInfo = document.createElement('div');
+                    fileInfo.innerHTML = `
+                        <span class="font-medium">${file.name}</span>
+                        <span class="text-sm text-gray-500 ml-2">(${(file.size / 1024 / 1024).toFixed(2)} MB)</span>
+                    `;
+                    
+                    const removeBtn = document.createElement('button');
+                    removeBtn.type = 'button';
+                    removeBtn.className = 'text-red-600 hover:text-red-800 text-sm';
+                    removeBtn.textContent = 'Remove';
+                    removeBtn.onclick = () => removeFile(index);
+                    
+                    fileItem.appendChild(fileInfo);
+                    fileItem.appendChild(removeBtn);
+                    fileListContent.appendChild(fileItem);
+                });
+            }
+            
+            function addFiles(files) {
+                const validFiles = Array.from(files).filter(file => {
+                    if (!isValidFile(file)) {
+                        alert(`File "${file.name}" is not supported or exceeds size limit (16MB)`);
+                        return false;
+                    }
+                    return true;
+                });
+                
+                // Avoid duplicates
+                validFiles.forEach(file => {
+                    if (!selectedFiles.some(f => f.name === file.name && f.size === file.size)) {
+                        selectedFiles.push(file);
+                    }
+                });
+                
+                updateFileList();
+                updateFileInput();
+            }
+            
+            function removeFile(index) {
+                selectedFiles.splice(index, 1);
+                updateFileList();
+                updateFileInput();
+            }
+            
+            function updateFileInput() {
+                // Create a new DataTransfer object to update the file input
+                const dt = new DataTransfer();
+                selectedFiles.forEach(file => dt.items.add(file));
+                fileInput.files = dt.files;
+            }
+            
+            // Click to browse
+            dropZone.addEventListener('click', () => fileInput.click());
+            
+            // File input change
+            fileInput.addEventListener('change', (e) => {
+                addFiles(e.target.files);
+            });
+            
+            // Drag and drop
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.classList.add('dragover');
+            });
+            
+            dropZone.addEventListener('dragleave', () => {
+                dropZone.classList.remove('dragover');
+            });
+            
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('dragover');
+                addFiles(e.dataTransfer.files);
+            });
+            
+            // Clear files
+            clearBtn.addEventListener('click', () => {
+                selectedFiles = [];
+                fileInput.value = '';
+                updateFileList();
+            });
+            
+            // Form submission
+            uploadForm.addEventListener('submit', (e) => {
+                if (selectedFiles.length === 0) {
+                    e.preventDefault();
+                    alert('Please select at least one file to upload.');
+                    return;
+                }
+                
+                try { 
+                    if (typeof gtag === 'function') {
+                        gtag('event', 'upload_files_submit', { 
+                            app: 'media_analyzer',
+                            file_count: selectedFiles.length
+                        });
+                    }
+                } catch (e) { /* no-op */ }
+                // Show loading overlay
+                loadingOverlay.classList.remove('hidden');
+            });
+        });
+    </script>
+</body>
+</html>
