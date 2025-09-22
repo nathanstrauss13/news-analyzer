@@ -1930,7 +1930,81 @@ def index():
         articles1 = full1[:120]
         articles2 = (full2[:120] if query2 else [])
 
+        # Fallback path: if no results for the requested window, try recent coverage instead
         if not full1 and (not query2 or not full2):
+            try:
+                def _recent_30():
+                    today = datetime.utcnow().date()
+                    start = (today - timedelta(days=29)).isoformat()
+                    end = today.isoformat()
+                    return start, end
+
+                ffrom1, fto1 = _recent_30()
+                fb1 = []
+
+                # Prefer NewsAPI if available and provider not explicitly pinned to other sources
+                if NEWS_API_KEY and provider1 in ("", "newsapi"):
+                    fb1 = fetch_news_api_articles_sliced(query1, ffrom1, fto1, language=language1, sources=sources1, per_slice=8, slice_days=1)
+
+                # Always try RSS as well
+                if not fb1:
+                    fb1 = fetch_rss_articles(query1, ffrom1, fto1, max_items=60)
+
+                fb2 = []
+                if query2:
+                    ffrom2, fto2 = _recent_30()
+                    if NEWS_API_KEY and provider2 in ("", "newsapi"):
+                        fb2 = fetch_news_api_articles_sliced(query2, ffrom2, fto2, language=language2, sources=sources2, per_slice=8, slice_days=1)
+                    if not fb2:
+                        fb2 = fetch_rss_articles(query2, ffrom2, fto2, max_items=60)
+
+                # Apply sector filter if present
+                try:
+                    if sector1:
+                        fb1 = filter_by_sector(fb1, sector1)
+                    if query2 and sector2:
+                        fb2 = filter_by_sector(fb2, sector2)
+                except Exception:
+                    pass
+
+                if fb1 or (query2 and fb2):
+                    analysis1 = analyze_articles(sort_articles_desc(fb1), query1)
+                    analysis2 = analyze_articles(sort_articles_desc(fb2), query2) if query2 else None
+
+                    # Build info note and render results
+                    note = Markup("<p><strong>Note:</strong> No results were returned for the selected historical range. "
+                                  "Showing recent coverage from the last 30 days instead due to provider limitations.</p>")
+
+                    form_data = {
+                        'language1': language1, 'language2': language2,
+                        'source1': sources1, 'source2': sources2,
+                        'provider1': provider1, 'provider2': provider2,
+                        'sector1': sector1, 'sector2': sector2,
+                        'from_date1': ffrom1, 'to_date1': fto1,
+                        'from_date2': (ffrom2 if query2 else None), 'to_date2': (fto2 if query2 else None)
+                    }
+
+                    payload = {
+                        "query1": query1, "query2": query2,
+                        "enhanced_query1": {"enhanced_query": query1, "entity_type": "brand", "reasoning": "Fallback to recent 30 days"},
+                        "enhanced_query2": ({"enhanced_query": query2, "entity_type": "brand", "reasoning": "Fallback to recent 30 days"} if query2 else None),
+                        "textual_analysis": str(note),
+                        "analysis1": analysis1, "analysis2": analysis2,
+                        "articles1": fb1[:120], "articles2": (fb2[:120] if query2 else []),
+                        "form_data": form_data
+                    }
+                    slug = uuid.uuid4().hex[:10]
+                    try:
+                        rec = SharedResult(slug=slug, payload=json.dumps(payload, default=str))
+                        db.session.add(rec)
+                        db.session.commit()
+                    except Exception as e:
+                        print(f"Error saving fallback share result to DB: {e}")
+                    share_url = (request.url_root.rstrip('/') + f"/results/{slug}")
+                    return redirect(share_url)
+            except Exception as e:
+                print("Fallback recent-30 error:", e)
+
             flash("No results found for the selected range and terms. Try broadening the date range or simplifying the query.")
             return render_template("index.html", ga_measurement_id=GA_MEASUREMENT_ID, sectors=globals().get("SECTORS"))
 
