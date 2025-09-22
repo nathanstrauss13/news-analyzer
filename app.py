@@ -1942,19 +1942,46 @@ def index():
                 ffrom1, fto1 = _recent_30()
                 fb1 = []
 
-                # Prefer NewsAPI if available and provider not explicitly pinned to other sources
-                if NEWS_API_KEY and provider1 in ("", "newsapi"):
+                # If provider is explicitly pinned, try that first
+                if provider1 == "nyt" and NYT_API_KEY:
+                    fb1 = fetch_nyt_articles(query1, ffrom1, fto1, max_items=60)
+                elif provider1 == "guardian" and GUARDIAN_API_KEY:
+                    fb1 = fetch_guardian_articles(query1, ffrom1, fto1, max_items=60)
+                elif provider1 == "newsapi" and NEWS_API_KEY:
                     fb1 = fetch_news_api_articles_sliced(query1, ffrom1, fto1, language=language1, sources=sources1, per_slice=8, slice_days=1)
+                elif provider1 == "rss":
+                    fb1 = fetch_rss_articles(query1, ffrom1, fto1, max_items=60)
 
-                # Always try RSS as well
+                # If not pinned or still empty, try providers in best‑effort order
+                if not fb1 and NEWS_API_KEY:
+                    fb1 = fetch_news_api_articles_sliced(query1, ffrom1, fto1, language=language1, sources=sources1, per_slice=8, slice_days=1)
+                if not fb1 and NYT_API_KEY:
+                    fb1 = fetch_nyt_articles(query1, ffrom1, fto1, max_items=60)
+                if not fb1 and GUARDIAN_API_KEY:
+                    fb1 = fetch_guardian_articles(query1, ffrom1, fto1, max_items=60)
                 if not fb1:
                     fb1 = fetch_rss_articles(query1, ffrom1, fto1, max_items=60)
 
                 fb2 = []
                 if query2:
                     ffrom2, fto2 = _recent_30()
-                    if NEWS_API_KEY and provider2 in ("", "newsapi"):
+                    # Pinned provider first
+                    if provider2 == "nyt" and NYT_API_KEY:
+                        fb2 = fetch_nyt_articles(query2, ffrom2, fto2, max_items=60)
+                    elif provider2 == "guardian" and GUARDIAN_API_KEY:
+                        fb2 = fetch_guardian_articles(query2, ffrom2, fto2, max_items=60)
+                    elif provider2 == "newsapi" and NEWS_API_KEY:
                         fb2 = fetch_news_api_articles_sliced(query2, ffrom2, fto2, language=language2, sources=sources2, per_slice=8, slice_days=1)
+                    elif provider2 == "rss":
+                        fb2 = fetch_rss_articles(query2, ffrom2, fto2, max_items=60)
+
+                    # If not pinned or still empty, try providers in best‑effort order
+                    if not fb2 and NEWS_API_KEY:
+                        fb2 = fetch_news_api_articles_sliced(query2, ffrom2, fto2, language=language2, sources=sources2, per_slice=8, slice_days=1)
+                    if not fb2 and NYT_API_KEY:
+                        fb2 = fetch_nyt_articles(query2, ffrom2, fto2, max_items=60)
+                    if not fb2 and GUARDIAN_API_KEY:
+                        fb2 = fetch_guardian_articles(query2, ffrom2, fto2, max_items=60)
                     if not fb2:
                         fb2 = fetch_rss_articles(query2, ffrom2, fto2, max_items=60)
 
