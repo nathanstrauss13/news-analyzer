@@ -3089,15 +3089,18 @@ def citation_audit_request_demo():
                 f"Problem statement they audited:\n{problem_statement or '(not provided)'}\n\n"
                 f"Their light audit report: {report_link}\n"
             )
+            report_link_html = (
+                f'<a href="{report_link}">{report_link}</a>' if slug else '<em>(no slug captured)</em>'
+            )
+            email_link_html = f'<a href="mailto:{html.escape(email)}">{html.escape(email)}</a>'
             html_body = (
                 f"<h3>New PR Signal Finder bespoke audit request</h3>"
                 f"<p><strong>Name:</strong> {html.escape(name)}<br>"
                 f"<strong>Title:</strong> {html.escape(title) or '<em>(not provided)</em>'}<br>"
                 f"<strong>Organization:</strong> {html.escape(org) or '<em>(not provided)</em>'}<br>"
-                f"<strong>Email:</strong> <a href=\"mailto:{html.escape(email)}\">{html.escape(email)}</a></p>"
+                f"<strong>Email:</strong> {email_link_html}</p>"
                 f"<p><strong>Problem they audited:</strong><br>{html.escape(problem_statement) or '<em>(not provided)</em>'}</p>"
-                f"<p><strong>Their light audit report:</strong> "
-                f"{('<a href=\"' + report_link + '\">' + report_link + '</a>') if slug else '<em>(no slug captured)</em>'}</p>"
+                f"<p><strong>Their light audit report:</strong> {report_link_html}</p>"
             )
             msg = Mail(
                 from_email=("no-reply@innatec3.com", "PR Signal Finder"),
