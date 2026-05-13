@@ -6,20 +6,23 @@ import requests
 import html
 import uuid
 import io
+import queue
+import threading
 from PIL import Image, ImageDraw, ImageFont
 from collections import Counter
 from datetime import datetime, timedelta
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
 from markupsafe import Markup
 from dotenv import load_dotenv
 from anthropic import Anthropic
 from openai import OpenAI
+from google import genai
 from dateutil.parser import parse
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 from utils.simple_file_processor import SimpleMediaFileProcessor
 
-load_dotenv()
+load_dotenv(override=True)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "your_secret_key_here")
@@ -108,6 +111,13 @@ try:
     openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 except Exception:
     openai_client = None
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+try:
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+except Exception:
+    gemini_client = None
+print(f"GEMINI_API_KEY is {'set' if GEMINI_API_KEY else 'NOT SET'}")
 
 def analyze_articles(articles, query):
     """Extract key metrics and patterns from articles."""
@@ -1718,7 +1728,12 @@ Articles: {json.dumps(summarized_articles[:50])}"""
     
     return render_template("upload.html", ga_measurement_id=GA_MEASUREMENT_ID)
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/")
+def root_redirect():
+    return redirect("/citation-audit", code=308)
+
+
+@app.route("/legacy-index", methods=["GET", "POST"])
 def index():
     # Allow POST from the search form to avoid 405 Method Not Allowed
     if request.method == "POST":
@@ -2657,6 +2672,447 @@ if BackgroundScheduler:
             print("Alert scheduler started.")
     except Exception as e:
         print("Scheduler start error:", e)
+
+# =============================================================================
+# PR Signal Finder — citation audit tool
+# =============================================================================
+
+CITATION_SUFFIX = """
+
+You MUST include citations and sources in your response.
+At the end of your response, add a section titled 'Sources and References:' listing at least 3 credible websites with full URLs.
+Also add a section titled 'Recommended Resources:' listing websites users should visit for more information."""
+
+CITATION_SYSTEM_PROMPT = "You are a helpful research assistant that always cites credible sources with full URLs. Every response must include specific publication names and URLs to support your recommendations."
+
+URL_PATTERN = re.compile(r'https?://[^\s<>"\'`\)\]\},]+')
+DOMAIN_BLACKLIST = {'example.com', 'placeholder.com', 'website.com', 'source.com', 'google.com', 'schema.org', 'w3.org', 'googleapis.com'}
+
+INSTITUTIONAL_TLDS = ('.gov', '.gov.uk', '.gov.au', '.gov.ca', '.mil', '.edu', '.ac.uk', '.ac.jp', '.edu.au')
+
+ANALYST_DOMAINS = {
+    'gartner.com', 'forrester.com', 'idc.com',
+    'omdia.com', '451research.com',
+    'frost.com', 'frostandsullivan.com',
+    'mckinsey.com', 'bain.com', 'bcg.com',
+    'accenture.com', 'deloitte.com', 'pwc.com', 'ey.com', 'kpmg.com',
+    'nucleusresearch.com', 'constellationr.com',
+    'moorinsightsstrategy.com', 'moor-insights.com',
+    'nelsonhall.com', 'everestgrp.com', 'isg-one.com',
+    'canalys.com', 'gigaom.com', 'redmonk.com',
+    'enterprisestrategygroup.com', 'esg-global.com',
+    'futurumresearch.com', 'futuriom.com',
+    'tbri.com', 'parkassociates.com',
+}
+
+EDITORIAL_ORG_ALLOWLIST = {
+    'npr.org', 'propublica.org', 'pbs.org', 'bbc.org', 'reuters.org',
+    'consumerreports.org', 'motherjones.org', 'theintercept.org',
+    'texastribune.org', 'minnpost.org', 'voxmedia.org', 'theconversation.org',
+    'cjr.org', 'niemanlab.org', 'poynter.org',
+    'kff.org',
+    'aljazeera.org',
+}
+
+NON_EDITORIAL_DOMAINS = {
+    'wikipedia.org', 'en.wikipedia.org', 'wikimedia.org',
+    'reddit.com', 'quora.com', 'stackexchange.com', 'stackoverflow.com',
+    'youtube.com', 'youtu.be',
+    'linkedin.com', 'twitter.com', 'x.com', 'facebook.com', 'instagram.com',
+    'amazon.com', 'ebay.com',
+    'pubmed.ncbi.nlm.nih.gov', 'ncbi.nlm.nih.gov', 'who.int', 'cdc.gov',
+    'arxiv.org', 'researchgate.net', 'sciencedirect.com', 'springer.com',
+    'jstor.org', 'nature.com', 'science.org',
+}
+
+
+def classify_citation_domain(domain):
+    """Return 'analyst', 'institutional', 'non_editorial', or 'editorial'."""
+    d = (domain or "").lower().lstrip('.')
+    d_stripped = d[4:] if d.startswith('www.') else d
+
+    if d in NON_EDITORIAL_DOMAINS or d_stripped in NON_EDITORIAL_DOMAINS:
+        return 'non_editorial'
+    if d_stripped in ANALYST_DOMAINS or d in ANALYST_DOMAINS:
+        return 'analyst'
+    if d_stripped in EDITORIAL_ORG_ALLOWLIST:
+        return 'editorial'
+    if any(d.endswith(tld) for tld in INSTITUTIONAL_TLDS):
+        return 'institutional'
+    if d.endswith('.org'):
+        return 'institutional'
+    return 'editorial'
+
+
+def extract_urls(text):
+    """Extract URLs from a block of text, clean trailing punctuation, filter blacklisted domains."""
+    if not text:
+        return []
+    urls = URL_PATTERN.findall(text)
+    out = []
+    seen = set()
+    for u in urls:
+        u = u.rstrip('.,;:!?\'"\)\]\}')
+        try:
+            host = u.split('/')[2].lower()
+        except Exception:
+            continue
+        host_no_www = host[4:] if host.startswith('www.') else host
+        if host_no_www in DOMAIN_BLACKLIST:
+            continue
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append({"url": u, "domain": host_no_www})
+    return out
+
+
+def aggregate_citations(all_responses):
+    """Count citation URLs by domain across responses, tracking LLMs and prompts."""
+    domain_data = {}
+    for resp in all_responses:
+        urls = resp.get('citations', [])
+        for u in urls:
+            domain = u['domain']
+            if domain not in domain_data:
+                domain_data[domain] = {
+                    'domain': domain,
+                    'urls': [],
+                    'count': 0,
+                    'llms': set(),
+                    'prompts': set(),
+                }
+            domain_data[domain]['count'] += 1
+            domain_data[domain]['urls'].append(u['url'])
+            domain_data[domain]['llms'].add(resp['llm'])
+            domain_data[domain]['prompts'].add(resp['prompt'])
+
+    for d in domain_data.values():
+        d['llms'] = list(d['llms'])
+        d['prompts'] = list(d['prompts'])
+        d['urls'] = list(set(d['urls']))[:10]
+
+    return sorted(domain_data.values(), key=lambda x: x['count'], reverse=True)
+
+
+def run_citation_audit(problem_statement, on_progress=None):
+    """Full agent pipeline: one prompt in, top-5 media list out."""
+    def emit(step, detail, current=0, total=0):
+        if on_progress:
+            on_progress(step, detail, current, total)
+
+    emit("prompts", "Generating search prompts...", 0, 1)
+    prompt_gen_response = anthropic.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=2000,
+        messages=[{
+            "role": "user",
+            "content": f"""You are an AI citation strategist. A communications professional wants their brand to be the answer when people ask AI assistants about a specific problem.
+
+Their goal: "{problem_statement}"
+
+Your job:
+1. Identify the BRAND from their statement (the company/product they want to promote).
+2. Identify the CATEGORY or PROBLEM SPACE.
+3. Generate exactly 10 prompts that a real person would type into ChatGPT, Claude, or Gemini when researching this problem space. These should be natural, varied prompts — some broad ("best X for Y"), some specific ("X vs Y comparison"), some question-based ("how do I solve Y?"), some recommendation-seeking ("what do experts recommend for Y?").
+
+Respond with ONLY valid JSON in this exact format:
+{{
+  "brand": "the brand name",
+  "category": "the problem/category",
+  "prompts": ["prompt 1", "prompt 2", ... "prompt 10"]
+}}"""
+        }]
+    )
+    prompt_gen_text = prompt_gen_response.content[0].text
+    json_match = re.search(r'\{.*\}', prompt_gen_text, re.DOTALL)
+    if not json_match:
+        raise ValueError("Failed to parse prompt generation response")
+    prompt_data = json.loads(json_match.group())
+    brand = prompt_data["brand"]
+    category = prompt_data["category"]
+    prompts = prompt_data["prompts"][:10]
+    emit("prompts", f"Generated {len(prompts)} prompts for \"{brand}\"", 1, 1)
+
+    all_responses = []
+    for pi, prompt_text in enumerate(prompts):
+        enriched_prompt = prompt_text + CITATION_SUFFIX
+
+        emit("llm", f"Querying Claude ({pi+1}/10)...", pi * 3, 30)
+        try:
+            claude_resp = anthropic.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2000,
+                system=CITATION_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": enriched_prompt}]
+            )
+            resp_text = claude_resp.content[0].text
+            all_responses.append({"llm": "Claude", "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text)})
+        except Exception as e:
+            all_responses.append({"llm": "Claude", "prompt": prompt_text, "response": f"[Error: {e}]", "citations": []})
+
+        emit("llm", f"Querying ChatGPT ({pi+1}/10)...", pi * 3 + 1, 30)
+        try:
+            if not openai_client:
+                raise RuntimeError("OPENAI_API_KEY not configured")
+            gpt_resp = openai_client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=2000,
+                messages=[
+                    {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+                    {"role": "user", "content": enriched_prompt},
+                ]
+            )
+            resp_text = gpt_resp.choices[0].message.content
+            all_responses.append({"llm": "ChatGPT", "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text)})
+        except Exception as e:
+            all_responses.append({"llm": "ChatGPT", "prompt": prompt_text, "response": f"[Error: {e}]", "citations": []})
+
+        emit("llm", f"Querying Gemini ({pi+1}/10)...", pi * 3 + 2, 30)
+        try:
+            if not gemini_client:
+                raise RuntimeError("GEMINI_API_KEY not configured")
+            gemini_prompt = enriched_prompt + "\n\nWhen providing information, please include specific sources and references. Format any sources as: Reference: [Source Name] - URL. Include authoritative sources like news sites, company websites, industry reports."
+            gemini_resp = gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=gemini_prompt,
+            )
+            resp_text = gemini_resp.text
+            all_responses.append({"llm": "Gemini", "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text)})
+        except Exception as e:
+            all_responses.append({"llm": "Gemini", "prompt": prompt_text, "response": f"[Error: {e}]", "citations": []})
+
+    emit("extract", "Extracting and aggregating citations...", 0, 1)
+    ranked_domains = aggregate_citations(all_responses)
+    total_citations = sum(d['count'] for d in ranked_domains)
+    emit("extract", f"Found {total_citations} citations across {len(ranked_domains)} domains", 1, 1)
+
+    emit("analysis", "Building your signal report...", 0, 1)
+
+    editorial_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'editorial']
+    institutional_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'institutional']
+    analyst_domains_found = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'analyst']
+
+    def fmt_block(domains, limit):
+        return "\n".join(
+            f"  {i+1}. {d['domain']} — cited {d['count']}x by {', '.join(d['llms'])} — sample URLs: {', '.join(d['urls'][:3])}"
+            for i, d in enumerate(domains[:limit])
+        ) or "  (none)"
+
+    editorial_block = fmt_block(editorial_domains, 15)
+    institutional_block = fmt_block(institutional_domains, 10)
+    analyst_block = fmt_block(analyst_domains_found, 10)
+
+    responses_block = ""
+    for i, r in enumerate(all_responses):
+        citation_urls = [c['url'] for c in r.get('citations', [])]
+        responses_block += f"\n--- Response {i+1} [{r['llm']}] ---\nPrompt: {r['prompt']}\nCitations found: {citation_urls}\n{r['response'][:500]}\n"
+
+    analysis_response = anthropic.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4000,
+        messages=[{
+            "role": "user",
+            "content": f"""You are an AI citation intelligence analyst. You have actual citation data extracted from 30 AI-generated responses (10 prompts × 3 LLMs: Claude, ChatGPT, Gemini) about the category "{category}".
+
+The client's brand is "{brand}". Their goal: "{problem_statement}"
+
+The citation data has been pre-classified into three groups:
+
+EDITORIAL DOMAINS (news, trade press, magazines, B2B publications — outlets a PR pro can actually pitch):
+{editorial_block}
+
+INSTITUTIONAL / ASSOCIATION DOMAINS (.gov, .edu, .mil, and non-profit/trade-association .orgs — sources of authority that require partnership, certification, sponsorship, or research collaboration, NOT traditional pitching):
+{institutional_block}
+
+ANALYST FIRMS (Gartner, Forrester, IDC, and major consultancies — influence via analyst briefings, inclusion in evaluations like Magic Quadrants / Waves / MarketScapes, sponsored research, and client subscriptions, NOT pitching):
+{analyst_block}
+
+Total unique domains cited: {len(ranked_domains)}
+Total citation instances: {total_citations}
+
+RESPONSE SUMMARIES (with extracted citations):
+{responses_block}
+
+Produce THREE target lists:
+
+1. TOP 5 MEDIA TARGETS — drawn ONLY from the EDITORIAL DOMAINS above. These are pitch-able publications.
+2. AUTHORITY & PARTNERSHIP TARGETS — drawn ONLY from the INSTITUTIONAL / ASSOCIATION DOMAINS above. Up to 5, only if meaningfully present. Universities, agencies, certification bodies, trade associations, advocacy non-profits, or government bodies.
+3. ANALYST TARGETS — drawn ONLY from the ANALYST FIRMS above. Up to 5, only if meaningfully present. Influence is via analyst relations, not pitching or partnership.
+
+If a category has nothing, return an empty array for it.
+
+For each target:
+- Map domain to its proper name (e.g. allure.com → Allure, nih.gov → National Institutes of Health, harvard.edu → Harvard University, omri.org → OMRI, garden.org → National Gardening Association, gartner.com → Gartner, forrester.com → Forrester)
+- Note competitors discussed alongside it
+- Explain the influence strategy (editorial: how a placement helps; authority/partnership: what specific partnership/certification/sponsorship/research collab; analyst: which evaluation to target, briefing cadence, or research sponsorship that would shift citations)
+
+CRITICAL: Only include entities that actually appear in the citation data above. Do NOT invent or guess.
+
+Respond with ONLY valid JSON:
+{{
+  "brand": "{brand}",
+  "category": "{category}",
+  "brand_mention_count": <number of times {brand} appeared across all 30 responses>,
+  "total_responses": {len(all_responses)},
+  "total_citations_extracted": {total_citations},
+  "competitors": [
+    {{"name": "competitor name", "mention_count": <int>, "cited_by": ["Claude", "ChatGPT", "Gemini"]}}
+  ],
+  "media_targets": [
+    {{
+      "rank": 1,
+      "outlet": "Publication name derived from actual citation domain",
+      "domain": "the actual domain from citation data",
+      "reporter": "Named journalist if identifiable from response content, otherwise null",
+      "citation_frequency": <actual count from citation data>,
+      "sample_urls": ["1-2 actual URLs that were cited"],
+      "cited_by_llms": ["which LLMs cited this outlet"],
+      "competitors_citing": ["competitors discussed in responses that cited this outlet"],
+      "rationale": "One sentence on why earned media here would move the needle for {brand}",
+      "gap_insight": "What specifically competitors are getting credit for via this outlet that {brand} should own"
+    }}
+  ],
+  "institutional_targets": [
+    {{
+      "rank": 1,
+      "institution": "Proper name of the institution",
+      "domain": "the actual domain from citation data",
+      "type": "Government | Academic | Research Institute | Trade Association | Certification Body | Advocacy Non-profit",
+      "citation_frequency": <actual count from citation data>,
+      "sample_urls": ["1-2 actual URLs that were cited"],
+      "cited_by_llms": ["which LLMs cited this institution"],
+      "partnership_play": "One sentence on the specific partnership, certification, sponsorship, research collaboration, or expert engagement that would influence AI citations through this entity"
+    }}
+  ],
+  "analyst_targets": [
+    {{
+      "rank": 1,
+      "firm": "Proper firm name",
+      "domain": "the actual domain from citation data",
+      "type": "Industry Analyst | Management Consultancy | Boutique Research",
+      "citation_frequency": <actual count from citation data>,
+      "sample_urls": ["1-2 actual URLs that were cited"],
+      "cited_by_llms": ["which LLMs cited this firm"],
+      "evaluations_referenced": ["Specific reports/evaluations cited if identifiable from response text — e.g. 'Magic Quadrant for APM', 'Forrester Wave: Observability' — otherwise empty array"],
+      "analyst_play": "One sentence on the specific analyst relations move: which evaluation to target, briefing cadence to establish, sponsored research, or client subscription that would shift citations"
+    }}
+  ],
+  "executive_summary": "3-4 sentences: the overall AI visibility landscape for {brand}, what the editorial list means strategically, and (where relevant) the role of analyst evaluations and authority partnerships"
+}}"""
+        }]
+    )
+
+    analysis_text = analysis_response.content[0].text
+    analysis_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
+    if not analysis_match:
+        raise ValueError("Failed to parse analysis response")
+    analysis = json.loads(analysis_match.group())
+    analysis["prompts_used"] = prompts
+    analysis["raw_citation_domains"] = ranked_domains[:20]
+    return analysis
+
+
+@app.route('/citation-audit', methods=['GET', 'POST'])
+def citation_audit():
+    if request.method == 'GET':
+        return render_template('citation_audit.html', ga_measurement_id=GA_MEASUREMENT_ID)
+
+    problem_statement = request.form.get('problem_statement', '').strip()
+    if not problem_statement:
+        return jsonify({"error": "Please describe the problem you want your brand to own."}), 400
+
+    q = queue.Queue()
+
+    def on_progress(step, detail, current, total):
+        q.put(json.dumps({"type": "progress", "step": step, "detail": detail, "current": current, "total": total}))
+
+    def worker():
+        try:
+            result = run_citation_audit(problem_statement, on_progress=on_progress)
+            slug = uuid.uuid4().hex[:10]
+            with app.app_context():
+                shared = SharedResult(slug=slug, payload=json.dumps(result))
+                db.session.add(shared)
+                db.session.commit()
+            result["slug"] = slug
+            q.put(json.dumps({"type": "result", "data": result}))
+        except Exception as e:
+            q.put(json.dumps({"type": "error", "error": str(e)}))
+
+    t = threading.Thread(target=worker)
+    t.start()
+
+    def generate():
+        while True:
+            msg = q.get()
+            yield f"data: {msg}\n\n"
+            parsed = json.loads(msg)
+            if parsed["type"] in ("result", "error"):
+                break
+
+    return Response(generate(), mimetype='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/citation-audit/request-demo', methods=['POST'])
+def citation_audit_request_demo():
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    title = (data.get('title') or '').strip()
+    org = (data.get('org') or '').strip()
+    email = (data.get('email') or '').strip()
+    slug = (data.get('slug') or '').strip() or None
+    problem_statement = (data.get('problem_statement') or '').strip()
+
+    if not name or not email:
+        return jsonify({"error": "Name and email are required."}), 400
+    if '@' not in email or '.' not in email:
+        return jsonify({"error": "Please enter a valid email address."}), 400
+
+    extra = json.dumps({"name": name, "title": title, "org": org, "problem_statement": problem_statement})
+    lead = LeadCapture(email=email, slug=slug, app_name='signal_finder_demo', extra=extra)
+    db.session.add(lead)
+    db.session.commit()
+
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if sg_key:
+        try:
+            from sendgrid import SendGridAPIClient
+            from sendgrid.helpers.mail import Mail
+            report_link = f"https://innatec3.com/results/{slug}" if slug else "(no audit slug)"
+            text_body = (
+                f"New PR Signal Finder bespoke audit request:\n\n"
+                f"Name: {name}\n"
+                f"Title: {title or '(not provided)'}\n"
+                f"Organization: {org or '(not provided)'}\n"
+                f"Email: {email}\n\n"
+                f"Problem statement they audited:\n{problem_statement or '(not provided)'}\n\n"
+                f"Their light audit report: {report_link}\n"
+            )
+            html_body = (
+                f"<h3>New PR Signal Finder bespoke audit request</h3>"
+                f"<p><strong>Name:</strong> {html.escape(name)}<br>"
+                f"<strong>Title:</strong> {html.escape(title) or '<em>(not provided)</em>'}<br>"
+                f"<strong>Organization:</strong> {html.escape(org) or '<em>(not provided)</em>'}<br>"
+                f"<strong>Email:</strong> <a href=\"mailto:{html.escape(email)}\">{html.escape(email)}</a></p>"
+                f"<p><strong>Problem they audited:</strong><br>{html.escape(problem_statement) or '<em>(not provided)</em>'}</p>"
+                f"<p><strong>Their light audit report:</strong> "
+                f"{('<a href=\"' + report_link + '\">' + report_link + '</a>') if slug else '<em>(no slug captured)</em>'}</p>"
+            )
+            msg = Mail(
+                from_email=("no-reply@innatec3.com", "PR Signal Finder"),
+                to_emails=["nstrauss@innatec3.com"],
+                subject=f"[PR Signal Finder] Bespoke audit request from {name}" + (f" ({org})" if org else ""),
+                plain_text_content=text_body,
+                html_content=html_body,
+            )
+            sg = SendGridAPIClient(sg_key)
+            sg.send(msg)
+        except Exception as e:
+            print("SendGrid lead notification error:", e)
+
+    return jsonify({"ok": True})
+
 
 if __name__ == "__main__":
     # Get port from environment variable or default to 5009

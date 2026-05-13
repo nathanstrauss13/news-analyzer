@@ -1,0 +1,994 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PR Signal Finder — Innate Insights</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'IBM Plex Sans', sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 60px 24px;
+        }
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            font-size: 15px;
+            color: #888;
+            margin-bottom: 48px;
+            line-height: 1.5;
+        }
+        .input-group {
+            position: relative;
+            margin-bottom: 16px;
+        }
+        textarea {
+            width: 100%;
+            padding: 16px 20px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 16px;
+            background: #141414;
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            color: #fff;
+            resize: none;
+            outline: none;
+            transition: border-color 0.2s;
+            min-height: 80px;
+        }
+        textarea:focus { border-color: #4a9eff; }
+        textarea::placeholder { color: #555; }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 15px;
+            font-weight: 600;
+            background: #fff;
+            color: #000;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        /* Loading state */
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 60px 0;
+        }
+        .loading.active { display: block; }
+        .countdown-ring {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 24px;
+        }
+        .countdown-ring svg {
+            transform: rotate(-90deg);
+            width: 120px;
+            height: 120px;
+        }
+        .countdown-ring .bg {
+            fill: none;
+            stroke: #1a1a1a;
+            stroke-width: 4;
+        }
+        .countdown-ring .progress {
+            fill: none;
+            stroke: #4a9eff;
+            stroke-width: 4;
+            stroke-linecap: round;
+            transition: stroke-dashoffset 1s linear;
+        }
+        .countdown-time {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 28px;
+            font-weight: 600;
+            color: #fff;
+            font-variant-numeric: tabular-nums;
+        }
+        .countdown-label {
+            font-size: 11px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            position: absolute;
+            bottom: 22px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        .loading-text {
+            font-size: 14px;
+            color: #666;
+        }
+        .loading-step {
+            font-size: 13px;
+            color: #4a9eff;
+            margin-top: 8px;
+        }
+        .loading-note {
+            font-size: 13px;
+            color: #777;
+            margin: 24px auto 0;
+            max-width: 380px;
+            line-height: 1.55;
+            padding: 12px 16px;
+            background: #111;
+            border: 1px solid #1e1e1e;
+            border-radius: 8px;
+        }
+
+        /* Results */
+        .results { display: none; }
+        .results.active { display: block; }
+        .results-header {
+            margin-bottom: 32px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid #1a1a1a;
+        }
+        .results-header h2 {
+            font-size: 22px;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .brand-pill {
+            display: inline-block;
+            padding: 4px 12px;
+            background: #1a1a2e;
+            border: 1px solid #2a2a4e;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #7a8aff;
+            margin-right: 8px;
+        }
+        .mention-count {
+            font-size: 13px;
+            color: #888;
+            margin-top: 12px;
+        }
+        .mention-count strong {
+            color: #ff6b6b;
+        }
+        .executive-summary {
+            font-size: 15px;
+            line-height: 1.6;
+            color: #aaa;
+            margin: 20px 0 32px;
+            padding: 16px 20px;
+            background: #111;
+            border-radius: 10px;
+            border-left: 3px solid #4a9eff;
+        }
+
+        /* Competitors */
+        .section-title {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #555;
+            margin-bottom: 16px;
+        }
+        .competitors {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 40px;
+        }
+        .competitor-chip {
+            padding: 6px 14px;
+            background: #1a1210;
+            border: 1px solid #3a2a1a;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #e8a04c;
+        }
+        .competitor-chip .count {
+            color: #aa7030;
+            margin-left: 4px;
+        }
+
+        /* Media targets */
+        .media-card {
+            background: #111;
+            border: 1px solid #1e1e1e;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 16px;
+            transition: border-color 0.2s;
+        }
+        .media-card:hover { border-color: #333; }
+        .media-rank {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #4a9eff;
+            margin-bottom: 8px;
+        }
+        .media-outlet {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .media-reporter {
+            font-size: 14px;
+            color: #888;
+            margin-bottom: 12px;
+        }
+        .media-stat {
+            display: inline-block;
+            padding: 3px 10px;
+            background: #0d1a0d;
+            border: 1px solid #1a3a1a;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #5a9a5a;
+            margin-right: 6px;
+            margin-bottom: 8px;
+        }
+        .media-rationale {
+            font-size: 14px;
+            color: #aaa;
+            line-height: 1.5;
+            margin-top: 12px;
+        }
+        .media-gap {
+            font-size: 13px;
+            color: #e8a04c;
+            margin-top: 8px;
+            padding: 10px 14px;
+            background: #1a1510;
+            border-radius: 8px;
+        }
+        .media-gap strong {
+            color: #ffb860;
+        }
+        .media-domain {
+            font-size: 12px;
+            color: #4a9eff;
+            margin-bottom: 10px;
+            font-family: monospace;
+        }
+        .media-urls {
+            margin-top: 10px;
+            padding: 10px 14px;
+            background: #0a0a14;
+            border-radius: 8px;
+            border: 1px solid #1a1a2e;
+        }
+        .media-urls a {
+            font-size: 12px;
+            color: #6a7aff;
+            text-decoration: none;
+            display: block;
+            padding: 3px 0;
+            word-break: break-all;
+        }
+        .media-urls a:hover { text-decoration: underline; }
+        .media-urls-label {
+            font-size: 11px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+        .citation-total {
+            font-size: 13px;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        /* Prompts used */
+        .prompts-toggle {
+            font-size: 13px;
+            color: #555;
+            cursor: pointer;
+            margin-top: 32px;
+            padding: 12px 0;
+            border-top: 1px solid #1a1a1a;
+        }
+        .prompts-toggle:hover { color: #888; }
+        .prompts-list {
+            display: none;
+            margin-top: 12px;
+        }
+        .prompts-list.open { display: block; }
+        .prompts-list li {
+            font-size: 13px;
+            color: #666;
+            padding: 6px 0;
+            list-style: none;
+            border-bottom: 1px solid #111;
+        }
+        .prompts-list li::before {
+            content: counter(prompt-counter) ".";
+            counter-increment: prompt-counter;
+            color: #444;
+            margin-right: 8px;
+            font-variant-numeric: tabular-nums;
+        }
+        .prompts-list ol {
+            counter-reset: prompt-counter;
+            padding: 0;
+        }
+
+        .error-msg {
+            display: none;
+            padding: 16px 20px;
+            background: #1a1010;
+            border: 1px solid #3a1a1a;
+            border-radius: 10px;
+            color: #ff6b6b;
+            font-size: 14px;
+        }
+        .error-msg.active { display: block; }
+
+        .form-section { }
+        .form-section.hidden { display: none; }
+
+        /* Bespoke CTA */
+        /* Institutional targets */
+        .institutional-card {
+            background: #0e1118;
+            border: 1px solid #1c2230;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 12px;
+        }
+        .institutional-rank {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #8a9aff;
+            margin-bottom: 6px;
+        }
+        .institutional-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .institutional-type {
+            display: inline-block;
+            font-size: 11px;
+            padding: 2px 8px;
+            background: #1a1f30;
+            border: 1px solid #2a3550;
+            border-radius: 5px;
+            color: #8a9aff;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .institutional-play {
+            font-size: 13px;
+            color: #a8b0c8;
+            line-height: 1.5;
+            margin-top: 10px;
+        }
+        .section-note {
+            font-size: 12px;
+            color: #777;
+            margin: -8px 0 16px;
+            font-style: italic;
+        }
+
+        /* Analyst targets */
+        .analyst-card {
+            background: #150e18;
+            border: 1px solid #2a1c30;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 12px;
+        }
+        .analyst-rank {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #d088ff;
+            margin-bottom: 6px;
+        }
+        .analyst-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .analyst-type {
+            display: inline-block;
+            font-size: 11px;
+            padding: 2px 8px;
+            background: #1f1228;
+            border: 1px solid #3a2050;
+            border-radius: 5px;
+            color: #d088ff;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .analyst-eval {
+            display: inline-block;
+            font-size: 11px;
+            padding: 2px 8px;
+            background: #18101f;
+            border: 1px solid #3a2050;
+            border-radius: 5px;
+            color: #c898e8;
+            margin-right: 4px;
+            margin-bottom: 4px;
+        }
+        .analyst-play {
+            font-size: 13px;
+            color: #c8b8d8;
+            line-height: 1.5;
+            margin-top: 10px;
+        }
+
+        .bespoke-cta {
+            margin-top: 40px;
+            padding: 28px;
+            background: linear-gradient(135deg, #0e1830 0%, #1a1530 100%);
+            border: 1px solid #2a3a5e;
+            border-radius: 14px;
+        }
+        .bespoke-cta-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #7a8aff;
+            margin-bottom: 10px;
+        }
+        .bespoke-cta h3 {
+            font-size: 20px;
+            color: #fff;
+            margin-bottom: 10px;
+            line-height: 1.3;
+        }
+        .bespoke-cta p {
+            font-size: 14px;
+            color: #aaa;
+            line-height: 1.55;
+            margin-bottom: 18px;
+        }
+        .bespoke-stats {
+            display: flex;
+            gap: 14px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .bespoke-stat {
+            flex: 1;
+            min-width: 130px;
+            padding: 12px 14px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid #1e2a4e;
+            border-radius: 8px;
+        }
+        .bespoke-stat-num {
+            font-size: 22px;
+            font-weight: 700;
+            color: #fff;
+        }
+        .bespoke-stat-label {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 2px;
+        }
+        .bespoke-btn {
+            padding: 12px 22px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            background: #4a9eff;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .bespoke-btn:hover { background: #6ab0ff; }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.75);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: #141414;
+            border: 1px solid #2a2a2a;
+            border-radius: 14px;
+            padding: 32px;
+            max-width: 460px;
+            width: 100%;
+            position: relative;
+        }
+        .modal-close {
+            position: absolute;
+            top: 14px;
+            right: 18px;
+            font-size: 22px;
+            color: #555;
+            cursor: pointer;
+            background: none;
+            border: none;
+            line-height: 1;
+        }
+        .modal-close:hover { color: #aaa; }
+        .modal h3 {
+            font-size: 20px;
+            color: #fff;
+            margin-bottom: 6px;
+        }
+        .modal p {
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 22px;
+            line-height: 1.5;
+        }
+        .modal-field {
+            margin-bottom: 12px;
+        }
+        .modal-field label {
+            display: block;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .modal-field input {
+            width: 100%;
+            padding: 10px 14px;
+            background: #0a0a0a;
+            border: 1px solid #2a2a2a;
+            border-radius: 8px;
+            color: #fff;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 14px;
+            outline: none;
+        }
+        .modal-field input:focus { border-color: #4a9eff; }
+        .modal-submit {
+            width: 100%;
+            margin-top: 8px;
+            padding: 12px;
+            background: #fff;
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .modal-submit:hover { opacity: 0.9; }
+        .modal-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+        .modal-error {
+            display: none;
+            margin-top: 10px;
+            font-size: 13px;
+            color: #ff6b6b;
+        }
+        .modal-error.active { display: block; }
+        .modal-success {
+            text-align: center;
+            padding: 16px 0;
+        }
+        .modal-success h3 {
+            color: #5aff8a;
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div style="margin-bottom:4px"><span style="font-size:13px;font-weight:500;color:#555;text-transform:uppercase;letter-spacing:2px">Innate Insights</span></div>
+        <h1>PR Signal Finder</h1>
+        <p class="subtitle">Input what you want your brand to be known for. We'll query Claude, ChatGPT, and Gemini to find which media outlets are shaping AI responses about your competitors — and where earned media will close the gap.</p>
+
+        <div class="form-section" id="formSection">
+            <div class="input-group">
+                <textarea id="problemInput" placeholder="e.g. I want ACME Corp to be known as the premier brand of widgets" rows="3"></textarea>
+            </div>
+            <button class="btn" id="submitBtn" onclick="runAudit()">Find Signals</button>
+        </div>
+
+        <div class="error-msg" id="errorMsg"></div>
+
+        <div class="loading" id="loading">
+            <div class="countdown-ring">
+                <svg viewBox="0 0 120 120">
+                    <circle class="bg" cx="60" cy="60" r="52"/>
+                    <circle class="progress" id="countdownProgress" cx="60" cy="60" r="52"
+                        stroke-dasharray="326.73" stroke-dashoffset="326.73"/>
+                </svg>
+                <div class="countdown-time" id="countdownTime">0%</div>
+                <div class="countdown-label">complete</div>
+            </div>
+            <div class="loading-text">Finding your signals</div>
+            <div class="loading-step" id="loadingStep">Generating search prompts...</div>
+            <div class="loading-note">
+                This typically takes about 5 minutes. Feel free to switch tabs — your report will be waiting when you return.
+            </div>
+        </div>
+
+        <div class="results" id="results"></div>
+    </div>
+
+    <div class="modal-overlay" id="demoModal" onclick="if(event.target===this)closeDemoModal()">
+        <div class="modal">
+            <button class="modal-close" onclick="closeDemoModal()">&times;</button>
+            <div id="demoForm">
+                <h3>Request a bespoke audit</h3>
+                <p>We'll run 100 prompts across 5 LLMs and deliver a top 25 media target list tailored to your brand. Drop your details and we'll be in touch within 24 hours.</p>
+                <div class="modal-field">
+                    <label>Name *</label>
+                    <input type="text" id="demoName" autocomplete="name">
+                </div>
+                <div class="modal-field">
+                    <label>Title</label>
+                    <input type="text" id="demoTitle" autocomplete="organization-title">
+                </div>
+                <div class="modal-field">
+                    <label>Organization</label>
+                    <input type="text" id="demoOrg" autocomplete="organization">
+                </div>
+                <div class="modal-field">
+                    <label>Email *</label>
+                    <input type="email" id="demoEmail" autocomplete="email">
+                </div>
+                <button type="button" class="modal-submit" id="demoSubmit" onclick="submitDemoRequest()">Request bespoke audit</button>
+                <div class="modal-error" id="demoError"></div>
+            </div>
+            <div class="modal-success" id="demoSuccess" style="display:none">
+                <h3>Thanks — we'll be in touch.</h3>
+                <p>Your request is in. Nathan will reach out within 24 hours to scope your bespoke audit.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const CIRCUMFERENCE = 2 * Math.PI * 52; // 326.73
+
+        const STEP_WEIGHTS = {
+            prompts:  0.05,
+            llm:      0.75,
+            extract:  0.05,
+            analysis: 0.15,
+        };
+
+        const STEP_ORDER = ['prompts', 'llm', 'extract', 'analysis'];
+
+        function updateProgress(step, detail, current, total) {
+            const stepEl = document.getElementById('loadingStep');
+            const progressEl = document.getElementById('countdownProgress');
+            const timeEl = document.getElementById('countdownTime');
+
+            stepEl.textContent = detail;
+
+            const stepIdx = STEP_ORDER.indexOf(step);
+            let filled = 0;
+            for (let i = 0; i < stepIdx; i++) filled += STEP_WEIGHTS[STEP_ORDER[i]];
+            if (total > 0) filled += STEP_WEIGHTS[step] * (current / total);
+
+            const clamped = Math.min(filled, 1);
+            const offset = CIRCUMFERENCE * (1 - clamped);
+            progressEl.style.strokeDashoffset = offset.toString();
+            timeEl.textContent = `${Math.round(clamped * 100)}%`;
+        }
+
+        function runAudit() {
+            const input = document.getElementById('problemInput').value.trim();
+            if (!input) return;
+            lastAuditContext = { slug: null, problem_statement: input };
+
+            document.getElementById('formSection').classList.add('hidden');
+            document.getElementById('errorMsg').classList.remove('active');
+            document.getElementById('loading').classList.add('active');
+            document.getElementById('results').classList.remove('active');
+
+            const progressEl = document.getElementById('countdownProgress');
+            progressEl.style.strokeDashoffset = CIRCUMFERENCE.toString();
+            document.getElementById('countdownTime').textContent = '0%';
+            document.getElementById('loadingStep').textContent = 'Starting...';
+
+            const form = new FormData();
+            form.append('problem_statement', input);
+
+            fetch('/citation-audit', { method: 'POST', body: form }).then(response => {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                function read() {
+                    reader.read().then(({ done, value }) => {
+                        if (done) return;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop();
+                        for (const line of lines) {
+                            if (!line.startsWith('data: ')) continue;
+                            try {
+                                const msg = JSON.parse(line.slice(6));
+                                if (msg.type === 'progress') {
+                                    updateProgress(msg.step, msg.detail, msg.current, msg.total);
+                                } else if (msg.type === 'result') {
+                                    document.getElementById('loading').classList.remove('active');
+                                    lastAuditContext.slug = msg.data.slug || null;
+                                    renderResults(msg.data);
+                                    return;
+                                } else if (msg.type === 'error') {
+                                    document.getElementById('loading').classList.remove('active');
+                                    document.getElementById('formSection').classList.remove('hidden');
+                                    document.getElementById('errorMsg').textContent = msg.error || 'Something went wrong.';
+                                    document.getElementById('errorMsg').classList.add('active');
+                                    return;
+                                }
+                            } catch (e) {}
+                        }
+                        read();
+                    });
+                }
+                read();
+            }).catch(() => {
+                document.getElementById('loading').classList.remove('active');
+                document.getElementById('formSection').classList.remove('hidden');
+                document.getElementById('errorMsg').textContent = 'Network error. Please try again.';
+                document.getElementById('errorMsg').classList.add('active');
+            });
+        }
+
+        function renderResults(data) {
+            const el = document.getElementById('results');
+            const competitors = (data.competitors || [])
+                .sort((a, b) => b.mention_count - a.mention_count)
+                .slice(0, 8);
+
+            const targets = (data.media_targets || []).slice(0, 5);
+
+            let html = `
+                <div class="results-header">
+                    <h2>Signal Report</h2>
+                    <span class="brand-pill">${esc(data.brand)}</span>
+                    <span class="brand-pill">${esc(data.category)}</span>
+                    <div class="mention-count">
+                        Your brand was cited in <strong>${data.brand_mention_count || 0} of ${data.total_responses || 30}</strong> AI responses
+                    </div>
+                    <div class="citation-total">
+                        ${data.total_citations_extracted || 0} citation URLs extracted across ${data.total_responses || 30} responses
+                    </div>
+                </div>
+                <div class="executive-summary">${esc(data.executive_summary || '')}</div>
+            `;
+
+            if (competitors.length) {
+                html += `<div class="section-title">Top competitors in AI responses</div><div class="competitors">`;
+                for (const c of competitors) {
+                    html += `<span class="competitor-chip">${esc(c.name)}<span class="count">${c.mention_count}x</span></span>`;
+                }
+                html += `</div>`;
+            }
+
+            html += `<div class="section-title">Top 5 editorial media targets — based on actual LLM citations</div>`;
+            for (const t of targets) {
+                const sampleUrls = (t.sample_urls || []).slice(0, 3);
+                const llms = (t.cited_by_llms || []);
+                html += `
+                    <div class="media-card">
+                        <div class="media-rank">#${t.rank} target</div>
+                        <div class="media-outlet">${esc(t.outlet)}</div>
+                        ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
+                        ${t.reporter ? `<div class="media-reporter">${esc(t.reporter)}</div>` : ''}
+                        <span class="media-stat">Cited ${t.citation_frequency}x across responses</span>
+                        ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
+                        ${(t.competitors_citing || []).map(c => `<span class="competitor-chip" style="font-size:12px;padding:3px 8px">${esc(c)}</span>`).join('')}
+                        <div class="media-rationale">${esc(t.rationale)}</div>
+                        ${t.gap_insight ? `<div class="media-gap"><strong>Gap:</strong> ${esc(t.gap_insight)}</div>` : ''}
+                        ${sampleUrls.length ? `
+                            <div class="media-urls">
+                                <div class="media-urls-label">Cited URLs</div>
+                                ${sampleUrls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }
+
+            const institutional = (data.institutional_targets || []).slice(0, 5);
+            if (institutional.length) {
+                html += `<div class="section-title" style="margin-top:32px">Associations, authorities & partnerships</div>`;
+                html += `<div class="section-note">These trade associations, certification bodies, advocacy non-profits, .gov, and .edu sources also shape AI responses — but require partnership, sponsorship, certification, or research collaboration rather than traditional PR pitching.</div>`;
+                for (const t of institutional) {
+                    const sampleUrls = (t.sample_urls || []).slice(0, 3);
+                    const llms = (t.cited_by_llms || []);
+                    html += `
+                        <div class="institutional-card">
+                            <div class="institutional-rank">#${t.rank} partnership target</div>
+                            <div class="institutional-name">${esc(t.institution)}</div>
+                            ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
+                            ${t.type ? `<span class="institutional-type">${esc(t.type)}</span><br>` : ''}
+                            <span class="media-stat">Cited ${t.citation_frequency}x across responses</span>
+                            ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
+                            <div class="institutional-play">${esc(t.partnership_play || '')}</div>
+                            ${sampleUrls.length ? `
+                                <div class="media-urls">
+                                    <div class="media-urls-label">Cited URLs</div>
+                                    ${sampleUrls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join('')}
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }
+            }
+
+            const analysts = (data.analyst_targets || []).slice(0, 5);
+            if (analysts.length) {
+                html += `<div class="section-title" style="margin-top:32px">Industry analyst citations</div>`;
+                html += `<div class="section-note">These analyst firms shape AI responses through reports and evaluations (Magic Quadrants, Waves, MarketScapes). Influence is via analyst relations — briefings, inclusion in evaluations, sponsored research — not pitching.</div>`;
+                for (const t of analysts) {
+                    const sampleUrls = (t.sample_urls || []).slice(0, 3);
+                    const llms = (t.cited_by_llms || []);
+                    const evals = (t.evaluations_referenced || []);
+                    html += `
+                        <div class="analyst-card">
+                            <div class="analyst-rank">#${t.rank} analyst target</div>
+                            <div class="analyst-name">${esc(t.firm)}</div>
+                            ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
+                            ${t.type ? `<span class="analyst-type">${esc(t.type)}</span><br>` : ''}
+                            <span class="media-stat">Cited ${t.citation_frequency}x across responses</span>
+                            ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
+                            ${evals.length ? `<div style="margin-top:8px">${evals.map(e => `<span class="analyst-eval">${esc(e)}</span>`).join('')}</div>` : ''}
+                            <div class="analyst-play">${esc(t.analyst_play || '')}</div>
+                            ${sampleUrls.length ? `
+                                <div class="media-urls">
+                                    <div class="media-urls-label">Cited URLs</div>
+                                    ${sampleUrls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join('')}
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }
+            }
+
+            html += `
+                <div class="bespoke-cta">
+                    <div class="bespoke-cta-label">Want the full picture?</div>
+                    <h3>Get a bespoke PR Signal Finder audit</h3>
+                    <p>This is the lightweight version. A bespoke audit runs at 10x the depth — uncovering long-tail outlets, niche reporters, and the full competitive citation landscape across your category.</p>
+                    <div class="bespoke-stats">
+                        <div class="bespoke-stat"><div class="bespoke-stat-num">100</div><div class="bespoke-stat-label">Prompts</div></div>
+                        <div class="bespoke-stat"><div class="bespoke-stat-num">5</div><div class="bespoke-stat-label">LLMs</div></div>
+                        <div class="bespoke-stat"><div class="bespoke-stat-num">25</div><div class="bespoke-stat-label">Media targets</div></div>
+                    </div>
+                    <button class="bespoke-btn" onclick="openDemoModal()">Request a bespoke audit &rarr;</button>
+                </div>
+            `;
+
+            if (data.prompts_used && data.prompts_used.length) {
+                html += `
+                    <div class="prompts-toggle" onclick="this.nextElementSibling.classList.toggle('open')">
+                        View ${data.prompts_used.length} prompts used &#9662;
+                    </div>
+                    <div class="prompts-list">
+                        <ol>${data.prompts_used.map(p => `<li>${esc(p)}</li>`).join('')}</ol>
+                    </div>
+                `;
+            }
+
+            el.innerHTML = html;
+            el.classList.add('active');
+        }
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s || '';
+            return d.innerHTML;
+        }
+
+        let lastAuditContext = { slug: null, problem_statement: '' };
+
+        function openDemoModal() {
+            document.getElementById('demoForm').style.display = 'block';
+            document.getElementById('demoSuccess').style.display = 'none';
+            document.getElementById('demoError').classList.remove('active');
+            document.getElementById('demoModal').classList.add('active');
+            setTimeout(() => document.getElementById('demoName').focus(), 50);
+        }
+        function closeDemoModal() {
+            document.getElementById('demoModal').classList.remove('active');
+        }
+
+        async function submitDemoRequest() {
+            const name = document.getElementById('demoName').value.trim();
+            const title = document.getElementById('demoTitle').value.trim();
+            const org = document.getElementById('demoOrg').value.trim();
+            const email = document.getElementById('demoEmail').value.trim();
+            const errEl = document.getElementById('demoError');
+            const btn = document.getElementById('demoSubmit');
+
+            errEl.classList.remove('active');
+            if (!name || !email) {
+                errEl.textContent = 'Name and email are required.';
+                errEl.classList.add('active');
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Submitting...';
+            try {
+                const resp = await fetch('/citation-audit/request-demo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name, title, org, email,
+                        slug: lastAuditContext.slug,
+                        problem_statement: lastAuditContext.problem_statement,
+                    }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    errEl.textContent = data.error || 'Something went wrong.';
+                    errEl.classList.add('active');
+                    btn.disabled = false;
+                    btn.textContent = 'Request bespoke audit';
+                    return;
+                }
+                document.getElementById('demoForm').style.display = 'none';
+                document.getElementById('demoSuccess').style.display = 'block';
+            } catch (e) {
+                console.error('Demo request failed:', e);
+                errEl.textContent = 'Network error: ' + (e && e.message ? e.message : 'unknown');
+                errEl.classList.add('active');
+                btn.disabled = false;
+                btn.textContent = 'Request bespoke audit';
+            }
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') closeDemoModal();
+        });
+
+        document.getElementById('problemInput').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                runAudit();
+            }
+        });
+    </script>
+</body>
+</html>
