@@ -52,8 +52,20 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
 file_processor = SimpleMediaFileProcessor(os.environ.get("ANTHROPIC_API_KEY"))
 
 # Initialize SQLAlchemy
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///waitlist.db')
+# Render's Postgres provides URLs starting with `postgres://`, but SQLAlchemy 2.x
+# requires `postgresql://`. Normalize so the existing app config works against
+# either local SQLite or production Postgres without further edits.
+_db_url = os.environ.get('DATABASE_URL', 'sqlite:///waitlist.db')
+if _db_url.startswith('postgres://'):
+    _db_url = _db_url.replace('postgres://', 'postgresql://', 1)
+app.config['SQLALCHEMY_DATABASE_URI'] = _db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Postgres-friendly pool settings: recycle stale connections, validate on checkout.
+# Harmless on SQLite (the pool is single-connection anyway).
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+    'pool_recycle': 280,  # under Render Postgres's default 5-min idle timeout
+}
 db = SQLAlchemy(app)
 
 # Define the WaitingList model
