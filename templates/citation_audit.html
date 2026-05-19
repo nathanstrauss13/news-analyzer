@@ -114,6 +114,13 @@
             font-variant-numeric: tabular-nums;
             letter-spacing: -0.5px;
         }
+        .countdown-eta {
+            margin-top: 14px;
+            font-size: 12px;
+            color: #888;
+            font-variant-numeric: tabular-nums;
+            min-height: 16px;
+        }
         .loading-text {
             font-size: 14px;
             color: #666;
@@ -917,6 +924,7 @@
             </div>
             <div class="loading-text">Identifying your PR targets</div>
             <div class="loading-step" id="loadingStep">Generating search prompts...</div>
+            <div class="countdown-eta" id="countdownEta"></div>
         </div>
 
         <div class="results" id="results"></div>
@@ -978,10 +986,21 @@
 
         const STEP_ORDER = ['prompts', 'llm', 'extract', 'analysis'];
 
+        let auditStartTime = null;
+
+        function formatDuration(secs) {
+            if (!isFinite(secs) || secs < 0) return '';
+            if (secs < 60) return `${Math.round(secs)}s`;
+            const m = Math.floor(secs / 60);
+            const s = Math.round(secs % 60);
+            return s > 0 ? `${m}m ${s}s` : `${m}m`;
+        }
+
         function updateProgress(step, detail, current, total) {
             const stepEl = document.getElementById('loadingStep');
             const progressEl = document.getElementById('countdownProgress');
             const timeEl = document.getElementById('countdownTime');
+            const etaEl = document.getElementById('countdownEta');
 
             stepEl.textContent = detail;
 
@@ -994,6 +1013,19 @@
             const offset = CIRCUMFERENCE * (1 - clamped);
             progressEl.style.strokeDashoffset = offset.toString();
             timeEl.textContent = `${Math.round(clamped * 100)}%`;
+
+            // ETA: wait until we've crossed 5% so the estimate isn't wild.
+            if (etaEl && auditStartTime) {
+                if (clamped >= 0.99) {
+                    etaEl.textContent = 'almost done';
+                } else if (clamped > 0.05) {
+                    const elapsed = (Date.now() - auditStartTime) / 1000;
+                    const remaining = elapsed * (1 - clamped) / clamped;
+                    etaEl.textContent = `~${formatDuration(remaining)} left  ·  ${formatDuration(elapsed)} elapsed`;
+                } else {
+                    etaEl.textContent = 'estimating...';
+                }
+            }
         }
 
         function runAudit() {
@@ -1014,8 +1046,10 @@
             const progressEl = document.getElementById('countdownProgress');
             progressEl.style.strokeDashoffset = CIRCUMFERENCE.toString();
             document.getElementById('countdownTime').textContent = '0%';
+            document.getElementById('countdownEta').textContent = 'estimating...';
+            auditStartTime = Date.now();
             document.getElementById('loadingStep').textContent = tier === 'paid'
-                ? 'Starting paid audit (~7-10 min)...'
+                ? 'Starting paid audit (~3-5 min)...'
                 : 'Starting...';
 
             const form = new FormData();

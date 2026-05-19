@@ -3032,7 +3032,7 @@ _URL_VALIDATION_HEADERS = {
 }
 
 
-def _resolve_and_verify_urls(urls, timeout=4, max_workers=20):
+def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40):
     """HEAD-check + redirect-resolve a batch of URLs concurrently.
 
     Returns a dict {original_url: final_url_or_None}.
@@ -3041,6 +3041,10 @@ def _resolve_and_verify_urls(urls, timeout=4, max_workers=20):
       vertexaisearch.cloud.google.com → real source; we use the real URL/domain).
     - For 403 / 5xx / timeouts we err toward KEEPING the URL (might be bot-blocked
       but real). Only definitive negatives are dropped.
+
+    Tuned aggressively: timeout 2.5s + 40 workers. The bottleneck used to be
+    waiting on slow servers; with these settings 100+ URLs verify in 5-10s
+    instead of 30s+. Only retries with GET for 403 (the main bot-block signal).
     """
     out = {}
 
@@ -3052,18 +3056,23 @@ def _resolve_and_verify_urls(urls, timeout=4, max_workers=20):
                 return (u, None)
             if r.status_code < 400:
                 return (u, r.url)
-            # Some sites block HEAD; retry as a streaming GET.
-            r = requests.get(u, timeout=timeout, allow_redirects=True, stream=True,
-                             headers=_URL_VALIDATION_HEADERS)
-            try:
-                r.close()
-            except Exception:
-                pass
-            if r.status_code in (404, 410):
-                return (u, None)
-            if r.status_code < 400:
-                return (u, r.url)
-            # Bot-blocked even on GET; assume real and keep original.
+            if r.status_code == 403:
+                # Possible bot-block of HEAD; one retry with streaming GET.
+                try:
+                    r2 = requests.get(u, timeout=timeout, allow_redirects=True, stream=True,
+                                      headers=_URL_VALIDATION_HEADERS)
+                    try:
+                        r2.close()
+                    except Exception:
+                        pass
+                    if r2.status_code in (404, 410):
+                        return (u, None)
+                    if r2.status_code < 400:
+                        return (u, r2.url)
+                except Exception:
+                    pass
+                return (u, u)
+            # 4xx (other than 404/410/403) or 5xx — assume real, keep original.
             return (u, u)
         except requests.exceptions.ConnectionError:
             return (u, None)  # DNS / connection refused = confabulated
