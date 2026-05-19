@@ -9,7 +9,7 @@ import io
 import queue
 import threading
 import secrets
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 # Use the OS native trust store (macOS keychain / Windows cert store / Linux /etc/ssl).
 # Fixes "self-signed certificate in certificate chain" on Python.org Python builds
@@ -168,9 +168,9 @@ print(f"OPENAI_API_KEY is {'set' if OPENAI_API_KEY else 'NOT SET'}")
 print(f"NYT_API_KEY is {'set' if NYT_API_KEY else 'NOT SET'}")
 print(f"GUARDIAN_API_KEY is {'set' if GUARDIAN_API_KEY else 'NOT SET'}")
 
-anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
+anthropic = Anthropic(api_key=ANTHROPIC_API_KEY, timeout=60.0)
 try:
-    openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+    openai_client = OpenAI(api_key=OPENAI_API_KEY, timeout=60.0) if OPENAI_API_KEY else None
 except Exception:
     openai_client = None
 
@@ -183,14 +183,16 @@ print(f"GEMINI_API_KEY is {'set' if GEMINI_API_KEY else 'NOT SET'}")
 
 PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY") or os.environ.get("PPLX_API_KEY")
 try:
-    perplexity_client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="https://api.perplexity.ai") if PERPLEXITY_API_KEY else None
+    perplexity_client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="https://api.perplexity.ai", timeout=60.0) if PERPLEXITY_API_KEY else None
 except Exception:
     perplexity_client = None
 print(f"PERPLEXITY_API_KEY is {'set' if PERPLEXITY_API_KEY else 'NOT SET'}")
 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 try:
-    openrouter_client = OpenAI(api_key=OPENROUTER_API_KEY, base_url="https://openrouter.ai/api/v1") if OPENROUTER_API_KEY else None
+    # Tight client-level timeout for OpenRouter — Grok via x-ai is the worst-case
+    # latency on this stack and we don't want a hung Grok call to block the audit.
+    openrouter_client = OpenAI(api_key=OPENROUTER_API_KEY, base_url="https://openrouter.ai/api/v1", timeout=30.0) if OPENROUTER_API_KEY else None
 except Exception:
     openrouter_client = None
 print(f"OPENROUTER_API_KEY is {'set' if OPENROUTER_API_KEY else 'NOT SET'}")
@@ -3302,23 +3304,72 @@ Respond with ONLY valid JSON in this exact format:
         enriched = prompt_text + CITATION_SUFFIX + time_note
         try:
             resp_text = _call_llm(provider, enriched)
-            return {"llm": provider, "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text)}
+            return {"llm": provider, "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text), "error": None}
         except Exception as e:
-            return {"llm": provider, "prompt": prompt_text, "response": f"[Error: {e}]", "citations": []}
+            return {"llm": provider, "prompt": prompt_text, "response": f"[Error: {e}]", "citations": [], "error": str(e)[:120]}
 
     all_responses = []
     completed = 0
+    per_provider_errors = {p: 0 for p in llms}
+    per_provider_done = {p: 0 for p in llms}
     progress_lock = threading.Lock()
 
+    # Global LLM-batch deadline. Sized generously per tier: free should fit
+    # easily in 2 min; paid in 5 min. If one provider hangs, we still proceed
+    # to analysis with the partial responses we've collected.
+    batch_deadline_seconds = 180 if tier == "free" else 360
+
     emit("llm", f"Querying {len(llms)} LLMs × {len(prompts)} prompts ({total_calls} calls)...", 0, total_calls)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(run_one, *t) for t in tasks]
-        for fut in as_completed(futures):
-            result = fut.result()
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        future_map = {executor.submit(run_one, *t): t for t in tasks}
+        deadline = datetime.utcnow() + timedelta(seconds=batch_deadline_seconds)
+        timed_out = False
+        for fut in as_completed(future_map.keys(), timeout=batch_deadline_seconds):
+            try:
+                result = fut.result()
+            except Exception as e:
+                # Shouldn't happen since run_one catches, but defensively log.
+                provider, pi, ptxt = future_map[fut]
+                result = {"llm": provider, "prompt": ptxt, "response": f"[Error: {e}]", "citations": [], "error": str(e)[:120]}
             with progress_lock:
                 all_responses.append(result)
                 completed += 1
-                emit("llm", f"Completed {completed}/{total_calls} ({result['llm']})", completed, total_calls)
+                per_provider_done[result["llm"]] = per_provider_done.get(result["llm"], 0) + 1
+                if result.get("error"):
+                    per_provider_errors[result["llm"]] = per_provider_errors.get(result["llm"], 0) + 1
+                error_suffix = ""
+                err_summary = [f"{p}: {n}" for p, n in per_provider_errors.items() if n > 0]
+                if err_summary:
+                    error_suffix = f" · errors → {', '.join(err_summary)}"
+                emit(
+                    "llm",
+                    f"Completed {completed}/{total_calls} ({result['llm']}){error_suffix}",
+                    completed,
+                    total_calls,
+                )
+            if datetime.utcnow() >= deadline:
+                timed_out = True
+                break
+    except FuturesTimeoutError:
+        timed_out = True
+    finally:
+        if timed_out and completed < total_calls:
+            # Cancel still-pending futures + report partial completion.
+            cancelled = 0
+            for f, t in future_map.items():
+                if not f.done():
+                    if f.cancel():
+                        cancelled += 1
+            emit(
+                "llm",
+                f"Batch deadline hit; proceeding with {completed}/{total_calls} responses ({cancelled} cancelled)",
+                completed,
+                total_calls,
+            )
+        # Don't wait for in-flight workers — shutdown(wait=False) lets the executor
+        # release without blocking on hung Grok calls. Cancelled futures won't run.
+        executor.shutdown(wait=False, cancel_futures=True)
 
     # URL verification consumes 80% of the extract step's progress budget; aggregation is the rest.
     # We size the step "total" relative to URL count so per-URL progress emits map cleanly.
