@@ -2795,6 +2795,22 @@ Also add a section titled 'Recommended Resources:' listing websites users should
 
 CITATION_SYSTEM_PROMPT = "You are a helpful research assistant that always cites credible sources with full URLs. Every response must include specific publication names and URLs to support your recommendations."
 
+
+def _today_label():
+    """Returns e.g. 'May 2026' — used to keep LLM responses date-current."""
+    return datetime.utcnow().strftime("%B %Y")
+
+
+def _time_aware_note():
+    """Appended to every prompt so LLMs default to recent (last-12-month) sources."""
+    today = _today_label()
+    return (
+        f"\n\nToday's date is {today}. When the question asks about 'latest', "
+        f"'recent', 'today', 'current', or otherwise time-sensitive information, "
+        f"prioritize sources, articles, and developments from the past 12 months. "
+        f"Do NOT default to older years like 2023 or 2024 when more recent content exists."
+    )
+
 URL_PATTERN = re.compile(r'https?://[^\s<>"\'`\)\]\},]+')
 DOMAIN_BLACKLIST = {'example.com', 'placeholder.com', 'website.com', 'source.com', 'google.com', 'schema.org', 'w3.org', 'googleapis.com'}
 
@@ -2825,11 +2841,23 @@ EDITORIAL_ORG_ALLOWLIST = {
 }
 
 NON_EDITORIAL_DOMAINS = {
+    # User-generated / community
     'wikipedia.org', 'en.wikipedia.org', 'wikimedia.org',
     'reddit.com', 'quora.com', 'stackexchange.com', 'stackoverflow.com',
     'youtube.com', 'youtu.be',
     'linkedin.com', 'twitter.com', 'x.com', 'facebook.com', 'instagram.com',
-    'amazon.com', 'ebay.com',
+    'tiktok.com', 'pinterest.com', 'medium.com',
+    # Marketplaces / retail / e-commerce
+    'amazon.com', 'ebay.com', 'etsy.com', 'walmart.com', 'target.com',
+    'aliexpress.com', 'shopify.com',
+    # Software directories / review marketplaces (NOT editorial media)
+    'g2.com', 'capterra.com', 'getapp.com', 'softwareadvice.com',
+    'trustradius.com', 'peerspot.com', 'softwarereviews.com',
+    'crozdesk.com', 'goodfirms.co', 'clutch.co', 'gartner.com/peer-insights',
+    'flexera.com', 'producthunt.com',
+    # Job boards
+    'indeed.com', 'glassdoor.com', 'ziprecruiter.com',
+    # Pure research / not pitchable as editorial
     'pubmed.ncbi.nlm.nih.gov', 'ncbi.nlm.nih.gov', 'who.int', 'cdc.gov',
     'arxiv.org', 'researchgate.net', 'sciencedirect.com', 'springer.com',
     'jstor.org', 'nature.com', 'science.org',
@@ -3080,10 +3108,12 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free"):
 
 Their goal: "{problem_statement}"
 
+Today's date is {_today_label()}. Frame the prompts as if a real person is searching right now — so when a prompt uses words like "latest", "recent", "today's", or "current", it should pull sources from the past 12 months, not 2023 or 2024.
+
 Your job:
 1. Identify the BRAND from their statement (the company/product they want to promote).
 2. Identify the CATEGORY or PROBLEM SPACE.
-3. Generate exactly {prompt_count} prompts that a real person would type into ChatGPT, Claude, or Gemini when researching this problem space. These should be natural, varied prompts — some broad ("best X for Y"), some specific ("X vs Y comparison"), some question-based ("how do I solve Y?"), some recommendation-seeking ("what do experts recommend for Y?"). At higher prompt counts, cover adjacent angles: pricing, alternatives, troubleshooting, expert opinions, regulatory considerations, real-world reviews, integration questions, regional perspectives.
+3. Generate exactly {prompt_count} prompts that a real person would type into ChatGPT, Claude, or Gemini when researching this problem space. These should be natural, varied prompts — some broad ("best X for Y"), some specific ("X vs Y comparison"), some question-based ("how do I solve Y?"), some recommendation-seeking ("what do experts recommend for Y?"). At higher prompt counts, cover adjacent angles: pricing, alternatives, troubleshooting, expert opinions, regulatory considerations, real-world reviews, integration questions, regional perspectives. Where appropriate, include time-current framing like "in {_today_label()}", "this year", or "the latest" — not year-specific shorthand.
 
 Respond with ONLY valid JSON in this exact format:
 {{
@@ -3108,8 +3138,10 @@ Respond with ONLY valid JSON in this exact format:
              for provider in llms]
     total_calls = len(tasks)
 
+    time_note = _time_aware_note()
+
     def run_one(provider, pi, prompt_text):
-        enriched = prompt_text + CITATION_SUFFIX
+        enriched = prompt_text + CITATION_SUFFIX + time_note
         try:
             resp_text = _call_llm(provider, enriched)
             return {"llm": provider, "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text)}
@@ -3194,9 +3226,9 @@ Produce THREE target lists:
 
 1. TOP {media_limit} MEDIA TARGETS — drawn ONLY from the EDITORIAL DOMAINS above. These are pitch-able publications.
 2. AUTHORITY & PARTNERSHIP TARGETS — drawn ONLY from the INSTITUTIONAL / ASSOCIATION DOMAINS above. Up to {institutional_limit}, only if meaningfully present. Universities, agencies, certification bodies, trade associations, advocacy non-profits, or government bodies.
-3. ANALYST TARGETS — drawn ONLY from the ANALYST FIRMS above. Up to {analyst_limit}, only if meaningfully present. Influence is via analyst relations, not pitching or partnership.
+3. ANALYST TARGETS — drawn ONLY from the ANALYST FIRMS above. Up to {analyst_limit}. ABSOLUTE RULE: if fewer than 2 distinct analyst firms appear in the ANALYST FIRMS list above (or none of them have 2+ citations), return an EMPTY array — `[]`. Do NOT invent analyst recommendations for categories that don't have analyst coverage (e.g. hospitality, fashion, consumer products, food & beverage, design, lifestyle). Influence is via analyst relations, not pitching or partnership.
 
-If a category has nothing, return an empty array for it.
+If a category has nothing, return an empty array for it. NEVER write speculative language like "the absence of analyst citations suggests..." or "limited B2B influence requires analyst investment" — silence is correct when the data is empty.
 
 For each target:
 - Map domain to its proper name (e.g. allure.com → Allure, nih.gov → National Institutes of Health, harvard.edu → Harvard University, omri.org → OMRI, garden.org → National Gardening Association, gartner.com → Gartner, forrester.com → Forrester)

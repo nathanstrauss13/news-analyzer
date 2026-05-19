@@ -1004,7 +1004,8 @@
             lastAuditContext = { slug: null, problem_statement: input, tier: tier };
 
             const subtitleEl = document.getElementById('initialSubtitle');
-            if (subtitleEl) subtitleEl.style.display = 'none';
+            const setSubtitleVisible = (visible) => { if (subtitleEl) subtitleEl.style.display = visible ? '' : 'none'; };
+            setSubtitleVisible(false);
             document.getElementById('formSection').classList.add('hidden');
             document.getElementById('errorMsg').classList.remove('active');
             document.getElementById('loading').classList.add('active');
@@ -1026,6 +1027,7 @@
                     const data = await response.json().catch(() => ({}));
                     document.getElementById('loading').classList.remove('active');
                     document.getElementById('formSection').classList.remove('hidden');
+                    setSubtitleVisible(true);
                     if (data.code === 'auth_required') {
                         window.location.href = '/signal/login?next=' + encodeURIComponent('/citation-audit');
                         return;
@@ -1062,6 +1064,7 @@
                                 } else if (msg.type === 'error') {
                                     document.getElementById('loading').classList.remove('active');
                                     document.getElementById('formSection').classList.remove('hidden');
+                                    setSubtitleVisible(true);
                                     document.getElementById('errorMsg').textContent = msg.error || 'Something went wrong.';
                                     document.getElementById('errorMsg').classList.add('active');
                                     return;
@@ -1075,6 +1078,7 @@
             }).catch(() => {
                 document.getElementById('loading').classList.remove('active');
                 document.getElementById('formSection').classList.remove('hidden');
+                setSubtitleVisible(true);
                 document.getElementById('errorMsg').textContent = 'Network error. Please try again.';
                 document.getElementById('errorMsg').classList.add('active');
             });
