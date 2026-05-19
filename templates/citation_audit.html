@@ -1259,6 +1259,19 @@
                                     document.getElementById('loading').classList.remove('active');
                                     lastAuditContext.slug = msg.data.slug || null;
                                     renderResults(msg.data);
+                                    // Update the URL to the shareable slug so the browser's Back
+                                    // button (from a 404, sign-in page, or any subsequent nav)
+                                    // returns to THIS report instead of reloading the empty form.
+                                    // The /signal/<slug> route re-renders the saved report.
+                                    if (msg.data.slug) {
+                                        try {
+                                            const newPath = '/signal/' + msg.data.slug;
+                                            window.history.pushState({slug: msg.data.slug}, '', newPath);
+                                            if (msg.data.brand) {
+                                                document.title = msg.data.brand + ' signal report — AI Citation Audit';
+                                            }
+                                        } catch (e) {}
+                                    }
                                     return;
                                 } else if (msg.type === 'error') {
                                     document.getElementById('loading').classList.remove('active');
@@ -1597,6 +1610,20 @@
                 if (btn) { btn.disabled = false; btn.innerHTML = btn._originalText; }
             }
         }
+
+        // When the user clicks Back from /signal/<slug> back to /citation-audit (which they
+        // got to via our pushState after audit completion), force a fresh reload so the
+        // form view is clean — otherwise the in-memory results would still be visible
+        // even though the URL has reset.
+        window.addEventListener('popstate', function() {
+            const path = window.location.pathname;
+            if (path === '/citation-audit') {
+                window.location.reload();
+            } else if (path.startsWith('/signal/') && !path.endsWith('.pdf')) {
+                // Back/forward to a /signal/<slug> URL — let the server render the saved report.
+                window.location.reload();
+            }
+        });
 
         // Prefill from query string (used after successful checkout to resume the same problem statement).
         (function applyPrefill() {
