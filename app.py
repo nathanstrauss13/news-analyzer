@@ -3771,7 +3771,16 @@ def current_user_credits(user):
 def signal_login_required(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
-        if not session.get('signal_user_id'):
+        uid = session.get('signal_user_id')
+        if not uid:
+            return redirect(url_for('signal_login', next=request.path))
+        # Defensive: the session cookie can outlive the underlying user row
+        # (Render Starter's disk can reset across deploys, wiping SQLite). Without
+        # this check, signal_login redirects to signal_dashboard, dashboard finds
+        # no user and redirects back to login → infinite loop. Clear stale sessions.
+        if not SignalUser.query.get(uid):
+            session.pop('signal_user_id', None)
+            session.pop('signal_post_login_next', None)
             return redirect(url_for('signal_login', next=request.path))
         return view(*args, **kwargs)
     return wrapper
@@ -3816,7 +3825,14 @@ def _send_magic_link_email(email, raw_token):
 @app.route('/signal/login', methods=['GET', 'POST'])
 def signal_login():
     if session.get('signal_user_id'):
-        return redirect(url_for('signal_dashboard'))
+        # Only redirect to dashboard if the session points at an actual user.
+        # Otherwise wipe the stale cookie and fall through to render the login form
+        # — avoids the login↔dashboard redirect loop when the user row has been
+        # deleted/lost (e.g. Render disk reset between deploys).
+        if SignalUser.query.get(session['signal_user_id']):
+            return redirect(url_for('signal_dashboard'))
+        session.pop('signal_user_id', None)
+        session.pop('signal_post_login_next', None)
     nxt = request.values.get('next') or url_for('signal_dashboard')
     if request.method == 'GET':
         return render_template(
