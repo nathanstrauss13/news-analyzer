@@ -2979,7 +2979,11 @@ def extract_urls(text):
 
 
 def aggregate_citations(all_responses):
-    """Count citation URLs by domain across responses, tracking LLMs and prompts."""
+    """Count citation URLs by domain across responses, tracking LLMs and prompts.
+    Ranking uses a diversity-weighted score so a domain cited by N LLMs ranks
+    above one cited only by a single LLM at the same raw count — kills the
+    'one LLM dominates and crowds out broader consensus' failure mode.
+    """
     domain_data = {}
     for resp in all_responses:
         urls = resp.get('citations', [])
@@ -3002,8 +3006,104 @@ def aggregate_citations(all_responses):
         d['llms'] = list(d['llms'])
         d['prompts'] = list(d['prompts'])
         d['urls'] = list(set(d['urls']))[:10]
+        # diversity_score = count * (1 + 0.25 * (distinct LLMs - 1))
+        # 1 LLM: ×1.00 · 2 LLMs: ×1.25 · 3 LLMs: ×1.50 · 4: ×1.75 · 5: ×2.00
+        d['diversity_score'] = d['count'] * (1 + 0.25 * max(0, len(d['llms']) - 1))
 
-    return sorted(domain_data.values(), key=lambda x: x['count'], reverse=True)
+    return sorted(domain_data.values(), key=lambda x: x['diversity_score'], reverse=True)
+
+
+def _count_brand_mentions(brand, all_responses):
+    """Deterministic, case-insensitive, word-boundary count of how many responses
+    mention the brand. Replaces the previous LLM-estimated count which was
+    biased low because the analysis prompt only saw 500-char excerpts of each
+    response (so mentions past char 500 were silently dropped)."""
+    if not brand:
+        return 0
+    # Word-boundary regex; brand names with whitespace work via re.escape.
+    pattern = re.compile(r'\b' + re.escape(brand) + r'\b', re.IGNORECASE)
+    return sum(1 for r in all_responses if pattern.search(r.get('response', '') or ''))
+
+
+_URL_VALIDATION_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+}
+
+
+def _resolve_and_verify_urls(urls, timeout=4, max_workers=20):
+    """HEAD-check + redirect-resolve a batch of URLs concurrently.
+
+    Returns a dict {original_url: final_url_or_None}.
+    - None means: confabulated (404/410), DNS failure, or refused connection.
+    - final_url may differ from original (Gemini's grounding URLs redirect from
+      vertexaisearch.cloud.google.com → real source; we use the real URL/domain).
+    - For 403 / 5xx / timeouts we err toward KEEPING the URL (might be bot-blocked
+      but real). Only definitive negatives are dropped.
+    """
+    out = {}
+
+    def check(u):
+        try:
+            r = requests.head(u, timeout=timeout, allow_redirects=True,
+                              headers=_URL_VALIDATION_HEADERS)
+            if r.status_code in (404, 410):
+                return (u, None)
+            if r.status_code < 400:
+                return (u, r.url)
+            # Some sites block HEAD; retry as a streaming GET.
+            r = requests.get(u, timeout=timeout, allow_redirects=True, stream=True,
+                             headers=_URL_VALIDATION_HEADERS)
+            try:
+                r.close()
+            except Exception:
+                pass
+            if r.status_code in (404, 410):
+                return (u, None)
+            if r.status_code < 400:
+                return (u, r.url)
+            # Bot-blocked even on GET; assume real and keep original.
+            return (u, u)
+        except requests.exceptions.ConnectionError:
+            return (u, None)  # DNS / connection refused = confabulated
+        except Exception:
+            return (u, u)  # timeout / TLS quirks — keep, don't penalize real URLs
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(check, u) for u in urls]
+        for fut in as_completed(futures):
+            try:
+                orig, final = fut.result()
+                out[orig] = final
+            except Exception:
+                pass
+    return out
+
+
+def _apply_url_resolution(all_responses, url_map):
+    """Rewrite each citation in-place: drop unverified, re-key valid ones under
+    their final (post-redirect) URL + domain. Returns count of dropped URLs."""
+    dropped = 0
+    for r in all_responses:
+        new_cits = []
+        for c in r.get('citations', []) or []:
+            final = url_map.get(c['url'])
+            if not final:
+                dropped += 1
+                continue
+            try:
+                host = final.split('/')[2].lower()
+                host = host[4:] if host.startswith('www.') else host
+                if host in DOMAIN_BLACKLIST:
+                    dropped += 1
+                    continue
+                new_cits.append({'url': final, 'domain': host})
+            except Exception:
+                dropped += 1
+                continue
+        r['citations'] = new_cits
+    return dropped
 
 
 TIER_CONFIG = {
@@ -3052,11 +3152,42 @@ def _call_llm(provider, enriched_prompt):
         if not gemini_client:
             raise RuntimeError("GEMINI_API_KEY not configured")
         gemini_prompt = enriched_prompt + "\n\nWhen providing information, please include specific sources and references. Format any sources as: Reference: [Source Name] - URL. Include authoritative sources like news sites, company websites, industry reports."
-        resp = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=gemini_prompt,
-        )
-        return resp.text
+        # Try gemini-2.5-flash with Google Search grounding (yields real, current URLs).
+        # Fall back to plain 2.0-flash without grounding if the SDK / model / tool isn't available.
+        try:
+            from google.genai import types as _genai_types
+            grounding_config = _genai_types.GenerateContentConfig(
+                tools=[_genai_types.Tool(google_search=_genai_types.GoogleSearch())],
+                temperature=0.7,
+            )
+            resp = gemini_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=gemini_prompt,
+                config=grounding_config,
+            )
+            text = resp.text or ""
+            # Append grounding URIs so extract_urls() picks them up (URL-validation
+            # pass later resolves the redirects back to the real source domain).
+            try:
+                for cand in (resp.candidates or []):
+                    gm = getattr(cand, 'grounding_metadata', None)
+                    if not gm:
+                        continue
+                    for chunk in (getattr(gm, 'grounding_chunks', None) or []):
+                        web = getattr(chunk, 'web', None)
+                        uri = getattr(web, 'uri', None) if web else None
+                        if uri:
+                            text += f"\nSource: {uri}"
+            except Exception:
+                pass
+            return text
+        except Exception as e:
+            print("Gemini grounding fallback:", e)
+            resp = gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=gemini_prompt,
+            )
+            return resp.text
     if provider == "Perplexity":
         if not perplexity_client:
             raise RuntimeError("PERPLEXITY_API_KEY not configured")
@@ -3113,7 +3244,14 @@ Today's date is {_today_label()}. Frame the prompts as if a real person is searc
 Your job:
 1. Identify the BRAND from their statement (the company/product they want to promote).
 2. Identify the CATEGORY or PROBLEM SPACE.
-3. Generate exactly {prompt_count} prompts that a real person would type into ChatGPT, Claude, or Gemini when researching this problem space. These should be natural, varied prompts — some broad ("best X for Y"), some specific ("X vs Y comparison"), some question-based ("how do I solve Y?"), some recommendation-seeking ("what do experts recommend for Y?"). At higher prompt counts, cover adjacent angles: pricing, alternatives, troubleshooting, expert opinions, regulatory considerations, real-world reviews, integration questions, regional perspectives. Where appropriate, include time-current framing like "in {_today_label()}", "this year", or "the latest" — not year-specific shorthand.
+3. Generate exactly {prompt_count} prompts that a real person would type into ChatGPT, Claude, or Gemini when researching this problem space. These should be natural, varied prompts — some broad ("best X for Y"), some specific (the BRAND itself can be named, e.g. "{{brand}} reviews", "{{brand}} alternatives"), some question-based ("how do I solve Y?"), some recommendation-seeking ("what do experts recommend for Y?"). At higher prompt counts, cover adjacent angles: pricing, alternatives, troubleshooting, expert opinions, regulatory considerations, real-world reviews, integration questions, regional perspectives. Where appropriate, include time-current framing like "in {_today_label()}", "this year", or "the latest" — not year-specific shorthand.
+
+CRITICAL — DO NOT PRE-NAME COMPETITORS:
+- You MAY reference the searched brand by name in some prompts (it's their own audit; that's natural).
+- You MUST NOT pre-name specific competitor brands. NEVER write "BrandA vs BrandB vs BrandC" — that pre-anchors the responses and biases the competitor discovery.
+- For comparison-style prompts, use OPEN framing: "{{brand}} alternatives", "{{brand}} vs competitors", "{{brand}} vs other leading brands in [category]", "how does {{brand}} compare to others in [category]".
+- The goal is to let each LLM organically surface ITS OWN top competitors so we measure the real AI-mindshare competitive landscape, not just confirm the brands the prompt fed in.
+- At most 30% of the prompts should reference the searched brand by name; the rest should be brand-agnostic category queries (e.g. "best [category] for [audience]"). This balances brand-specific recall with discovering the open competitive set.
 
 Respond with ONLY valid JSON in this exact format:
 {{
@@ -3162,10 +3300,20 @@ Respond with ONLY valid JSON in this exact format:
                 completed += 1
                 emit("llm", f"Completed {completed}/{total_calls} ({result['llm']})", completed, total_calls)
 
-    emit("extract", "Extracting and aggregating citations...", 0, 1)
+    emit("extract", "Verifying cited URLs (filtering 404s & confabulations)...", 0, 2)
+    all_urls = list({c['url'] for r in all_responses for c in (r.get('citations') or [])})
+    if all_urls:
+        url_map = _resolve_and_verify_urls(all_urls)
+        dropped = _apply_url_resolution(all_responses, url_map)
+        emit("extract", f"Verified {len(all_urls) - dropped} of {len(all_urls)} URLs (dropped {dropped} dead/confabulated)", 1, 2)
+    else:
+        emit("extract", "No URLs to verify", 1, 2)
+
+    emit("extract", "Aggregating citations by domain...", 1, 2)
     ranked_domains = aggregate_citations(all_responses)
     total_citations = sum(d['count'] for d in ranked_domains)
-    emit("extract", f"Found {total_citations} citations across {len(ranked_domains)} domains", 1, 1)
+    brand_mention_count = _count_brand_mentions(brand, all_responses)
+    emit("extract", f"Found {total_citations} citations across {len(ranked_domains)} domains · brand cited in {brand_mention_count}/{len(all_responses)} responses", 2, 2)
 
     emit("analysis", "Verifying editorial sources...", 0, 1)
 
@@ -3205,6 +3353,9 @@ Respond with ONLY valid JSON in this exact format:
 
 The client's brand is "{brand}". Their goal: "{problem_statement}"
 
+DETERMINISTIC FACTS (pre-computed from raw response text — use these EXACTLY, do not re-estimate):
+- Brand mention count: {brand_mention_count} of {len(all_responses)} responses mention "{brand}" (deterministic substring count over full response text — authoritative).
+
 The citation data has been pre-classified into three groups:
 
 EDITORIAL DOMAINS (news, trade press, magazines, B2B publications — outlets a PR pro can actually pitch):
@@ -3241,7 +3392,7 @@ Respond with ONLY valid JSON:
 {{
   "brand": "{brand}",
   "category": "{category}",
-  "brand_mention_count": <number of times {brand} appeared across all 30 responses>,
+  "brand_mention_count": {brand_mention_count},
   "total_responses": {len(all_responses)},
   "total_citations_extracted": {total_citations},
   "competitors": [
@@ -3258,7 +3409,7 @@ Respond with ONLY valid JSON:
       "cited_by_llms": ["which LLMs cited this outlet"],
       "competitors_citing": ["competitors discussed in responses that cited this outlet"],
       "rationale": "One sentence on why earned media here would move the needle for {brand}",
-      "gap_insight": "What specifically competitors are getting credit for via this outlet that {brand} should own"
+      "gap_insight": "DATA-DRIVEN: If competitors are explicitly discussed alongside the brand at this outlet (see competitors_citing), name the specific format/topic where competitors win (e.g. 'Spanx dominates the best-of roundup format here while {brand} only gets standalone product reviews'). If competitors_citing is empty for this outlet, frame it as untapped whitespace — opportunity, not gap. NEVER invent competitor dominance from thin air."
     }}
   ],
   "institutional_targets": [
@@ -3286,7 +3437,7 @@ Respond with ONLY valid JSON:
       "analyst_play": "One sentence on the specific analyst relations move: which evaluation to target, briefing cadence to establish, sponsored research, or client subscription that would shift citations"
     }}
   ],
-  "executive_summary": "3-4 sentences. Lead with the editorial findings — what they reveal about how AI describes {brand} and competitors, and where earned media will move the needle. Discuss analyst relations or authority partnerships ONLY if the corresponding target lists below contain actual entries. For consumer brands or categories where analyst firms are not relevant (hospitality, fashion, food & beverage, consumer products, etc.), do NOT mention analysts or speculate about their absence — silence is fine."
+  "executive_summary": "3-4 sentences. DATA-ANCHORED FRAMING — read the actual numbers before choosing your tone:\n  (1) Compare {brand_mention_count} (the brand's mention count) to the TOP competitor mention count from the 'competitors' array.\n  (2) If {brand} >= top competitor: LEAD with the brand's dominant or competitive AI mindshare in the category. Frame the strategy as 'protect and extend the lead' or 'convert volume into the right kind of authoritative coverage'. NEVER say the brand 'lacks editorial authority' or is 'underrepresented' if its mention count beats competitors — that's empirically wrong.\n  (3) If {brand} is significantly behind top competitor: frame as a visibility gap that earned media can close. Be specific.\n  (4) Per-target observations should focus on the EDITORIAL FORMAT gap (e.g. brand wins product reviews but loses 'best of' roundups) — not blanket 'competitors dominate' claims if data doesn't support it. Look at competitors_citing per outlet: an empty competitors_citing means the outlet is open whitespace for {brand}, not a competitive bloodbath.\n  (5) Discuss analyst relations or authority partnerships ONLY if the corresponding target lists below contain actual entries. For consumer brands or categories where analyst firms are not relevant (hospitality, fashion, food & beverage, consumer products, etc.), do NOT mention analysts or speculate about their absence — silence is fine."
 }}"""
         }]
     )
