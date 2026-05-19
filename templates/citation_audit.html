@@ -413,27 +413,56 @@
             cursor: pointer;
         }
         .signal-header .auth-cluster .logout-btn:hover { border-color: #5c6cff; color: #cfd2ff; }
-        .tier-toggle {
-            display: flex;
+        /* Tier picker (segmented two-button) on the main search page */
+        .tier-picker {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
             gap: 10px;
-            align-items: flex-start;
-            margin: 8px 0 16px;
-            padding: 12px 14px;
-            border: 1px solid #2a2a4a;
+            margin: 14px 0 18px;
+        }
+        @media (max-width: 560px) { .tier-picker { grid-template-columns: 1fr; } }
+        .tier-card {
+            position: relative;
+            padding: 14px 16px;
             border-radius: 10px;
+            border: 1px solid #2a2a4a;
             background: #11132a;
+            cursor: pointer;
+            transition: border-color .15s, background .15s, transform .1s;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .tier-card:hover { border-color: #4a5aff; background: #14163a; }
+        .tier-card.selected {
+            border-color: #5c6cff;
+            background: linear-gradient(135deg, #1a1a3a 0%, #14163a 100%);
+            box-shadow: 0 0 0 2px rgba(92, 108, 255, 0.25);
+        }
+        .tier-card input { position: absolute; opacity: 0; pointer-events: none; }
+        .tier-card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .tier-card-title { font-size: 14px; font-weight: 600; color: #fff; }
+        .tier-card-price {
             font-size: 13px;
+            font-weight: 700;
             color: #cfd2ff;
+            background: #1a1a3a;
+            padding: 2px 8px;
+            border-radius: 12px;
         }
-        .tier-toggle input[type="checkbox"] {
-            margin-top: 3px;
-            accent-color: #5c6cff;
-        }
-        .tier-toggle .tier-detail {
-            color: #888;
+        .tier-card-price.free { color: #5aff8a; background: #0e1a14; }
+        .tier-card-detail {
             font-size: 12px;
-            margin-top: 3px;
+            color: #888;
+            line-height: 1.45;
         }
+        .tier-card-detail strong { color: #cfd2ff; font-weight: 600; }
+        /* Legacy tier-toggle styles retained as fallback if other templates depend on them */
+        .tier-toggle { display: none; }
         .form-hint-link {
             font-size: 13px;
             color: #888;
@@ -896,19 +925,30 @@
             <div class="input-group">
                 <textarea id="problemInput" placeholder="e.g. I want ACME Corp to be known as the premier brand of widgets" rows="3"></textarea>
             </div>
-            {% if signal_user and (signal_credits or 0) > 0 %}
-                <label class="tier-toggle" for="tierToggle">
-                    <input type="checkbox" id="tierToggle">
-                    <span>
-                        <strong>Run paid audit (uses 1 credit)</strong>
-                        <div class="tier-detail">100 prompts × 5 LLMs (Claude / ChatGPT / Gemini / Perplexity / Grok) — top 25 media targets. {{ signal_credits or 0 }} credit{{ '' if signal_credits == 1 else 's' }} remaining.</div>
-                    </span>
+
+            <div class="tier-picker" role="radiogroup" aria-label="Audit depth">
+                <label class="tier-card selected" id="tierCardFree" data-tier="free">
+                    <input type="radio" name="tier" value="free" checked>
+                    <div class="tier-card-head">
+                        <span class="tier-card-title">Free audit</span>
+                        <span class="tier-card-price free">Free</span>
+                    </div>
+                    <div class="tier-card-detail"><strong>10 prompts × 3 LLMs</strong> · Claude · ChatGPT · Gemini · ~60-90s</div>
                 </label>
-            {% endif %}
+                <label class="tier-card" id="tierCardPaid" data-tier="paid">
+                    <input type="radio" name="tier" value="paid">
+                    <div class="tier-card-head">
+                        <span class="tier-card-title">Deeper audit</span>
+                        <span class="tier-card-price" id="tierCardPaidPrice">
+                            {% if signal_user and (signal_credits or 0) > 0 %}1 credit{% else %}$25{% endif %}
+                        </span>
+                    </div>
+                    <div class="tier-card-detail"><strong>100 prompts × 5 LLMs</strong> · adds Perplexity + Grok · top 25 targets · ~3-5 min</div>
+                </label>
+            </div>
+
             <button class="btn" id="submitBtn" onclick="runAudit()">Identify PR Targets</button>
-            {% if signal_user and (signal_credits or 0) == 0 %}
-                <div class="form-hint-link">Out of credits. <a href="{{ url_for('signal_dashboard') }}">Buy more &rarr;</a></div>
-            {% endif %}
+            <div class="form-hint-link" id="formHint" style="display:none"></div>
         </div>
 
         <div class="error-msg" id="errorMsg"></div>
@@ -936,6 +976,8 @@
         window.SHARED_REPORT = {{ shared_data | tojson | safe if shared_data else 'null' }};
         window.SIGNAL_SHARE_URL = {{ share_url | tojson | safe if share_url else 'null' }};
         window.SIGNAL_PDF_URL   = {{ pdf_url   | tojson | safe if pdf_url   else 'null' }};
+        window.SIGNAL_USER      = {{ 'true' if signal_user else 'false' }};
+        window.SIGNAL_CREDITS   = {{ signal_credits or 0 }};
     </script>
 
     <div class="modal-overlay" id="demoModal" onclick="if(event.target===this)closeDemoModal()">
@@ -977,14 +1019,40 @@
     <script>
         const CIRCUMFERENCE = 2 * Math.PI * 52; // 326.73
 
+        // Tuned to actual wall-clock split after LLM parallelization + URL validation:
+        // free audit ~60-90s, paid audit ~3-5min. The extract step is now ~25% of
+        // wall time (it does URL HEAD checks for every cited URL).
         const STEP_WEIGHTS = {
-            prompts:  0.05,
-            llm:      0.75,
-            extract:  0.05,
-            analysis: 0.15,
+            prompts:  0.10,
+            llm:      0.45,
+            extract:  0.25,
+            analysis: 0.20,
         };
 
         const STEP_ORDER = ['prompts', 'llm', 'extract', 'analysis'];
+
+        // --- Learning ETA: store recent audit durations per tier in localStorage,
+        // blend the median historical duration with linear extrapolation so the
+        // ETA is sensible from the very first progress event. ---
+        function _getHistory(tier) {
+            try {
+                const arr = JSON.parse(localStorage.getItem('audit_dur_' + tier) || '[]');
+                if (arr.length < 1) return null;
+                const sorted = [...arr].sort((a, b) => a - b);
+                return sorted[Math.floor(sorted.length / 2)];
+            } catch (e) { return null; }
+        }
+        function _recordDuration(tier, seconds) {
+            try {
+                const key = 'audit_dur_' + tier;
+                const arr = JSON.parse(localStorage.getItem(key) || '[]');
+                arr.push(seconds);
+                while (arr.length > 10) arr.shift();
+                localStorage.setItem(key, JSON.stringify(arr));
+            } catch (e) {}
+        }
+        // Reasonable defaults until the user has run their first audit of each tier.
+        const _ETA_DEFAULTS = { free: 75, paid: 240 };
 
         let auditStartTime = null;
 
@@ -1014,25 +1082,117 @@
             progressEl.style.strokeDashoffset = offset.toString();
             timeEl.textContent = `${Math.round(clamped * 100)}%`;
 
-            // ETA: wait until we've crossed 5% so the estimate isn't wild.
+            // Learning ETA: blend the user's historical median for this tier with
+            // a linear extrapolation from current progress. At low progress we lean
+            // on the historical estimate; as progress fills, linear takes over.
             if (etaEl && auditStartTime) {
                 if (clamped >= 0.99) {
                     etaEl.textContent = 'almost done';
-                } else if (clamped > 0.05) {
-                    const elapsed = (Date.now() - auditStartTime) / 1000;
-                    const remaining = elapsed * (1 - clamped) / clamped;
-                    etaEl.textContent = `~${formatDuration(remaining)} left  ·  ${formatDuration(elapsed)} elapsed`;
                 } else {
-                    etaEl.textContent = 'estimating...';
+                    const elapsed = (Date.now() - auditStartTime) / 1000;
+                    const tier = (lastAuditContext && lastAuditContext.tier) || 'free';
+                    const historical = _getHistory(tier) || _ETA_DEFAULTS[tier] || 75;
+                    const historicalRemaining = Math.max(2, historical - elapsed);
+                    const linearETA = clamped > 0 ? elapsed * (1 - clamped) / clamped : historicalRemaining;
+                    // Weight historical higher when we're early (less reliable linear).
+                    const w = Math.max(0, 1 - clamped);  // 1.0 → 0
+                    const remaining = w * historicalRemaining + (1 - w) * linearETA;
+                    etaEl.textContent = `~${formatDuration(remaining)} left  ·  ${formatDuration(elapsed)} elapsed`;
                 }
+            }
+        }
+
+        // --- Tier picker state ---
+        let selectedTier = 'free';
+
+        function selectTier(tier) {
+            selectedTier = tier;
+            const free = document.getElementById('tierCardFree');
+            const paid = document.getElementById('tierCardPaid');
+            if (free) free.classList.toggle('selected', tier === 'free');
+            if (paid) paid.classList.toggle('selected', tier === 'paid');
+            document.querySelectorAll('input[name="tier"]').forEach(r => { r.checked = r.value === tier; });
+            updateSubmitLabel();
+        }
+
+        function updateSubmitLabel() {
+            const btn = document.getElementById('submitBtn');
+            const hint = document.getElementById('formHint');
+            if (!btn) return;
+            const credits = (window.SIGNAL_CREDITS || 0);
+            const loggedIn = !!window.SIGNAL_USER;
+            if (selectedTier === 'paid') {
+                if (loggedIn && credits > 0) {
+                    btn.textContent = 'Run deeper audit (1 credit) →';
+                    if (hint) hint.style.display = 'none';
+                } else {
+                    btn.textContent = 'Buy & run deeper audit · $25 →';
+                    if (hint) {
+                        hint.innerHTML = 'Apple Pay · Google Pay · Card. Secure checkout via Stripe. Your audit starts right after payment.';
+                        hint.style.display = '';
+                    }
+                }
+            } else {
+                btn.textContent = 'Identify PR Targets';
+                if (hint) hint.style.display = 'none';
+            }
+        }
+
+        // Wire tier-card clicks once the DOM is parsed.
+        (function attachTierCardHandlers() {
+            const free = document.getElementById('tierCardFree');
+            const paid = document.getElementById('tierCardPaid');
+            if (free) free.addEventListener('click', (e) => { e.preventDefault(); selectTier('free'); });
+            if (paid) paid.addEventListener('click', (e) => { e.preventDefault(); selectTier('paid'); });
+            updateSubmitLabel();
+        })();
+
+        async function buyAndRun(problemStatement) {
+            const btn = document.getElementById('submitBtn');
+            const errEl = document.getElementById('errorMsg');
+            if (errEl) errEl.classList.remove('active');
+            const origLabel = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Opening secure checkout...';
+            try {
+                const resp = await fetch('/signal/checkout/single', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ problem_statement: problemStatement, autostart: true }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok && data.url) {
+                    window.location.href = data.url;
+                    return;
+                }
+                if (errEl) {
+                    errEl.textContent = (data && data.error) ? data.error : 'Checkout is not available right now.';
+                    errEl.classList.add('active');
+                }
+                btn.disabled = false;
+                btn.textContent = origLabel;
+            } catch (e) {
+                if (errEl) {
+                    errEl.textContent = 'Network error: ' + (e && e.message ? e.message : 'unknown');
+                    errEl.classList.add('active');
+                }
+                btn.disabled = false;
+                btn.textContent = origLabel;
             }
         }
 
         function runAudit() {
             const input = document.getElementById('problemInput').value.trim();
             if (!input) return;
-            const tierToggle = document.getElementById('tierToggle');
-            const tier = (tierToggle && tierToggle.checked) ? 'paid' : 'free';
+            const tier = selectedTier || 'free';
+
+            // Paid tier without credits → route to Stripe Checkout immediately.
+            // After payment, the success page auto-logs the user in + restarts the audit.
+            if (tier === 'paid' && (!window.SIGNAL_USER || (window.SIGNAL_CREDITS || 0) < 1)) {
+                buyAndRun(input);
+                return;
+            }
+
             lastAuditContext = { slug: null, problem_statement: input, tier: tier };
 
             const subtitleEl = document.getElementById('initialSubtitle');
@@ -1091,6 +1251,11 @@
                                 if (msg.type === 'progress') {
                                     updateProgress(msg.step, msg.detail, msg.current, msg.total);
                                 } else if (msg.type === 'result') {
+                                    // Record audit duration so the learning ETA gets better.
+                                    if (auditStartTime) {
+                                        const dur = (Date.now() - auditStartTime) / 1000;
+                                        _recordDuration((lastAuditContext && lastAuditContext.tier) || 'free', dur);
+                                    }
                                     document.getElementById('loading').classList.remove('active');
                                     lastAuditContext.slug = msg.data.slug || null;
                                     renderResults(msg.data);
@@ -1439,13 +1604,20 @@
                 const params = new URLSearchParams(window.location.search);
                 const prefill = params.get('prefill');
                 const runPaid = params.get('run_paid') === '1';
+                const autostart = params.get('autostart') === '1';
                 if (prefill) {
                     const input = document.getElementById('problemInput');
                     if (input) input.value = prefill;
                 }
                 if (runPaid) {
-                    const toggle = document.getElementById('tierToggle');
-                    if (toggle) toggle.checked = true;
+                    selectTier('paid');
+                }
+                // After Stripe success, autostart=1 triggers the audit automatically.
+                // Brief delay so the user sees the form populate before it disappears into the loading state.
+                if (autostart && prefill) {
+                    setTimeout(() => {
+                        try { runAudit(); } catch (e) { console.error('autostart failed', e); }
+                    }, 600);
                 }
             } catch (e) {}
         })();

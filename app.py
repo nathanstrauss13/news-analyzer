@@ -3032,7 +3032,7 @@ _URL_VALIDATION_HEADERS = {
 }
 
 
-def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40):
+def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None):
     """HEAD-check + redirect-resolve a batch of URLs concurrently.
 
     Returns a dict {original_url: final_url_or_None}.
@@ -3079,6 +3079,8 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40):
         except Exception:
             return (u, u)  # timeout / TLS quirks — keep, don't penalize real URLs
 
+    completed = 0
+    total = len(urls)
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = [ex.submit(check, u) for u in urls]
         for fut in as_completed(futures):
@@ -3087,6 +3089,15 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40):
                 out[orig] = final
             except Exception:
                 pass
+            completed += 1
+            if on_progress:
+                # Emit progress periodically (every 5 URLs or on completion) so the
+                # frontend ETA can update smoothly through this step.
+                if completed % 5 == 0 or completed == total:
+                    try:
+                        on_progress(completed, total)
+                    except Exception:
+                        pass
     return out
 
 
@@ -3309,20 +3320,27 @@ Respond with ONLY valid JSON in this exact format:
                 completed += 1
                 emit("llm", f"Completed {completed}/{total_calls} ({result['llm']})", completed, total_calls)
 
-    emit("extract", "Verifying cited URLs (filtering 404s & confabulations)...", 0, 2)
+    # URL verification consumes 80% of the extract step's progress budget; aggregation is the rest.
+    # We size the step "total" relative to URL count so per-URL progress emits map cleanly.
     all_urls = list({c['url'] for r in all_responses for c in (r.get('citations') or [])})
-    if all_urls:
-        url_map = _resolve_and_verify_urls(all_urls)
-        dropped = _apply_url_resolution(all_responses, url_map)
-        emit("extract", f"Verified {len(all_urls) - dropped} of {len(all_urls)} URLs (dropped {dropped} dead/confabulated)", 1, 2)
-    else:
-        emit("extract", "No URLs to verify", 1, 2)
+    url_total = len(all_urls)
+    # Step total = url_total + 1 (the trailing aggregation tick). Lets ETA interpolate smoothly.
+    extract_total = max(1, url_total + 1)
+    emit("extract", f"Verifying {url_total} cited URLs (filtering 404s & confabulations)...", 0, extract_total)
 
-    emit("extract", "Aggregating citations by domain...", 1, 2)
+    if all_urls:
+        def url_progress(done, total):
+            emit("extract", f"Verifying URLs ({done}/{total})...", done, extract_total)
+        url_map = _resolve_and_verify_urls(all_urls, on_progress=url_progress)
+        dropped = _apply_url_resolution(all_responses, url_map)
+        emit("extract", f"Verified {url_total - dropped} of {url_total} URLs (dropped {dropped} dead/confabulated)", url_total, extract_total)
+    else:
+        emit("extract", "No URLs to verify", 0, extract_total)
+
     ranked_domains = aggregate_citations(all_responses)
     total_citations = sum(d['count'] for d in ranked_domains)
     brand_mention_count = _count_brand_mentions(brand, all_responses)
-    emit("extract", f"Found {total_citations} citations across {len(ranked_domains)} domains · brand cited in {brand_mention_count}/{len(all_responses)} responses", 2, 2)
+    emit("extract", f"Found {total_citations} citations across {len(ranked_domains)} domains · brand cited in {brand_mention_count}/{len(all_responses)} responses", extract_total, extract_total)
 
     emit("analysis", "Verifying editorial sources...", 0, 1)
 

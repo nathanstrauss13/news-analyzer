@@ -54,8 +54,8 @@
             <strong>{{ credits }}</strong>
             credit{{ '' if credits == 1 else 's' }} available
         </div>
-        {% set audit_qs = '?run_paid=1' + ('&prefill=' + (problem_statement | urlencode) if problem_statement else '') %}
-        <a class="primary" href="{{ url_for('citation_audit') }}{{ audit_qs }}">Run your paid audit &rarr;</a>
+        {% set audit_qs = '?run_paid=1&autostart=1' + ('&prefill=' + (problem_statement | urlencode) if problem_statement else '') %}
+        <a class="primary" href="{{ url_for('citation_audit') }}{{ audit_qs }}">Run your paid audit now &rarr;</a>
         {% if user %}
             <a class="secondary" href="{{ url_for('signal_dashboard') }}">Dashboard</a>
         {% endif %}
