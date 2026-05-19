@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Purchase complete — AI Citation Audit | PR Signal Finder</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'IBM Plex Sans', sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+        .card { max-width: 480px; width: 100%; background: #11132a; border: 1px solid #2a2a4a; border-radius: 14px; padding: 40px 36px; text-align: center; }
+        .eyebrow { font-size: 13px; font-weight: 500; color: #555; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 6px; }
+        h1 { font-size: 24px; color: #5aff8a; font-weight: 700; margin-bottom: 16px; }
+        p { font-size: 14px; color: #cfd2ff; margin-bottom: 14px; line-height: 1.6; }
+        .meta { font-size: 13px; color: #888; margin: 20px 0; }
+        .meta strong { color: #fff; font-size: 32px; display: block; }
+        a.primary {
+            display: inline-block;
+            padding: 12px 22px;
+            margin: 6px 4px;
+            background: linear-gradient(180deg, #5c6cff, #4751e8);
+            color: #fff; border-radius: 8px;
+            text-decoration: none; font-weight: 600; font-size: 14px;
+        }
+        a.primary:hover { opacity: 0.95; }
+        a.secondary {
+            display: inline-block;
+            padding: 12px 22px;
+            margin: 6px 4px;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            color: #cfd2ff;
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        a.secondary:hover { border-color: #5c6cff; }
+    </style>
+    {% if ga_measurement_id %}
+        <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
+        <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','{{ ga_measurement_id }}');</script>
+    {% endif %}
+</head>
+<body>
+    <div class="card">
+        <div class="eyebrow">Innate c3 insights — AI Citation Audit</div>
+        <h1>Thanks — payment received.</h1>
+        {% if purchase %}
+            <p>Your <strong>{{ purchase.product_label or 'credits' }}</strong> purchase has been confirmed and {{ purchase.credits_granted }} credit{{ '' if purchase.credits_granted == 1 else 's' }} added to your balance.</p>
+        {% else %}
+            <p>Your purchase is being processed. Credits typically appear within a few seconds after Stripe confirms the payment.</p>
+        {% endif %}
+        <div class="meta">
+            <strong>{{ credits }}</strong>
+            credit{{ '' if credits == 1 else 's' }} available
+        </div>
+        {% set audit_qs = '?run_paid=1' + ('&prefill=' + (problem_statement | urlencode) if problem_statement else '') %}
+        <a class="primary" href="{{ url_for('citation_audit') }}{{ audit_qs }}">Run your paid audit &rarr;</a>
+        {% if user %}
+            <a class="secondary" href="{{ url_for('signal_dashboard') }}">Dashboard</a>
+        {% endif %}
+        {% if user %}
+            <p style="margin-top:18px;font-size:12px;color:#888">
+                Signed in as {{ user.email }}{% if not purchase %} — your purchase is being confirmed, this page refreshes when it's ready.{% endif %}
+            </p>
+        {% else %}
+            <p style="margin-top:18px;font-size:12px;color:#888">
+                Confirmation pending. Refresh this page in a few seconds, or check your email for a sign-in link.
+            </p>
+        {% endif %}
+    </div>
+</body>
+</html>

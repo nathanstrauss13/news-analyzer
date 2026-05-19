@@ -8,10 +8,23 @@ import uuid
 import io
 import queue
 import threading
+import secrets
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Use the OS native trust store (macOS keychain / Windows cert store / Linux /etc/ssl).
+# Fixes "self-signed certificate in certificate chain" on Python.org Python builds
+# whose bundled CA path is missing. Harmless no-op on platforms where it's not needed.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
 from PIL import Image, ImageDraw, ImageFont
 from collections import Counter
 from datetime import datetime, timedelta
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
+import hashlib
+from functools import wraps
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response, session, abort
 from markupsafe import Markup
 from dotenv import load_dotenv
 from anthropic import Anthropic
@@ -86,6 +99,55 @@ class Subscription(db.Model):
     unsubscribe_token = db.Column(db.String(64), nullable=False, unique=True, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
+# ---------------------------------------------------------------------------
+# PR Signal Finder — paid-tier models
+# ---------------------------------------------------------------------------
+
+class SignalUser(db.Model):
+    __tablename__ = 'signal_users'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    last_login_at = db.Column(db.DateTime, nullable=True)
+
+class CreditBalance(db.Model):
+    __tablename__ = 'credit_balances'
+    user_id = db.Column(db.Integer, db.ForeignKey('signal_users.id'), primary_key=True)
+    credits_remaining = db.Column(db.Integer, default=0, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class Purchase(db.Model):
+    __tablename__ = 'purchases'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('signal_users.id'), index=True, nullable=False)
+    stripe_session_id = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    amount_cents = db.Column(db.Integer, nullable=False)
+    credits_granted = db.Column(db.Integer, nullable=False)
+    product_label = db.Column(db.String(64), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+class AuditRun(db.Model):
+    __tablename__ = 'audit_runs'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('signal_users.id'), index=True, nullable=True)
+    slug = db.Column(db.String(32), nullable=True, index=True)
+    tier = db.Column(db.String(16), default='free', nullable=False)
+    prompt_count = db.Column(db.Integer, nullable=True)
+    llm_count = db.Column(db.Integer, nullable=True)
+    credits_consumed = db.Column(db.Integer, default=0, nullable=False)
+    problem_statement = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+class LoginToken(db.Model):
+    __tablename__ = 'login_tokens'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    token_hash = db.Column(db.String(128), unique=True, nullable=False, index=True)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
 # Create the database tables
 with app.app_context():
     db.create_all()
@@ -118,6 +180,54 @@ try:
 except Exception:
     gemini_client = None
 print(f"GEMINI_API_KEY is {'set' if GEMINI_API_KEY else 'NOT SET'}")
+
+PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY") or os.environ.get("PPLX_API_KEY")
+try:
+    perplexity_client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="https://api.perplexity.ai") if PERPLEXITY_API_KEY else None
+except Exception:
+    perplexity_client = None
+print(f"PERPLEXITY_API_KEY is {'set' if PERPLEXITY_API_KEY else 'NOT SET'}")
+
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+try:
+    openrouter_client = OpenAI(api_key=OPENROUTER_API_KEY, base_url="https://openrouter.ai/api/v1") if OPENROUTER_API_KEY else None
+except Exception:
+    openrouter_client = None
+print(f"OPENROUTER_API_KEY is {'set' if OPENROUTER_API_KEY else 'NOT SET'}")
+
+# ---------------------------------------------------------------------------
+# Stripe configuration for paid tier
+# ---------------------------------------------------------------------------
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+STRIPE_PRICE_SINGLE = os.environ.get("STRIPE_PRICE_SINGLE")
+STRIPE_PRICE_PACK_5 = os.environ.get("STRIPE_PRICE_PACK_5")
+SIGNAL_BASE_URL = os.environ.get("SIGNAL_BASE_URL")  # e.g. https://signal.innatec3.com, falls back to request origin
+
+STRIPE_PRODUCTS = {
+    "single": {
+        "label": "Single audit",
+        "credits": 1,
+        "amount_display": "$25",
+        "price_id": STRIPE_PRICE_SINGLE,
+        "description": "One paid audit: 100 prompts × 5 LLMs, top 25 media targets.",
+    },
+    "pack_5": {
+        "label": "5 audit credits",
+        "credits": 5,
+        "amount_display": "$100",
+        "price_id": STRIPE_PRICE_PACK_5,
+        "description": "5 paid audits at $20 each. Credits never expire.",
+    },
+}
+
+try:
+    import stripe as stripe_lib
+    if STRIPE_SECRET_KEY:
+        stripe_lib.api_key = STRIPE_SECRET_KEY
+except Exception:
+    stripe_lib = None
+print(f"STRIPE_SECRET_KEY is {'set' if STRIPE_SECRET_KEY else 'NOT SET'}")
 
 def analyze_articles(articles, query):
     """Extract key metrics and patterns from articles."""
@@ -2250,7 +2360,7 @@ def email_summary():
             from sendgrid import SendGridAPIClient
             from sendgrid.helpers.mail import Mail
             msg = Mail(
-                from_email=("no-reply@innatec3.com", "innate c3"),
+                from_email=("nstrauss@innatec3.com", "innate c3"),
                 to_emails=[email],
                 subject=f"Media Analysis: {query1}" + (f" vs {query2}" if query2 else ""),
                 plain_text_content=text_body,
@@ -2595,7 +2705,7 @@ def _send_alert_email(email: str, slug: str, freq: str, items: list):
         lines.append("")
         lines.append("Unsubscribe: " + (request.url_root.rstrip('/') + f"/unsubscribe?token="))  # token added by caller
         msg = Mail(
-            from_email=("no-reply@innatec3.com", "innate c3"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=[email],
             subject="New coverage alert",
             plain_text_content="\n".join(lines),
@@ -2725,6 +2835,23 @@ NON_EDITORIAL_DOMAINS = {
     'jstor.org', 'nature.com', 'science.org',
 }
 
+# B2B vendors, software marketplaces, and review platforms that LLMs sometimes cite
+# but which are NOT pitchable media outlets. Used to suppress false-positive editorial classifications.
+NON_EDITORIAL_VENDORS = {
+    # Software review marketplaces
+    'g2.com', 'capterra.com', 'softwareadvice.com', 'getapp.com', 'trustradius.com',
+    'producthunt.com', 'trustpilot.com', 'sourceforge.net', 'alternativeto.net',
+    # Major SaaS / enterprise vendors (their own .com is rarely editorial)
+    'flexera.com', 'salesforce.com', 'hubspot.com', 'oracle.com', 'sap.com',
+    'atlassian.com', 'slack.com', 'monday.com', 'asana.com', 'notion.so',
+    'adobe.com', 'microsoft.com', 'aws.amazon.com', 'cloud.google.com',
+    'shopify.com', 'wordpress.com', 'wix.com', 'squarespace.com',
+    'zendesk.com', 'intercom.com', 'mailchimp.com', 'sendgrid.com',
+    # E-commerce / OTA aggregators
+    'expedia.com', 'booking.com', 'kayak.com', 'tripadvisor.com', 'yelp.com',
+    'glassdoor.com', 'indeed.com',
+}
+
 
 def classify_citation_domain(domain):
     """Return 'analyst', 'institutional', 'non_editorial', or 'editorial'."""
@@ -2732,6 +2859,8 @@ def classify_citation_domain(domain):
     d_stripped = d[4:] if d.startswith('www.') else d
 
     if d in NON_EDITORIAL_DOMAINS or d_stripped in NON_EDITORIAL_DOMAINS:
+        return 'non_editorial'
+    if d in NON_EDITORIAL_VENDORS or d_stripped in NON_EDITORIAL_VENDORS:
         return 'non_editorial'
     if d_stripped in ANALYST_DOMAINS or d in ANALYST_DOMAINS:
         return 'analyst'
@@ -2742,6 +2871,60 @@ def classify_citation_domain(domain):
     if d.endswith('.org'):
         return 'institutional'
     return 'editorial'
+
+
+def verify_editorial_domains(editorial_domains, brand, category):
+    """Filter the editorial list via Claude to drop B2B vendor/marketplace/non-media domains.
+
+    Returns (verified_media, rejected) — both lists in original ranking order.
+    On any failure, returns (editorial_domains, []) — safe to no-op.
+    """
+    if not editorial_domains:
+        return [], []
+    domains_to_check = editorial_domains[:30]
+    domain_list = "\n".join(f"- {d['domain']}" for d in domains_to_check)
+    try:
+        resp = anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1500,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "You are filtering a list of web domains to identify which are legitimate editorial "
+                    "MEDIA outlets that a PR professional could pitch — vs. which are SaaS vendors, "
+                    "software review marketplaces, e-commerce, community forums, or corporate sites "
+                    "that aren't pitchable media.\n\n"
+                    f"Context — brand: {brand}\nCategory: {category}\n\n"
+                    "Definition of MEDIA: newspapers, magazines, trade press, B2B publications, "
+                    "consumer publications, broadcast outlets, and digital-native news sites WITH "
+                    "editorial staff who write articles.\n\n"
+                    "Definition of NON-MEDIA (reject these): software vendor sites (e.g. salesforce.com, "
+                    "atlassian.com), review marketplaces (e.g. g2.com, capterra.com, trustradius.com, "
+                    "trustpilot.com), corporate blogs, e-commerce/aggregators (e.g. amazon.com, "
+                    "expedia.com), Wikipedia, Reddit/Stack Overflow communities, LinkedIn, Quora.\n\n"
+                    f"Classify each domain below:\n{domain_list}\n\n"
+                    "Respond with ONLY valid JSON, no prose:\n"
+                    '{"media_domains": ["domain1.com", ...], "non_media_domains": ["domain2.com", ...]}'
+                )
+            }]
+        )
+        text = resp.content[0].text
+        m = re.search(r'\{.*\}', text, re.DOTALL)
+        if not m:
+            return editorial_domains, []
+        data = json.loads(m.group())
+        media_set = {(d or '').lower() for d in data.get('media_domains', [])}
+        checked_set = {d['domain'].lower() for d in domains_to_check}
+        # Keep: (a) anything beyond the first 30 we didn't check; (b) within the first 30, only verified-media.
+        verified = [
+            d for d in editorial_domains
+            if d['domain'].lower() not in checked_set or d['domain'].lower() in media_set
+        ]
+        rejected = [d for d in domains_to_check if d['domain'].lower() not in media_set]
+        return verified, rejected
+    except Exception as e:
+        print("verify_editorial_domains failed (continuing with unfiltered list):", e)
+        return editorial_domains, []
 
 
 def extract_urls(text):
@@ -2795,8 +2978,94 @@ def aggregate_citations(all_responses):
     return sorted(domain_data.values(), key=lambda x: x['count'], reverse=True)
 
 
-def run_citation_audit(problem_statement, on_progress=None):
-    """Full agent pipeline: one prompt in, top-5 media list out."""
+TIER_CONFIG = {
+    "free": {
+        "prompt_count": 10,
+        "llms": ["Claude", "ChatGPT", "Gemini"],
+        "media_target_count": 5,
+        "institutional_target_count": 5,
+        "analyst_target_count": 5,
+        "max_workers": 10,
+    },
+    "paid": {
+        "prompt_count": 100,
+        "llms": ["Claude", "ChatGPT", "Gemini", "Perplexity", "Grok"],
+        "media_target_count": 25,
+        "institutional_target_count": 10,
+        "analyst_target_count": 10,
+        "max_workers": 12,
+    },
+}
+
+
+def _call_llm(provider, enriched_prompt):
+    """Send one citation-forcing prompt to one provider; return response text or raise."""
+    if provider == "Claude":
+        resp = anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            system=CITATION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": enriched_prompt}],
+        )
+        return resp.content[0].text
+    if provider == "ChatGPT":
+        if not openai_client:
+            raise RuntimeError("OPENAI_API_KEY not configured")
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=2000,
+            messages=[
+                {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+                {"role": "user", "content": enriched_prompt},
+            ],
+        )
+        return resp.choices[0].message.content
+    if provider == "Gemini":
+        if not gemini_client:
+            raise RuntimeError("GEMINI_API_KEY not configured")
+        gemini_prompt = enriched_prompt + "\n\nWhen providing information, please include specific sources and references. Format any sources as: Reference: [Source Name] - URL. Include authoritative sources like news sites, company websites, industry reports."
+        resp = gemini_client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=gemini_prompt,
+        )
+        return resp.text
+    if provider == "Perplexity":
+        if not perplexity_client:
+            raise RuntimeError("PERPLEXITY_API_KEY not configured")
+        resp = perplexity_client.chat.completions.create(
+            model="sonar-pro",
+            max_tokens=2000,
+            messages=[
+                {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+                {"role": "user", "content": enriched_prompt},
+            ],
+        )
+        return resp.choices[0].message.content
+    if provider == "Grok":
+        if not openrouter_client:
+            raise RuntimeError("OPENROUTER_API_KEY not configured")
+        resp = openrouter_client.chat.completions.create(
+            model=os.environ.get("XAI_OPENROUTER_MODEL", "x-ai/grok-4"),
+            max_tokens=2000,
+            messages=[
+                {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+                {"role": "user", "content": enriched_prompt},
+            ],
+        )
+        return resp.choices[0].message.content
+    raise ValueError(f"Unknown provider: {provider}")
+
+
+def run_citation_audit(problem_statement, on_progress=None, tier="free"):
+    """Full agent pipeline: one prompt in, ranked media/partnership/analyst lists out."""
+    cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
+    prompt_count = cfg["prompt_count"]
+    llms = cfg["llms"]
+    media_limit = cfg["media_target_count"]
+    institutional_limit = cfg["institutional_target_count"]
+    analyst_limit = cfg["analyst_target_count"]
+    max_workers = cfg["max_workers"]
+
     def emit(step, detail, current=0, total=0):
         if on_progress:
             on_progress(step, detail, current, total)
@@ -2804,7 +3073,7 @@ def run_citation_audit(problem_statement, on_progress=None):
     emit("prompts", "Generating search prompts...", 0, 1)
     prompt_gen_response = anthropic.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=2000,
+        max_tokens=4000 if prompt_count > 20 else 2000,
         messages=[{
             "role": "user",
             "content": f"""You are an AI citation strategist. A communications professional wants their brand to be the answer when people ask AI assistants about a specific problem.
@@ -2814,13 +3083,13 @@ Their goal: "{problem_statement}"
 Your job:
 1. Identify the BRAND from their statement (the company/product they want to promote).
 2. Identify the CATEGORY or PROBLEM SPACE.
-3. Generate exactly 10 prompts that a real person would type into ChatGPT, Claude, or Gemini when researching this problem space. These should be natural, varied prompts — some broad ("best X for Y"), some specific ("X vs Y comparison"), some question-based ("how do I solve Y?"), some recommendation-seeking ("what do experts recommend for Y?").
+3. Generate exactly {prompt_count} prompts that a real person would type into ChatGPT, Claude, or Gemini when researching this problem space. These should be natural, varied prompts — some broad ("best X for Y"), some specific ("X vs Y comparison"), some question-based ("how do I solve Y?"), some recommendation-seeking ("what do experts recommend for Y?"). At higher prompt counts, cover adjacent angles: pricing, alternatives, troubleshooting, expert opinions, regulatory considerations, real-world reviews, integration questions, regional perspectives.
 
 Respond with ONLY valid JSON in this exact format:
 {{
   "brand": "the brand name",
   "category": "the problem/category",
-  "prompts": ["prompt 1", "prompt 2", ... "prompt 10"]
+  "prompts": ["prompt 1", "prompt 2", ... "prompt {prompt_count}"]
 }}"""
         }]
     )
@@ -2831,67 +3100,54 @@ Respond with ONLY valid JSON in this exact format:
     prompt_data = json.loads(json_match.group())
     brand = prompt_data["brand"]
     category = prompt_data["category"]
-    prompts = prompt_data["prompts"][:10]
+    prompts = prompt_data["prompts"][:prompt_count]
     emit("prompts", f"Generated {len(prompts)} prompts for \"{brand}\"", 1, 1)
 
+    tasks = [(provider, pi, prompt_text)
+             for pi, prompt_text in enumerate(prompts)
+             for provider in llms]
+    total_calls = len(tasks)
+
+    def run_one(provider, pi, prompt_text):
+        enriched = prompt_text + CITATION_SUFFIX
+        try:
+            resp_text = _call_llm(provider, enriched)
+            return {"llm": provider, "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text)}
+        except Exception as e:
+            return {"llm": provider, "prompt": prompt_text, "response": f"[Error: {e}]", "citations": []}
+
     all_responses = []
-    for pi, prompt_text in enumerate(prompts):
-        enriched_prompt = prompt_text + CITATION_SUFFIX
+    completed = 0
+    progress_lock = threading.Lock()
 
-        emit("llm", f"Querying Claude ({pi+1}/10)...", pi * 3, 30)
-        try:
-            claude_resp = anthropic.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2000,
-                system=CITATION_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": enriched_prompt}]
-            )
-            resp_text = claude_resp.content[0].text
-            all_responses.append({"llm": "Claude", "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text)})
-        except Exception as e:
-            all_responses.append({"llm": "Claude", "prompt": prompt_text, "response": f"[Error: {e}]", "citations": []})
-
-        emit("llm", f"Querying ChatGPT ({pi+1}/10)...", pi * 3 + 1, 30)
-        try:
-            if not openai_client:
-                raise RuntimeError("OPENAI_API_KEY not configured")
-            gpt_resp = openai_client.chat.completions.create(
-                model="gpt-4o",
-                max_tokens=2000,
-                messages=[
-                    {"role": "system", "content": CITATION_SYSTEM_PROMPT},
-                    {"role": "user", "content": enriched_prompt},
-                ]
-            )
-            resp_text = gpt_resp.choices[0].message.content
-            all_responses.append({"llm": "ChatGPT", "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text)})
-        except Exception as e:
-            all_responses.append({"llm": "ChatGPT", "prompt": prompt_text, "response": f"[Error: {e}]", "citations": []})
-
-        emit("llm", f"Querying Gemini ({pi+1}/10)...", pi * 3 + 2, 30)
-        try:
-            if not gemini_client:
-                raise RuntimeError("GEMINI_API_KEY not configured")
-            gemini_prompt = enriched_prompt + "\n\nWhen providing information, please include specific sources and references. Format any sources as: Reference: [Source Name] - URL. Include authoritative sources like news sites, company websites, industry reports."
-            gemini_resp = gemini_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=gemini_prompt,
-            )
-            resp_text = gemini_resp.text
-            all_responses.append({"llm": "Gemini", "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text)})
-        except Exception as e:
-            all_responses.append({"llm": "Gemini", "prompt": prompt_text, "response": f"[Error: {e}]", "citations": []})
+    emit("llm", f"Querying {len(llms)} LLMs × {len(prompts)} prompts ({total_calls} calls)...", 0, total_calls)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(run_one, *t) for t in tasks]
+        for fut in as_completed(futures):
+            result = fut.result()
+            with progress_lock:
+                all_responses.append(result)
+                completed += 1
+                emit("llm", f"Completed {completed}/{total_calls} ({result['llm']})", completed, total_calls)
 
     emit("extract", "Extracting and aggregating citations...", 0, 1)
     ranked_domains = aggregate_citations(all_responses)
     total_citations = sum(d['count'] for d in ranked_domains)
     emit("extract", f"Found {total_citations} citations across {len(ranked_domains)} domains", 1, 1)
 
-    emit("analysis", "Building your signal report...", 0, 1)
+    emit("analysis", "Verifying editorial sources...", 0, 1)
 
     editorial_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'editorial']
     institutional_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'institutional']
     analyst_domains_found = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'analyst']
+
+    # AI verification: filter out B2B vendors / marketplaces / non-media domains the heuristic missed.
+    editorial_domains, rejected_editorial = verify_editorial_domains(editorial_domains, brand, category)
+    if rejected_editorial:
+        print(f"verify_editorial_domains: filtered out {len(rejected_editorial)} non-media domains: " +
+              ", ".join(d['domain'] for d in rejected_editorial[:10]))
+
+    emit("analysis", "Building your signal report...", 0, 1)
 
     def fmt_block(domains, limit):
         return "\n".join(
@@ -2899,9 +3155,9 @@ Respond with ONLY valid JSON in this exact format:
             for i, d in enumerate(domains[:limit])
         ) or "  (none)"
 
-    editorial_block = fmt_block(editorial_domains, 15)
-    institutional_block = fmt_block(institutional_domains, 10)
-    analyst_block = fmt_block(analyst_domains_found, 10)
+    editorial_block = fmt_block(editorial_domains, max(15, media_limit * 2))
+    institutional_block = fmt_block(institutional_domains, max(10, institutional_limit * 2))
+    analyst_block = fmt_block(analyst_domains_found, max(10, analyst_limit * 2))
 
     responses_block = ""
     for i, r in enumerate(all_responses):
@@ -2936,9 +3192,9 @@ RESPONSE SUMMARIES (with extracted citations):
 
 Produce THREE target lists:
 
-1. TOP 5 MEDIA TARGETS — drawn ONLY from the EDITORIAL DOMAINS above. These are pitch-able publications.
-2. AUTHORITY & PARTNERSHIP TARGETS — drawn ONLY from the INSTITUTIONAL / ASSOCIATION DOMAINS above. Up to 5, only if meaningfully present. Universities, agencies, certification bodies, trade associations, advocacy non-profits, or government bodies.
-3. ANALYST TARGETS — drawn ONLY from the ANALYST FIRMS above. Up to 5, only if meaningfully present. Influence is via analyst relations, not pitching or partnership.
+1. TOP {media_limit} MEDIA TARGETS — drawn ONLY from the EDITORIAL DOMAINS above. These are pitch-able publications.
+2. AUTHORITY & PARTNERSHIP TARGETS — drawn ONLY from the INSTITUTIONAL / ASSOCIATION DOMAINS above. Up to {institutional_limit}, only if meaningfully present. Universities, agencies, certification bodies, trade associations, advocacy non-profits, or government bodies.
+3. ANALYST TARGETS — drawn ONLY from the ANALYST FIRMS above. Up to {analyst_limit}, only if meaningfully present. Influence is via analyst relations, not pitching or partnership.
 
 If a category has nothing, return an empty array for it.
 
@@ -2998,7 +3254,7 @@ Respond with ONLY valid JSON:
       "analyst_play": "One sentence on the specific analyst relations move: which evaluation to target, briefing cadence to establish, sponsored research, or client subscription that would shift citations"
     }}
   ],
-  "executive_summary": "3-4 sentences: the overall AI visibility landscape for {brand}, what the editorial list means strategically, and (where relevant) the role of analyst evaluations and authority partnerships"
+  "executive_summary": "3-4 sentences. Lead with the editorial findings — what they reveal about how AI describes {brand} and competitors, and where earned media will move the needle. Discuss analyst relations or authority partnerships ONLY if the corresponding target lists below contain actual entries. For consumer brands or categories where analyst firms are not relevant (hospitality, fashion, food & beverage, consumer products, etc.), do NOT mention analysts or speculate about their absence — silence is fine."
 }}"""
         }]
     )
@@ -3015,12 +3271,40 @@ Respond with ONLY valid JSON:
 
 @app.route('/citation-audit', methods=['GET', 'POST'])
 def citation_audit():
+    user = current_signal_user()
+    credits = current_user_credits(user)
+
     if request.method == 'GET':
-        return render_template('citation_audit.html', ga_measurement_id=GA_MEASUREMENT_ID)
+        return render_template(
+            'citation_audit.html',
+            ga_measurement_id=GA_MEASUREMENT_ID,
+            signal_user=user,
+            signal_credits=credits,
+        )
 
     problem_statement = request.form.get('problem_statement', '').strip()
     if not problem_statement:
         return jsonify({"error": "Please describe the problem you want your brand to own."}), 400
+
+    requested_tier = (request.form.get('tier') or 'free').strip().lower()
+    if requested_tier not in ('free', 'paid'):
+        requested_tier = 'free'
+
+    tier = 'free'
+    credit_charged = False
+    if requested_tier == 'paid':
+        if not user:
+            return jsonify({"error": "Please sign in to run a paid audit.", "code": "auth_required"}), 401
+        if credits < 1:
+            return jsonify({"error": "No audit credits remaining. Buy more to continue.", "code": "no_credits"}), 402
+        bal = CreditBalance.query.filter_by(user_id=user.id).first()
+        bal.credits_remaining = (bal.credits_remaining or 0) - 1
+        db.session.commit()
+        tier = 'paid'
+        credit_charged = True
+
+    user_id = user.id if user else None
+    cfg = TIER_CONFIG[tier]
 
     q = queue.Queue()
 
@@ -3029,15 +3313,34 @@ def citation_audit():
 
     def worker():
         try:
-            result = run_citation_audit(problem_statement, on_progress=on_progress)
+            result = run_citation_audit(problem_statement, on_progress=on_progress, tier=tier)
             slug = uuid.uuid4().hex[:10]
             with app.app_context():
                 shared = SharedResult(slug=slug, payload=json.dumps(result))
                 db.session.add(shared)
+                db.session.add(AuditRun(
+                    user_id=user_id,
+                    slug=slug,
+                    tier=tier,
+                    prompt_count=cfg["prompt_count"],
+                    llm_count=len(cfg["llms"]),
+                    credits_consumed=(1 if credit_charged else 0),
+                    problem_statement=problem_statement,
+                ))
                 db.session.commit()
             result["slug"] = slug
+            result["tier"] = tier
             q.put(json.dumps({"type": "result", "data": result}))
         except Exception as e:
+            if credit_charged and user_id is not None:
+                try:
+                    with app.app_context():
+                        bal_inner = CreditBalance.query.filter_by(user_id=user_id).first()
+                        if bal_inner:
+                            bal_inner.credits_remaining = (bal_inner.credits_remaining or 0) + 1
+                            db.session.commit()
+                except Exception as refund_err:
+                    print("Credit refund failed:", refund_err)
             q.put(json.dumps({"type": "error", "error": str(e)}))
 
     t = threading.Thread(target=worker)
@@ -3052,6 +3355,71 @@ def citation_audit():
                 break
 
     return Response(generate(), mimetype='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+def _load_signal_report(slug):
+    """Return parsed PR Signal Finder report dict for a slug, or None."""
+    rec = SharedResult.query.filter_by(slug=slug).first()
+    if not rec:
+        return None
+    try:
+        data = json.loads(rec.payload)
+    except Exception:
+        return None
+    if not isinstance(data, dict) or "media_targets" not in data:
+        return None
+    data["slug"] = slug
+    return data
+
+
+@app.route('/signal/<slug>')
+def view_signal_report(slug):
+    """Render a shared PR Signal Finder report."""
+    data = _load_signal_report(slug)
+    if not data:
+        flash("Report not found or expired.")
+        return redirect(url_for('citation_audit'))
+    share_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=slug)
+    pdf_url = request.url_root.rstrip('/') + url_for('signal_report_pdf', slug=slug)
+    user = current_signal_user()
+    return render_template(
+        'citation_audit.html',
+        ga_measurement_id=GA_MEASUREMENT_ID,
+        shared_data=data,
+        share_url=share_url,
+        pdf_url=pdf_url,
+        signal_user=user,
+        signal_credits=current_user_credits(user),
+    )
+
+
+@app.route('/signal/<slug>.pdf')
+def signal_report_pdf(slug):
+    """Render the saved report as a PDF via WeasyPrint."""
+    data = _load_signal_report(slug)
+    if not data:
+        flash("Report not found or expired.")
+        return redirect(url_for('citation_audit'))
+    try:
+        from weasyprint import HTML  # imported lazily — heavy dependency
+    except Exception as e:
+        print("WeasyPrint import failed:", e)
+        return jsonify({"error": "PDF export is not available in this environment."}), 503
+
+    html_str = render_template('citation_audit_print.html', data=data)
+    try:
+        pdf_bytes = HTML(string=html_str, base_url=request.url_root).write_pdf()
+    except Exception as e:
+        print("WeasyPrint render failed:", e)
+        return jsonify({"error": "Failed to render PDF."}), 500
+
+    brand_slug = re.sub(r'[^a-z0-9]+', '-', (data.get('brand') or 'report').lower()).strip('-') or 'report'
+    filename = f"signal-finder-{brand_slug}-{slug}.pdf"
+    return Response(
+        pdf_bytes,
+        mimetype='application/pdf',
+        headers={'Content-Disposition': f'inline; filename="{filename}"'}
+    )
 
 
 @app.route('/citation-audit/request-demo', methods=['POST'])
@@ -3103,7 +3471,7 @@ def citation_audit_request_demo():
                 f"<p><strong>Their light audit report:</strong> {report_link_html}</p>"
             )
             msg = Mail(
-                from_email=("no-reply@innatec3.com", "PR Signal Finder"),
+                from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
                 to_emails=["nstrauss@innatec3.com"],
                 subject=f"[PR Signal Finder] Bespoke audit request from {name}" + (f" ({org})" if org else ""),
                 plain_text_content=text_body,
@@ -3114,6 +3482,368 @@ def citation_audit_request_demo():
         except Exception as e:
             print("SendGrid lead notification error:", e)
 
+    return jsonify({"ok": True, "dev": not bool(sg_key)})
+
+
+# ---------------------------------------------------------------------------
+# PR Signal Finder — paid-tier auth, billing, dashboard
+# ---------------------------------------------------------------------------
+
+def _hash_token(raw):
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def current_signal_user():
+    uid = session.get('signal_user_id')
+    if not uid:
+        return None
+    return SignalUser.query.get(uid)
+
+
+def current_user_credits(user):
+    if not user:
+        return 0
+    bal = CreditBalance.query.filter_by(user_id=user.id).first()
+    return (bal.credits_remaining if bal else 0)
+
+
+def signal_login_required(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not session.get('signal_user_id'):
+            return redirect(url_for('signal_login', next=request.path))
+        return view(*args, **kwargs)
+    return wrapper
+
+
+def _signal_base_url():
+    return (SIGNAL_BASE_URL or request.url_root.rstrip('/'))
+
+
+def _send_magic_link_email(email, raw_token):
+    base = _signal_base_url()
+    link = f"{base}{url_for('signal_auth', token=raw_token)}"
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not sg_key:
+        print(f"[DEV] Magic-link for {email}: {link}")
+        return link
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[email],
+            subject="Your PR Signal Finder sign-in link",
+            plain_text_content=(
+                "Click the link below to sign in to PR Signal Finder. "
+                "Link expires in 20 minutes.\n\n"
+                f"{link}\n\nIf you didn't request this, you can ignore this email."
+            ),
+            html_content=(
+                f'<p>Click below to sign in to PR Signal Finder. Link expires in 20 minutes.</p>'
+                f'<p><a href="{link}">{link}</a></p>'
+                f'<p style="color:#888;font-size:13px">If you didn\'t request this, ignore this email.</p>'
+            ),
+        )
+        SendGridAPIClient(sg_key).send(msg)
+    except Exception as e:
+        print("SendGrid magic-link error:", e)
+        print(f"[FALLBACK] Magic-link for {email}: {link}")
+    return link
+
+
+@app.route('/signal/login', methods=['GET', 'POST'])
+def signal_login():
+    if session.get('signal_user_id'):
+        return redirect(url_for('signal_dashboard'))
+    nxt = request.values.get('next') or url_for('signal_dashboard')
+    if request.method == 'GET':
+        return render_template(
+            'signal_login.html',
+            ga_measurement_id=GA_MEASUREMENT_ID,
+            sent=False,
+            email='',
+            next_url=nxt,
+            dev_magic_link=None,
+        )
+
+    email = (request.form.get('email') or '').strip().lower()
+    if not email or '@' not in email or '.' not in email:
+        flash("Please enter a valid email address.")
+        return render_template('signal_login.html', ga_measurement_id=GA_MEASUREMENT_ID, sent=False, email=email, next_url=nxt, dev_magic_link=None)
+
+    raw = secrets.token_urlsafe(32)
+    db.session.add(LoginToken(
+        email=email,
+        token_hash=_hash_token(raw),
+        expires_at=datetime.utcnow() + timedelta(minutes=20),
+    ))
+    db.session.commit()
+    session['signal_post_login_next'] = nxt
+    link = _send_magic_link_email(email, raw)
+    # In dev (no SendGrid), expose the link inline so the user can sign in without email delivery.
+    dev_link = link if not os.environ.get("SENDGRID_API_KEY") else None
+    return render_template(
+        'signal_login.html',
+        ga_measurement_id=GA_MEASUREMENT_ID,
+        sent=True,
+        email=email,
+        next_url=nxt,
+        dev_magic_link=dev_link,
+    )
+
+
+@app.route('/signal/auth')
+def signal_auth():
+    raw = request.args.get('token', '')
+    if not raw:
+        flash("Invalid sign-in link.")
+        return redirect(url_for('signal_login'))
+    rec = LoginToken.query.filter_by(token_hash=_hash_token(raw)).first()
+    if not rec or rec.used_at or rec.expires_at < datetime.utcnow():
+        flash("Sign-in link expired or already used. Request a new one.")
+        return redirect(url_for('signal_login'))
+    rec.used_at = datetime.utcnow()
+    user = SignalUser.query.filter_by(email=rec.email).first()
+    if not user:
+        user = SignalUser(email=rec.email)
+        db.session.add(user)
+        db.session.flush()
+        db.session.add(CreditBalance(user_id=user.id, credits_remaining=0))
+    user.last_login_at = datetime.utcnow()
+    db.session.commit()
+    session['signal_user_id'] = user.id
+    nxt = session.pop('signal_post_login_next', None) or url_for('signal_dashboard')
+    return redirect(nxt)
+
+
+@app.route('/signal/logout', methods=['POST'])
+def signal_logout():
+    session.pop('signal_user_id', None)
+    session.pop('signal_post_login_next', None)
+    return redirect(url_for('citation_audit'))
+
+
+@app.route('/signal/dashboard')
+@signal_login_required
+def signal_dashboard():
+    user = current_signal_user()
+    if not user:
+        return redirect(url_for('signal_login'))
+    credits = current_user_credits(user)
+    runs = (AuditRun.query
+            .filter_by(user_id=user.id)
+            .order_by(AuditRun.created_at.desc())
+            .limit(20).all())
+    purchases = (Purchase.query
+                 .filter_by(user_id=user.id)
+                 .order_by(Purchase.created_at.desc())
+                 .limit(10).all())
+    products = []
+    for key, cfg in STRIPE_PRODUCTS.items():
+        products.append({
+            "key": key,
+            "label": cfg["label"],
+            "credits": cfg["credits"],
+            "amount_display": cfg["amount_display"],
+            "description": cfg["description"],
+            "configured": bool(cfg["price_id"]),
+        })
+    return render_template(
+        'signal_dashboard.html',
+        ga_measurement_id=GA_MEASUREMENT_ID,
+        user=user,
+        credits=credits,
+        runs=runs,
+        purchases=purchases,
+        products=products,
+        stripe_configured=bool(stripe_lib and STRIPE_SECRET_KEY),
+    )
+
+
+def _grant_credits_from_stripe_session(sess_obj):
+    """Idempotently grant credits + find-or-create the user from a Stripe Checkout Session.
+
+    Returns (user, purchase) tuple, or (None, None) if the session is not a paid credit purchase.
+    Safe to call multiple times for the same session — dedupes via Purchase.stripe_session_id.
+    """
+    sess_id = sess_obj.get('id')
+    if not sess_id:
+        return None, None
+    payment_status = sess_obj.get('payment_status')
+    if payment_status and payment_status != 'paid':
+        return None, None
+
+    existing = Purchase.query.filter_by(stripe_session_id=sess_id).first()
+    if existing:
+        user = SignalUser.query.get(existing.user_id) if existing.user_id else None
+        return user, existing
+
+    md = sess_obj.get('metadata') or {}
+    try:
+        credits = int(md.get('credits') or 0)
+    except (TypeError, ValueError):
+        credits = 0
+    if credits <= 0:
+        return None, None
+
+    cust_details = sess_obj.get('customer_details') or {}
+    email = (
+        sess_obj.get('customer_email')
+        or cust_details.get('email')
+        or md.get('email')
+        or ''
+    ).strip().lower()
+    if not email:
+        print("Stripe session has no email; cannot grant credits:", sess_id)
+        return None, None
+
+    user = SignalUser.query.filter_by(email=email).first()
+    new_user = False
+    if not user:
+        user = SignalUser(email=email)
+        db.session.add(user)
+        db.session.flush()
+        db.session.add(CreditBalance(user_id=user.id, credits_remaining=0))
+        new_user = True
+
+    bal = CreditBalance.query.filter_by(user_id=user.id).first()
+    if not bal:
+        bal = CreditBalance(user_id=user.id, credits_remaining=0)
+        db.session.add(bal)
+    bal.credits_remaining = (bal.credits_remaining or 0) + credits
+
+    purchase = Purchase(
+        user_id=user.id,
+        stripe_session_id=sess_id,
+        amount_cents=sess_obj.get('amount_total') or 0,
+        credits_granted=credits,
+        product_label=md.get('product') or '',
+    )
+    db.session.add(purchase)
+    db.session.commit()
+
+    # Best-effort: email a magic-link so the buyer has a path back if they lose the tab.
+    if new_user:
+        try:
+            raw = secrets.token_urlsafe(32)
+            db.session.add(LoginToken(
+                email=email,
+                token_hash=_hash_token(raw),
+                expires_at=datetime.utcnow() + timedelta(hours=24),
+            ))
+            db.session.commit()
+            _send_magic_link_email(email, raw)
+        except Exception as e:
+            print("Welcome magic-link send failed:", e)
+
+    return user, purchase
+
+
+@app.route('/signal/checkout/<product>', methods=['POST'])
+def signal_checkout(product):
+    cfg = STRIPE_PRODUCTS.get(product)
+    if not cfg:
+        return jsonify({"error": "Unknown product."}), 400
+    if not stripe_lib or not STRIPE_SECRET_KEY:
+        return jsonify({"error": "Payments are not configured."}), 503
+    if not cfg["price_id"]:
+        return jsonify({"error": f"Price ID for {product} not configured."}), 503
+
+    body = request.get_json(silent=True) or {}
+    problem_statement = (body.get('problem_statement') or '').strip()[:1000]
+
+    user = current_signal_user()
+    base = _signal_base_url()
+    md = {"product": product, "credits": str(cfg["credits"])}
+    if user:
+        md["user_id"] = str(user.id)
+    if problem_statement:
+        md["problem_statement"] = problem_statement
+
+    session_kwargs = {
+        "mode": "payment",
+        "line_items": [{"price": cfg["price_id"], "quantity": 1}],
+        "success_url": f"{base}{url_for('signal_checkout_success')}?session_id={{CHECKOUT_SESSION_ID}}",
+        "cancel_url": f"{base}{url_for('citation_audit')}",
+        "metadata": md,
+        "allow_promotion_codes": True,
+        "billing_address_collection": "auto",
+    }
+    if user:
+        session_kwargs["customer_email"] = user.email
+    # For guests, Stripe Checkout collects the email itself.
+
+    try:
+        sess = stripe_lib.checkout.Session.create(**session_kwargs)
+        return jsonify({"url": sess.url})
+    except Exception as e:
+        print("Stripe checkout error:", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/signal/checkout/success')
+def signal_checkout_success():
+    sid = (request.args.get('session_id') or '').strip()
+    user = current_signal_user()
+    purchase = None
+    problem_statement = None
+
+    if sid and stripe_lib and STRIPE_SECRET_KEY:
+        try:
+            sess_obj = stripe_lib.checkout.Session.retrieve(sid)
+            try:
+                # stripe-python returns a StripeObject; cast to dict for our helper
+                sess_dict = sess_obj.to_dict() if hasattr(sess_obj, 'to_dict') else dict(sess_obj)
+            except Exception:
+                sess_dict = sess_obj
+            problem_statement = ((sess_dict.get('metadata') or {}).get('problem_statement') or '').strip() or None
+            granted_user, granted_purchase = _grant_credits_from_stripe_session(sess_dict)
+            if granted_user:
+                if not user or user.id != granted_user.id:
+                    session['signal_user_id'] = granted_user.id
+                    user = granted_user
+            if granted_purchase:
+                purchase = granted_purchase
+        except Exception as e:
+            print("Stripe success-page processing error:", e)
+
+    credits = current_user_credits(user) if user else 0
+    return render_template(
+        'signal_checkout_success.html',
+        ga_measurement_id=GA_MEASUREMENT_ID,
+        user=user,
+        credits=credits,
+        purchase=purchase,
+        problem_statement=problem_statement,
+    )
+
+
+@app.route('/signal/stripe-webhook', methods=['POST'])
+def signal_stripe_webhook():
+    if not stripe_lib:
+        return jsonify({"error": "Stripe SDK not installed"}), 503
+    if not STRIPE_WEBHOOK_SECRET:
+        return jsonify({"error": "Webhook secret not configured"}), 503
+    payload = request.data
+    sig = request.headers.get('Stripe-Signature', '')
+    try:
+        event = stripe_lib.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except Exception as e:
+        print("Stripe webhook verification failed:", e)
+        return jsonify({"error": "Invalid signature"}), 400
+
+    if event.get('type') == 'checkout.session.completed':
+        sess = event['data']['object']
+        try:
+            sess_dict = sess.to_dict() if hasattr(sess, 'to_dict') else dict(sess)
+        except Exception:
+            sess_dict = sess
+        try:
+            _grant_credits_from_stripe_session(sess_dict)
+        except Exception as e:
+            print("Stripe webhook credit-grant failed:", e)
+            return jsonify({"error": "processing failed"}), 500
     return jsonify({"ok": True})
 
 

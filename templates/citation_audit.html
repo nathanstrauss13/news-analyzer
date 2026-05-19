@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PR Signal Finder — Innate Insights</title>
+    <title>AI Citation Audit | PR Signal Finder — Innate c3 insights</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -101,23 +101,18 @@
         }
         .countdown-time {
             position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             font-size: 28px;
             font-weight: 600;
             color: #fff;
             font-variant-numeric: tabular-nums;
-        }
-        .countdown-label {
-            font-size: 11px;
-            color: #555;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-            position: absolute;
-            bottom: 22px;
-            left: 50%;
-            transform: translateX(-50%);
+            letter-spacing: -0.5px;
         }
         .loading-text {
             font-size: 14px;
@@ -301,6 +296,200 @@
             color: #888;
             margin-top: 4px;
         }
+        .action-bar {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 16px 0 4px;
+        }
+        .action-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 9px 16px;
+            border-radius: 8px;
+            border: 1px solid #2a2a4a;
+            background: #14142a;
+            color: #cfd2ff;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background .15s, border-color .15s, transform .1s;
+        }
+        .action-btn:hover { background: #1a1a3a; border-color: #5c6cff; }
+        .action-btn:active { transform: translateY(1px); }
+        .action-btn[disabled] { opacity: 0.6; cursor: not-allowed; }
+        .toast {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%) translateY(20px);
+            background: #14142a;
+            border: 1px solid #5c6cff;
+            color: #cfd2ff;
+            padding: 10px 18px;
+            border-radius: 8px;
+            font-size: 13px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s, transform .2s;
+            z-index: 2000;
+        }
+        .toast.active {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+        .share-banner {
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 10px;
+            padding: 14px 18px;
+            margin-bottom: 24px;
+            font-size: 13px;
+            color: #cfd2ff;
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .share-banner a {
+            color: #6a7aff;
+            text-decoration: none;
+        }
+        .share-banner a:hover { text-decoration: underline; }
+
+        .signal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+        .signal-header .auth-cluster {
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: #888;
+        }
+        .signal-header .auth-cluster a {
+            color: #cfd2ff;
+            text-decoration: none;
+            border: 1px solid #2a2a4a;
+            padding: 5px 12px;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+        .signal-header .auth-cluster a:hover {
+            border-color: #5c6cff;
+            background: #14142a;
+        }
+        .signal-header .auth-cluster .credit-badge {
+            background: #14142a;
+            border: 1px solid #5c6cff;
+            color: #cfd2ff;
+            padding: 4px 10px;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        .signal-header .auth-cluster .logout-btn {
+            background: transparent;
+            border: 1px solid #2a2a4a;
+            color: #aaa;
+            font: inherit;
+            padding: 5px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        .signal-header .auth-cluster .logout-btn:hover { border-color: #5c6cff; color: #cfd2ff; }
+        .tier-toggle {
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+            margin: 8px 0 16px;
+            padding: 12px 14px;
+            border: 1px solid #2a2a4a;
+            border-radius: 10px;
+            background: #11132a;
+            font-size: 13px;
+            color: #cfd2ff;
+        }
+        .tier-toggle input[type="checkbox"] {
+            margin-top: 3px;
+            accent-color: #5c6cff;
+        }
+        .tier-toggle .tier-detail {
+            color: #888;
+            font-size: 12px;
+            margin-top: 3px;
+        }
+        .form-hint-link {
+            font-size: 13px;
+            color: #888;
+            margin-top: 12px;
+        }
+        .form-hint-link a {
+            color: #6a7aff;
+            text-decoration: none;
+        }
+        .form-hint-link a:hover { text-decoration: underline; }
+
+        .save-panel {
+            margin-top: 36px;
+            padding: 22px 24px;
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+        }
+        .save-panel-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #7a8aff;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 8px;
+        }
+        .save-panel h4 {
+            font-size: 17px;
+            color: #fff;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        .save-panel-desc {
+            font-size: 13px;
+            color: #888;
+            line-height: 1.55;
+            margin-bottom: 14px;
+        }
+        .save-panel-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .save-panel-actions .action-btn { padding: 11px 18px; font-size: 14px; }
+        .save-panel-actions .action-btn.primary-action {
+            background: linear-gradient(180deg, #5c6cff, #4751e8);
+            border-color: transparent;
+            color: #fff;
+            font-weight: 600;
+        }
+        .save-panel-actions .action-btn.primary-action:hover { opacity: 0.95; }
+        .share-url-display {
+            width: 100%;
+            padding: 9px 12px;
+            background: #0a0a0a;
+            border: 1px solid #1a1a2e;
+            border-radius: 8px;
+            color: #6a7aff;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+        }
+        .share-url-display:focus { outline: none; border-color: #5c6cff; }
 
         /* Prompts used */
         .prompts-toggle {
@@ -516,6 +705,67 @@
             transition: background 0.2s;
         }
         .bespoke-btn:hover { background: #6ab0ff; }
+        .cta-buy-btn {
+            width: 100%;
+            padding: 14px 22px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 15px;
+            font-weight: 600;
+            background: linear-gradient(180deg, #5c6cff, #4751e8);
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: opacity .2s, transform .1s;
+            box-shadow: 0 8px 22px rgba(92, 108, 255, 0.25);
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+        }
+        .cta-buy-btn:hover { opacity: 0.95; }
+        .cta-buy-btn:active { transform: translateY(1px); }
+        .cta-buy-btn[disabled] { opacity: 0.55; cursor: not-allowed; }
+        .cta-payment-note {
+            font-size: 12px;
+            color: #888;
+            margin-top: 10px;
+            text-align: center;
+            letter-spacing: 0.5px;
+        }
+        .cta-payment-note strong { color: #cfd2ff; }
+        .cta-secondary {
+            margin-top: 18px;
+            padding-top: 18px;
+            border-top: 1px solid #1e2a4e;
+            font-size: 13px;
+            color: #888;
+            text-align: center;
+            line-height: 1.55;
+        }
+        .cta-link-btn {
+            background: transparent;
+            border: none;
+            color: #6a7aff;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            padding: 0;
+            text-decoration: underline;
+            text-underline-offset: 3px;
+        }
+        .cta-link-btn:hover { color: #8a9aff; }
+        .cta-error {
+            margin-top: 10px;
+            padding: 8px 12px;
+            background: rgba(255, 107, 107, 0.1);
+            border: 1px solid rgba(255, 107, 107, 0.4);
+            border-radius: 6px;
+            color: #ff6b6b;
+            font-size: 13px;
+            text-align: center;
+        }
 
         /* Modal */
         .modal-overlay {
@@ -618,15 +868,40 @@
 </head>
 <body>
     <div class="container">
-        <div style="margin-bottom:4px"><span style="font-size:13px;font-weight:500;color:#555;text-transform:uppercase;letter-spacing:2px">Innate Insights</span></div>
-        <h1>PR Signal Finder</h1>
-        <p class="subtitle">Input what you want your brand to be known for. We'll query Claude, ChatGPT, and Gemini to find which media outlets are shaping AI responses about your competitors — and where earned media will close the gap.</p>
+        <div class="signal-header">
+            <span style="font-size:13px;font-weight:500;color:#555;text-transform:uppercase;letter-spacing:2px">Innate c3 insights</span>
+            <div class="auth-cluster">
+                {% if signal_user %}
+                    <span class="credit-badge">{{ signal_credits or 0 }} credit{{ '' if signal_credits == 1 else 's' }}</span>
+                    <a href="{{ url_for('signal_dashboard') }}">Dashboard</a>
+                    <form method="POST" action="{{ url_for('signal_logout') }}" style="display:inline;margin:0">
+                        <button type="submit" class="logout-btn">Sign out</button>
+                    </form>
+                {% else %}
+                    <a href="{{ url_for('signal_login') }}">Sign in</a>
+                {% endif %}
+            </div>
+        </div>
+        <h1>AI Citation Audit | PR Signal Finder</h1>
+        <p class="subtitle" id="initialSubtitle">What do you want your brand to be known for? We'll query Claude, ChatGPT, and Gemini to find which media outlets are shaping AI responses about your competitors — and where earned media will close the gap.</p>
 
         <div class="form-section" id="formSection">
             <div class="input-group">
                 <textarea id="problemInput" placeholder="e.g. I want ACME Corp to be known as the premier brand of widgets" rows="3"></textarea>
             </div>
-            <button class="btn" id="submitBtn" onclick="runAudit()">Find Signals</button>
+            {% if signal_user and (signal_credits or 0) > 0 %}
+                <label class="tier-toggle" for="tierToggle">
+                    <input type="checkbox" id="tierToggle">
+                    <span>
+                        <strong>Run paid audit (uses 1 credit)</strong>
+                        <div class="tier-detail">100 prompts × 5 LLMs (Claude / ChatGPT / Gemini / Perplexity / Grok) — top 25 media targets. {{ signal_credits or 0 }} credit{{ '' if signal_credits == 1 else 's' }} remaining.</div>
+                    </span>
+                </label>
+            {% endif %}
+            <button class="btn" id="submitBtn" onclick="runAudit()">Identify PR Targets</button>
+            {% if signal_user and (signal_credits or 0) == 0 %}
+                <div class="form-hint-link">Out of credits. <a href="{{ url_for('signal_dashboard') }}">Buy more &rarr;</a></div>
+            {% endif %}
         </div>
 
         <div class="error-msg" id="errorMsg"></div>
@@ -639,24 +914,29 @@
                         stroke-dasharray="326.73" stroke-dashoffset="326.73"/>
                 </svg>
                 <div class="countdown-time" id="countdownTime">0%</div>
-                <div class="countdown-label">complete</div>
             </div>
-            <div class="loading-text">Finding your signals</div>
+            <div class="loading-text">Identifying your PR targets</div>
             <div class="loading-step" id="loadingStep">Generating search prompts...</div>
-            <div class="loading-note">
-                This typically takes about 5 minutes. Feel free to switch tabs — your report will be waiting when you return.
-            </div>
         </div>
 
         <div class="results" id="results"></div>
     </div>
 
+    <div class="toast" id="toast"></div>
+
+    <script>
+        window.SHARED_REPORT = {{ shared_data | tojson | safe if shared_data else 'null' }};
+        window.SIGNAL_SHARE_URL = {{ share_url | tojson | safe if share_url else 'null' }};
+        window.SIGNAL_PDF_URL   = {{ pdf_url   | tojson | safe if pdf_url   else 'null' }};
+    </script>
+
     <div class="modal-overlay" id="demoModal" onclick="if(event.target===this)closeDemoModal()">
         <div class="modal">
             <button class="modal-close" onclick="closeDemoModal()">&times;</button>
             <div id="demoForm">
-                <h3>Request a bespoke audit</h3>
-                <p>We'll run 100 prompts across 5 LLMs and deliver a top 25 media target list tailored to your brand. Drop your details and we'll be in touch within 24 hours.</p>
+                <h3>Request a call</h3>
+                <p>For a bespoke AI citation analysis — $5K+ engagement delivered personally by Nathan. Includes custom prompts you co-author (so the audit reflects how your real customers actually ask), up to 10 LLMs (Claude · ChatGPT · Gemini · Perplexity · Grok · plus regional and reasoning models), top 50+ media targets, executive briefing, and a strategic memo tailored to your category, competitors, and earned-media goals.</p>
+                <p style="font-size:13px;color:#888;margin-bottom:14px">Drop your details and Nathan will reach out within 24 hours to scope the engagement.</p>
                 <div class="modal-field">
                     <label>Name *</label>
                     <input type="text" id="demoName" autocomplete="name">
@@ -673,12 +953,15 @@
                     <label>Email *</label>
                     <input type="email" id="demoEmail" autocomplete="email">
                 </div>
-                <button type="button" class="modal-submit" id="demoSubmit" onclick="submitDemoRequest()">Request bespoke audit</button>
+                <button type="button" class="modal-submit" id="demoSubmit" onclick="submitDemoRequest()">Request a call</button>
                 <div class="modal-error" id="demoError"></div>
             </div>
             <div class="modal-success" id="demoSuccess" style="display:none">
                 <h3>Thanks — we'll be in touch.</h3>
-                <p>Your request is in. Nathan will reach out within 24 hours to scope your bespoke audit.</p>
+                <p>Your request is in. Nathan will reach out within 24 hours to scope your bespoke analysis.</p>
+                <p id="demoDevNote" style="display:none;margin-top:12px;font-size:12px;color:#5aff8a;border:1px solid #1c4d2e;background:#0e1a14;padding:8px 12px;border-radius:6px">
+                    Dev mode — your request is saved locally. In production this would email <strong>nstrauss@innatec3.com</strong> via SendGrid.
+                </p>
             </div>
         </div>
     </div>
@@ -716,8 +999,12 @@
         function runAudit() {
             const input = document.getElementById('problemInput').value.trim();
             if (!input) return;
-            lastAuditContext = { slug: null, problem_statement: input };
+            const tierToggle = document.getElementById('tierToggle');
+            const tier = (tierToggle && tierToggle.checked) ? 'paid' : 'free';
+            lastAuditContext = { slug: null, problem_statement: input, tier: tier };
 
+            const subtitleEl = document.getElementById('initialSubtitle');
+            if (subtitleEl) subtitleEl.style.display = 'none';
             document.getElementById('formSection').classList.add('hidden');
             document.getElementById('errorMsg').classList.remove('active');
             document.getElementById('loading').classList.add('active');
@@ -726,12 +1013,31 @@
             const progressEl = document.getElementById('countdownProgress');
             progressEl.style.strokeDashoffset = CIRCUMFERENCE.toString();
             document.getElementById('countdownTime').textContent = '0%';
-            document.getElementById('loadingStep').textContent = 'Starting...';
+            document.getElementById('loadingStep').textContent = tier === 'paid'
+                ? 'Starting paid audit (~7-10 min)...'
+                : 'Starting...';
 
             const form = new FormData();
             form.append('problem_statement', input);
+            form.append('tier', tier);
 
-            fetch('/citation-audit', { method: 'POST', body: form }).then(response => {
+            fetch('/citation-audit', { method: 'POST', body: form }).then(async response => {
+                if (!response.ok && response.headers.get('content-type')?.includes('application/json')) {
+                    const data = await response.json().catch(() => ({}));
+                    document.getElementById('loading').classList.remove('active');
+                    document.getElementById('formSection').classList.remove('hidden');
+                    if (data.code === 'auth_required') {
+                        window.location.href = '/signal/login?next=' + encodeURIComponent('/citation-audit');
+                        return;
+                    }
+                    if (data.code === 'no_credits') {
+                        window.location.href = '/signal/dashboard';
+                        return;
+                    }
+                    document.getElementById('errorMsg').textContent = data.error || 'Something went wrong.';
+                    document.getElementById('errorMsg').classList.add('active');
+                    return;
+                }
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
@@ -782,6 +1088,11 @@
 
             const targets = (data.media_targets || []).slice(0, 5);
 
+            const slug = data.slug || null;
+            const origin = window.location.origin;
+            const shareUrl = window.SIGNAL_SHARE_URL || (slug ? `${origin}/signal/${slug}` : null);
+            const pdfUrl   = window.SIGNAL_PDF_URL   || (slug ? `${origin}/signal/${slug}.pdf` : null);
+
             let html = `
                 <div class="results-header">
                     <h2>Signal Report</h2>
@@ -793,6 +1104,12 @@
                     <div class="citation-total">
                         ${data.total_citations_extracted || 0} citation URLs extracted across ${data.total_responses || 30} responses
                     </div>
+                    ${(shareUrl || pdfUrl) ? `
+                        <div class="action-bar">
+                            ${shareUrl ? `<button class="action-btn" id="shareBtn" onclick="copyShareLink('${esc(shareUrl)}')">Share report</button>` : ''}
+                            ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
+                        </div>
+                    ` : ''}
                 </div>
                 <div class="executive-summary">${esc(data.executive_summary || '')}</div>
             `;
@@ -886,17 +1203,40 @@
                 }
             }
 
+            if (shareUrl || pdfUrl) {
+                html += `
+                    <div class="save-panel">
+                        <div class="save-panel-label">Save & share</div>
+                        <h4>Hold onto this report</h4>
+                        <div class="save-panel-desc">Anyone with the link can view this report. The PDF includes the full target list with cited URLs.</div>
+                        <div class="save-panel-actions">
+                            ${shareUrl ? `<button class="action-btn primary-action" onclick="copyShareLink('${esc(shareUrl)}')">Copy share link</button>` : ''}
+                            ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
+                        </div>
+                        ${shareUrl ? `<input type="text" class="share-url-display" value="${esc(shareUrl)}" readonly onclick="this.select()">` : ''}
+                    </div>
+                `;
+            }
+
             html += `
                 <div class="bespoke-cta">
-                    <div class="bespoke-cta-label">Want the full picture?</div>
-                    <h3>Get a bespoke PR Signal Finder audit</h3>
-                    <p>This is the lightweight version. A bespoke audit runs at 10x the depth — uncovering long-tail outlets, niche reporters, and the full competitive citation landscape across your category.</p>
+                    <div class="bespoke-cta-label">Go deeper</div>
+                    <h3>Run a paid audit — $25</h3>
+                    <p>10x the depth: 100 prompts × 5 LLMs (Claude · ChatGPT · Gemini · Perplexity · Grok). Top 25 editorial targets, expanded partnership + analyst lists, full competitor intel.</p>
                     <div class="bespoke-stats">
                         <div class="bespoke-stat"><div class="bespoke-stat-num">100</div><div class="bespoke-stat-label">Prompts</div></div>
                         <div class="bespoke-stat"><div class="bespoke-stat-num">5</div><div class="bespoke-stat-label">LLMs</div></div>
                         <div class="bespoke-stat"><div class="bespoke-stat-num">25</div><div class="bespoke-stat-label">Media targets</div></div>
                     </div>
-                    <button class="bespoke-btn" onclick="openDemoModal()">Request a bespoke audit &rarr;</button>
+                    <button class="cta-buy-btn" id="ctaBuyBtn" onclick="buyCheckout('single', this)">
+                        Buy with Apple Pay, Google Pay, or card &rarr;
+                    </button>
+                    <div class="cta-payment-note"><strong>$25</strong> · Secure checkout via Stripe · No account required</div>
+                    <div class="cta-error" id="ctaError" style="display:none"></div>
+                    <div class="cta-secondary">
+                        Need a fully bespoke analysis? <strong style="color:#cfd2ff">Custom prompts you co-author</strong>, up to <strong style="color:#cfd2ff">10 LLMs</strong>, top 50+ targets, executive briefing, and a strategic memo. From $5K.
+                        <div style="margin-top:8px"><button class="cta-link-btn" onclick="openDemoModal()">Request a call &rarr;</button></div>
+                    </div>
                 </div>
             `;
 
@@ -965,17 +1305,19 @@
                     errEl.textContent = data.error || 'Something went wrong.';
                     errEl.classList.add('active');
                     btn.disabled = false;
-                    btn.textContent = 'Request bespoke audit';
+                    btn.textContent = 'Request a call';
                     return;
                 }
                 document.getElementById('demoForm').style.display = 'none';
                 document.getElementById('demoSuccess').style.display = 'block';
+                const devNote = document.getElementById('demoDevNote');
+                if (devNote) devNote.style.display = data.dev ? 'block' : 'none';
             } catch (e) {
                 console.error('Demo request failed:', e);
                 errEl.textContent = 'Network error: ' + (e && e.message ? e.message : 'unknown');
                 errEl.classList.add('active');
                 btn.disabled = false;
-                btn.textContent = 'Request bespoke audit';
+                btn.textContent = 'Request a call';
             }
         }
 
@@ -983,12 +1325,113 @@
             if (e.key === 'Escape') closeDemoModal();
         });
 
-        document.getElementById('problemInput').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                runAudit();
+        const problemInputEl = document.getElementById('problemInput');
+        if (problemInputEl) {
+            problemInputEl.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    runAudit();
+                }
+            });
+        }
+
+        function showToast(text) {
+            const t = document.getElementById('toast');
+            t.textContent = text;
+            t.classList.add('active');
+            clearTimeout(showToast._timer);
+            showToast._timer = setTimeout(() => t.classList.remove('active'), 2200);
+        }
+
+        async function copyShareLink(url) {
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(url);
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.value = url;
+                    ta.style.position = 'fixed';
+                    ta.style.left = '-9999px';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                }
+                showToast('Share link copied');
+            } catch (e) {
+                showToast('Copy failed — link: ' + url);
             }
-        });
+        }
+
+        async function buyCheckout(productKey, btn) {
+            const errEl = document.getElementById('ctaError');
+            if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+            if (btn) {
+                btn.disabled = true;
+                btn._originalText = btn.innerHTML;
+                btn.innerHTML = 'Opening secure checkout...';
+            }
+            try {
+                const ctx = (typeof lastAuditContext === 'object' && lastAuditContext) ? lastAuditContext : {};
+                const resp = await fetch('/signal/checkout/' + encodeURIComponent(productKey), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ problem_statement: ctx.problem_statement || '' }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok && data.url) {
+                    window.location.href = data.url;
+                    return;
+                }
+                const msg = (data && data.error) ? data.error : 'Checkout is not available right now.';
+                if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
+                if (btn) { btn.disabled = false; btn.innerHTML = btn._originalText; }
+            } catch (e) {
+                if (errEl) {
+                    errEl.textContent = 'Network error: ' + (e && e.message ? e.message : 'unknown');
+                    errEl.style.display = 'block';
+                }
+                if (btn) { btn.disabled = false; btn.innerHTML = btn._originalText; }
+            }
+        }
+
+        // Prefill from query string (used after successful checkout to resume the same problem statement).
+        (function applyPrefill() {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                const prefill = params.get('prefill');
+                const runPaid = params.get('run_paid') === '1';
+                if (prefill) {
+                    const input = document.getElementById('problemInput');
+                    if (input) input.value = prefill;
+                }
+                if (runPaid) {
+                    const toggle = document.getElementById('tierToggle');
+                    if (toggle) toggle.checked = true;
+                }
+            } catch (e) {}
+        })();
+
+        // Shared-view bootstrap: if the server injected a saved report, skip the input form.
+        if (window.SHARED_REPORT) {
+            const sharedSubtitle = document.getElementById('initialSubtitle');
+            if (sharedSubtitle) sharedSubtitle.style.display = 'none';
+            document.getElementById('formSection').classList.add('hidden');
+            const loading = document.getElementById('loading');
+            if (loading) loading.classList.remove('active');
+            const data = window.SHARED_REPORT;
+            lastAuditContext = { slug: data.slug || null, problem_statement: '' };
+            renderResults(data);
+
+            if (window.SIGNAL_SHARE_URL) {
+                const banner = document.createElement('div');
+                banner.className = 'share-banner';
+                banner.innerHTML = `<span>Viewing a shared PR Signal Finder report.</span>`
+                    + `<span><a href="/citation-audit">Run your own &rarr;</a></span>`;
+                const results = document.getElementById('results');
+                results.insertBefore(banner, results.firstChild);
+            }
+        }
     </script>
 </body>
 </html>
