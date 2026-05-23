@@ -3,6 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if shared_data %}
+    {# Shared-report URLs (/signal/<slug>) embed a customer's brand + competitive intel.
+       Keep them out of search indexes so a casually-shared link doesn't get scraped. #}
+    <meta name="robots" content="noindex,nofollow">
+    {% endif %}
     <title>AI Citation Audit | PR Signal Finder — Innate c3 insights</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -976,6 +981,7 @@
         window.SHARED_REPORT = {{ shared_data | tojson | safe if shared_data else 'null' }};
         window.SIGNAL_SHARE_URL = {{ share_url | tojson | safe if share_url else 'null' }};
         window.SIGNAL_PDF_URL   = {{ pdf_url   | tojson | safe if pdf_url   else 'null' }};
+        window.SIGNAL_CSV_URL   = {{ csv_url   | tojson | safe if csv_url   else 'null' }};
         window.SIGNAL_USER      = {{ 'true' if signal_user else 'false' }};
         window.SIGNAL_CREDITS   = {{ signal_credits or 0 }};
     </script>
@@ -1308,6 +1314,7 @@
             const origin = window.location.origin;
             const shareUrl = window.SIGNAL_SHARE_URL || (slug ? `${origin}/signal/${slug}` : null);
             const pdfUrl   = window.SIGNAL_PDF_URL   || (slug ? `${origin}/signal/${slug}.pdf` : null);
+            const csvUrl   = window.SIGNAL_CSV_URL   || (slug ? `${origin}/signal/${slug}.csv` : null);
 
             let html = `
                 <div class="results-header">
@@ -1320,10 +1327,11 @@
                     <div class="citation-total">
                         ${data.total_citations_extracted || 0} citation URLs extracted across ${data.total_responses || 30} responses
                     </div>
-                    ${(shareUrl || pdfUrl) ? `
+                    ${(shareUrl || pdfUrl || csvUrl) ? `
                         <div class="action-bar">
                             ${shareUrl ? `<button class="action-btn" id="shareBtn" onclick="copyShareLink('${esc(shareUrl)}')">Share report</button>` : ''}
                             ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
+                            ${csvUrl ? `<a class="action-btn" href="${esc(csvUrl)}" rel="noopener">Download CSV</a>` : ''}
                         </div>
                     ` : ''}
                 </div>
@@ -1419,15 +1427,16 @@
                 }
             }
 
-            if (shareUrl || pdfUrl) {
+            if (shareUrl || pdfUrl || csvUrl) {
                 html += `
                     <div class="save-panel">
                         <div class="save-panel-label">Save & share</div>
                         <h4>Hold onto this report</h4>
-                        <div class="save-panel-desc">Anyone with the link can view this report. The PDF includes the full target list with cited URLs.</div>
+                        <div class="save-panel-desc">Anyone with the link can view this report. The PDF includes the full target list with cited URLs; the CSV lets you sort/filter the target list in Excel or Google Sheets.</div>
                         <div class="save-panel-actions">
                             ${shareUrl ? `<button class="action-btn primary-action" onclick="copyShareLink('${esc(shareUrl)}')">Copy share link</button>` : ''}
                             ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
+                            ${csvUrl ? `<a class="action-btn" href="${esc(csvUrl)}" rel="noopener">Download CSV</a>` : ''}
                         </div>
                         ${shareUrl ? `<input type="text" class="share-url-display" value="${esc(shareUrl)}" readonly onclick="this.select()">` : ''}
                     </div>
@@ -1641,6 +1650,13 @@
                 }
                 // After Stripe success, autostart=1 triggers the audit automatically.
                 // Brief delay so the user sees the form populate before it disappears into the loading state.
+                // NOTE: as of the security audit fix, the /signal/checkout/success page
+                // no longer auto-logs-in unauthenticated buyers (the previous behavior
+                // silently logged in anyone who held the session_id URL — a leak vector
+                // via Referer / browser history). The success template only emits this
+                // autostart=1 query string when the buyer was ALREADY signed in.
+                // Anonymous buyers click the magic-link in their email instead, and
+                // arrive here logged in but without autostart — they hit "Run audit" by hand.
                 if (autostart && prefill) {
                     setTimeout(() => {
                         try { runAudit(); } catch (e) { console.error('autostart failed', e); }

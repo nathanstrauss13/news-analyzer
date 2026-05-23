@@ -6,9 +6,13 @@ import requests
 import html
 import uuid
 import io
+import csv
 import queue
 import threading
 import secrets
+import ipaddress
+import socket
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 # Use the OS native trust store (macOS keychain / Windows cert store / Linux /etc/ssl).
@@ -20,7 +24,6 @@ try:
 except ImportError:
     pass
 from PIL import Image, ImageDraw, ImageFont
-from collections import Counter
 from datetime import datetime, timedelta
 import hashlib
 from functools import wraps
@@ -39,6 +42,63 @@ load_dotenv(override=True)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "your_secret_key_here")
+
+# Cookie/session hardening — kills the basic cross-site CSRF vector on
+# credit-spending POSTs and protects the magic-link session cookie in transit.
+# SESSION_COOKIE_SECURE is fine for prod (HTTPS-only); local dev over plain
+# HTTP just means the cookie won't be set, which is the safer default.
+app.config.update(
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+)
+
+# ---------------------------------------------------------------------------
+# Simple in-memory rate limiter for /signal/login. Keyed by email + IP so a
+# single bad actor can't burn through tokens for many emails, and a single
+# email can't get spammed from many IPs. Process-local — fine for Render
+# Starter's single-instance gunicorn; switch to Redis if we scale horizontally.
+# ---------------------------------------------------------------------------
+_login_rate = defaultdict(list)  # key (email or ip) → [unix_ts, ...]
+_LOGIN_RATE_LIMIT = 5            # attempts per window
+_LOGIN_RATE_WINDOW = 600         # seconds (10 min)
+
+
+def _check_login_rate(key):
+    """Returns True if the request is under the limit (and records this hit).
+    Returns False if the caller should be rejected."""
+    now = datetime.utcnow().timestamp()
+    _login_rate[key] = [t for t in _login_rate[key] if now - t < _LOGIN_RATE_WINDOW]
+    if len(_login_rate[key]) >= _LOGIN_RATE_LIMIT:
+        return False
+    _login_rate[key].append(now)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# SSRF guard for outbound URL verification (_resolve_and_verify_urls).
+# Citation URLs are pulled from LLM output, so we can't trust them. Resolve
+# the hostname to an IP and reject anything that points at private/loopback/
+# link-local / reserved space — this prevents the production HEAD requests
+# from being weaponized to probe internal services (Render's metadata, etc.).
+# ---------------------------------------------------------------------------
+def _is_safe_url(url):
+    try:
+        host = url.split('/')[2].split(':')[0]
+        if not host:
+            return False
+        # Resolve all A/AAAA records — reject if any of them is unsafe space.
+        for info in socket.getaddrinfo(host, None):
+            ip = ipaddress.ip_address(info[4][0])
+            if (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+                return False
+        return True
+    except Exception:
+        # If we can't resolve safely, don't fetch — fail closed.
+        return False
+
 
 # File upload configuration
 UPLOAD_FOLDER = 'uploads'
@@ -3031,12 +3091,99 @@ def _count_brand_mentions(brand, all_responses):
     """Deterministic, case-insensitive, word-boundary count of how many responses
     mention the brand. Replaces the previous LLM-estimated count which was
     biased low because the analysis prompt only saw 500-char excerpts of each
-    response (so mentions past char 500 were silently dropped)."""
+    response (so mentions past char 500 were silently dropped).
+
+    Multi-form heuristic: for multi-word brand names where the first word is
+    >= 5 chars (avoids false-positives on short common words like "The" / "New"),
+    we also count responses that mention just the first word. Same response
+    counts as one regardless of which form matched. Examples:
+      - "Patagonia"           → matches "Patagonia"
+      - "ACME Corporation"    → matches "ACME Corporation" OR just "ACME"
+      - "The Honest Company"  → only matches the full phrase (first word too short)
+    """
     if not brand:
         return 0
-    # Word-boundary regex; brand names with whitespace work via re.escape.
-    pattern = re.compile(r'\b' + re.escape(brand) + r'\b', re.IGNORECASE)
-    return sum(1 for r in all_responses if pattern.search(r.get('response', '') or ''))
+    patterns = [re.compile(r'\b' + re.escape(brand) + r'\b', re.IGNORECASE)]
+    parts = brand.split()
+    if len(parts) > 1 and len(parts[0]) > 5:
+        patterns.append(re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE))
+    count = 0
+    for r in all_responses:
+        text = r.get('response', '') or ''
+        if any(p.search(text) for p in patterns):
+            count += 1
+    return count
+
+
+def _extract_competitor_candidates(brand, category, all_responses, max_candidates=15):
+    """Ask Claude to extract a CANDIDATE LIST of competitor brand names from
+    the actual response text. Returns just names — counts come from
+    _count_brand_mentions (deterministic, authoritative).
+
+    This decouples competitor *discovery* (LLM, judgement call) from competitor
+    *frequency* (deterministic substring match over full response text). Before
+    this split, Claude was asked to estimate counts from 500-char excerpts in
+    the analysis prompt, which produced numbers a consultant could trivially
+    falsify by grepping the raw responses for "Spanx" etc. Now the counts always
+    match what a regex over the full text would produce.
+    """
+    if not all_responses:
+        return []
+    excerpts = ""
+    for i, r in enumerate(all_responses[:30]):  # cap context size; we have ≤30 responses for free, more for paid
+        text = (r.get('response', '') or '')[:2000]
+        excerpts += f"\n--- Response {i+1} [{r.get('llm','?')}] ---\n{text}\n"
+
+    try:
+        resp = anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=600,
+            messages=[{
+                "role": "user",
+                "content": f"""Extract the brand/product/company names that appear as COMPETITORS or PEER OPTIONS to "{brand}" in the category "{category}" across the AI responses below.
+
+Rules:
+- Return ONLY actual brand/product names — not generic categories (e.g. "wireless headphones" is not a brand).
+- Exclude "{brand}" itself.
+- Exclude reviewer/journalist names, publication names, and platform names (Amazon, Reddit, etc.).
+- Maximum {max_candidates} candidates. Prefer the most-mentioned distinct brands.
+- Keep names in their canonical form (e.g. "Sony WH-1000XM5" → "Sony", "Bose QuietComfort" → "Bose"). For brand families, use the umbrella brand, not the SKU.
+- If no clear competitor brands appear, return an empty list.
+
+Respond with ONLY a JSON array of strings: ["Brand A", "Brand B", ...]
+
+RESPONSES:
+{excerpts}"""
+            }]
+        )
+        txt = resp.content[0].text
+        match = re.search(r'\[.*?\]', txt, re.DOTALL)
+        if not match:
+            return []
+        names = json.loads(match.group())
+        if not isinstance(names, list):
+            return []
+        # Sanitize: strings only, dedupe case-insensitively, drop the brand itself.
+        seen = set()
+        out = []
+        brand_lower = (brand or '').strip().lower()
+        for n in names:
+            if not isinstance(n, str):
+                continue
+            n = n.strip()
+            if not n or n.lower() == brand_lower:
+                continue
+            key = n.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(n)
+            if len(out) >= max_candidates:
+                break
+        return out
+    except Exception as e:
+        print("competitor candidate extraction failed (continuing without):", e)
+        return []
 
 
 _URL_VALIDATION_HEADERS = {
@@ -3063,6 +3210,12 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
     out = {}
 
     def check(u):
+        # SSRF guard: never fire HEAD against private/loopback/reserved IPs.
+        # LLM citation URLs are untrusted input; without this a confabulated
+        # internal URL could probe our own infra. Drop on failure (treat as
+        # confabulated).
+        if not _is_safe_url(u):
+            return (u, None)
         try:
             r = requests.head(u, timeout=timeout, allow_redirects=True,
                               headers=_URL_VALIDATION_HEADERS)
@@ -3405,6 +3558,25 @@ Respond with ONLY valid JSON in this exact format:
     brand_mention_count = _count_brand_mentions(brand, all_responses)
     emit("extract", f"Found {total_citations} citations across {len(ranked_domains)} domains · brand cited in {brand_mention_count}/{len(all_responses)} responses", extract_total, extract_total)
 
+    emit("analysis", "Identifying competitor brands...", 0, 1)
+    # Deterministic competitor counts: discover candidates via Claude (judgement),
+    # then count via _count_brand_mentions (regex over FULL response text). This
+    # kills the prior failure mode where the analysis prompt's competitor mention
+    # counts were derived from 500-char excerpts and didn't reconcile against
+    # the raw responses a consultant might grep.
+    competitor_candidates = _extract_competitor_candidates(brand, category, all_responses)
+    competitor_counts = []
+    for name in competitor_candidates:
+        cnt = _count_brand_mentions(name, all_responses)
+        if cnt > 0:
+            competitor_counts.append({"name": name, "mention_count": cnt})
+    competitor_counts.sort(key=lambda c: c["mention_count"], reverse=True)
+    competitor_counts = competitor_counts[:10]
+    top_competitor_block = "\n".join(
+        f"  - {c['name']}: cited in {c['mention_count']} of {len(all_responses)} responses"
+        for c in competitor_counts
+    ) or "  (no clear competitor brands surfaced)"
+
     emit("analysis", "Verifying editorial sources...", 0, 1)
 
     editorial_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'editorial']
@@ -3445,6 +3617,8 @@ The client's brand is "{brand}". Their goal: "{problem_statement}"
 
 DETERMINISTIC FACTS (pre-computed from raw response text — use these EXACTLY, do not re-estimate):
 - Brand mention count: {brand_mention_count} of {len(all_responses)} responses mention "{brand}" (deterministic substring count over full response text — authoritative).
+- TOP COMPETITOR MENTION COUNTS (pre-computed deterministically — these are the AUTHORITATIVE counts for the `competitors` array. Do NOT re-estimate, do NOT add competitors not in this list, do NOT change the counts):
+{top_competitor_block}
 
 The citation data has been pre-classified into three groups:
 
@@ -3486,7 +3660,7 @@ Respond with ONLY valid JSON:
   "total_responses": {len(all_responses)},
   "total_citations_extracted": {total_citations},
   "competitors": [
-    {{"name": "competitor name", "mention_count": <int>, "cited_by": ["Claude", "ChatGPT", "Gemini"]}}
+    {{"name": "competitor name (USE THE NAMES + COUNTS FROM 'TOP COMPETITOR MENTION COUNTS' above EXACTLY — do not invent or omit; fill `cited_by` from response inspection)", "mention_count": <int from pre-computed list>, "cited_by": ["Claude", "ChatGPT", "Gemini"]}}
   ],
   "media_targets": [
     {{
@@ -3537,6 +3711,26 @@ Respond with ONLY valid JSON:
     if not analysis_match:
         raise ValueError("Failed to parse analysis response")
     analysis = json.loads(analysis_match.group())
+
+    # Hard-overwrite competitor counts with the deterministic pre-computed values.
+    # Even if Claude drifts on the counts (or invents extra competitors), the
+    # final report can't disagree with what a regex would produce. Preserve
+    # cited_by lists Claude produced, by name, when we have them.
+    cited_by_lookup = {}
+    for c in analysis.get('competitors', []) or []:
+        try:
+            cited_by_lookup[(c.get('name') or '').strip().lower()] = c.get('cited_by') or []
+        except Exception:
+            pass
+    analysis['competitors'] = [
+        {
+            "name": c["name"],
+            "mention_count": c["mention_count"],
+            "cited_by": cited_by_lookup.get(c["name"].lower(), []),
+        }
+        for c in competitor_counts
+    ]
+
     analysis["prompts_used"] = prompts
     analysis["raw_citation_domains"] = ranked_domains[:20]
     return analysis
@@ -3568,11 +3762,21 @@ def citation_audit():
     if requested_tier == 'paid':
         if not user:
             return jsonify({"error": "Please sign in to run a paid audit.", "code": "auth_required"}), 401
-        if credits < 1:
-            return jsonify({"error": "No audit credits remaining. Buy more to continue.", "code": "no_credits"}), 402
-        bal = CreditBalance.query.filter_by(user_id=user.id).first()
-        bal.credits_remaining = (bal.credits_remaining or 0) - 1
+        # Atomic conditional UPDATE: only succeeds if credits_remaining > 0.
+        # Replaces a read-modify-write that was racy on Postgres — two
+        # concurrent POSTs could both read the same starting value and each
+        # decrement once, double-spending a credit. With this single SQL
+        # UPDATE, exactly one of two concurrent requests wins; the other gets
+        # rowcount == 0 and is rejected with 402.
+        updated = db.session.execute(
+            db.update(CreditBalance)
+              .where(CreditBalance.user_id == user.id)
+              .where(CreditBalance.credits_remaining > 0)
+              .values(credits_remaining=CreditBalance.credits_remaining - 1)
+        )
         db.session.commit()
+        if updated.rowcount != 1:
+            return jsonify({"error": "No audit credits remaining. Buy more to continue.", "code": "no_credits"}), 402
         tier = 'paid'
         credit_charged = True
 
@@ -3654,6 +3858,7 @@ def view_signal_report(slug):
         return redirect(url_for('citation_audit'))
     share_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=slug)
     pdf_url = request.url_root.rstrip('/') + url_for('signal_report_pdf', slug=slug)
+    csv_url = request.url_root.rstrip('/') + url_for('signal_report_csv', slug=slug)
     user = current_signal_user()
     return render_template(
         'citation_audit.html',
@@ -3661,6 +3866,7 @@ def view_signal_report(slug):
         shared_data=data,
         share_url=share_url,
         pdf_url=pdf_url,
+        csv_url=csv_url,
         signal_user=user,
         signal_credits=current_user_credits(user),
     )
@@ -3695,6 +3901,92 @@ def signal_report_pdf(slug):
     )
 
 
+@app.route('/signal/<slug>.csv')
+def signal_report_csv(slug):
+    """Return the saved report's target list (editorial + institutional + analyst)
+    as a CSV download. Mirrors the PDF route's behavior (loads SharedResult by
+    slug, flashes + redirects on miss)."""
+    data = _load_signal_report(slug)
+    if not data:
+        flash("Report not found or expired.")
+        return redirect(url_for('citation_audit'))
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "section",
+        "rank",
+        "outlet",
+        "domain",
+        "reporter",
+        "citation_frequency",
+        "cited_by_llms",
+        "competitors_citing",
+        "rationale",
+        "gap_insight",
+        "sample_urls",
+    ])
+
+    def _join(v):
+        if not v:
+            return ""
+        if isinstance(v, (list, tuple)):
+            return "; ".join(str(x) for x in v)
+        return str(v)
+
+    for t in (data.get('media_targets') or []):
+        writer.writerow([
+            "editorial",
+            t.get('rank') or '',
+            t.get('outlet') or '',
+            t.get('domain') or '',
+            t.get('reporter') or '',
+            t.get('citation_frequency') or '',
+            _join(t.get('cited_by_llms')),
+            _join(t.get('competitors_citing')),
+            t.get('rationale') or '',
+            t.get('gap_insight') or '',
+            _join(t.get('sample_urls')),
+        ])
+    for t in (data.get('institutional_targets') or []):
+        writer.writerow([
+            "institutional",
+            t.get('rank') or '',
+            t.get('institution') or '',
+            t.get('domain') or '',
+            "",  # no reporter for institutional
+            t.get('citation_frequency') or '',
+            _join(t.get('cited_by_llms')),
+            "",  # competitors_citing not tracked at this granularity for institutional
+            t.get('partnership_play') or '',
+            "",  # no gap_insight on institutional rows
+            _join(t.get('sample_urls')),
+        ])
+    for t in (data.get('analyst_targets') or []):
+        writer.writerow([
+            "analyst",
+            t.get('rank') or '',
+            t.get('firm') or '',
+            t.get('domain') or '',
+            "",
+            t.get('citation_frequency') or '',
+            _join(t.get('cited_by_llms')),
+            "",
+            t.get('analyst_play') or '',
+            _join(t.get('evaluations_referenced')),
+            _join(t.get('sample_urls')),
+        ])
+
+    csv_bytes = buf.getvalue().encode('utf-8-sig')  # BOM so Excel reads UTF-8 cleanly
+    brand_slug = re.sub(r'[^a-z0-9]+', '-', (data.get('brand') or 'report').lower()).strip('-') or 'report'
+    filename = f"signal-finder-{brand_slug}-{slug}.csv"
+    return Response(
+        csv_bytes,
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+    )
+
+
 @app.route('/citation-audit/request-demo', methods=['POST'])
 def citation_audit_request_demo():
     data = request.get_json(silent=True) or {}
@@ -3720,7 +4012,12 @@ def citation_audit_request_demo():
         try:
             from sendgrid import SendGridAPIClient
             from sendgrid.helpers.mail import Mail
-            report_link = f"https://innatec3.com/results/{slug}" if slug else "(no audit slug)"
+            # Use the configured signal base URL (e.g. https://signal.innatec3.com)
+            # so the link points at the actual /signal/<slug> route. The old
+            # https://innatec3.com/results/{slug} URL 404s — that route doesn't
+            # exist on innatec3.com.
+            base = os.environ.get("SIGNAL_BASE_URL") or (request.url_root.rstrip('/'))
+            report_link = f"{base}/signal/{slug}" if slug else "(no audit slug)"
             text_body = (
                 f"New PR Signal Finder bespoke audit request:\n\n"
                 f"Name: {name}\n"
@@ -3861,6 +4158,30 @@ def signal_login():
         flash("Please enter a valid email address.")
         return render_template('signal_login.html', ga_measurement_id=GA_MEASUREMENT_ID, sent=False, email=email, next_url=nxt, dev_magic_link=None)
 
+    # Rate-limit by both email and requester IP. Either being over the limit
+    # blocks the attempt; this stops both single-target spamming (one email
+    # from many IPs) and broad fishing (many emails from one IP).
+    requester_ip = (request.headers.get('X-Forwarded-For', request.remote_addr or '')
+                    .split(',')[0].strip() or 'unknown')
+    if not _check_login_rate(f"email:{email}") or not _check_login_rate(f"ip:{requester_ip}"):
+        flash("Too many sign-in attempts. Try again in 10 minutes.")
+        return render_template(
+            'signal_login.html',
+            ga_measurement_id=GA_MEASUREMENT_ID,
+            sent=False,
+            email=email,
+            next_url=nxt,
+            dev_magic_link=None,
+        )
+
+    # Invalidate any prior unused tokens for this email before issuing a new one.
+    # Without this, a stolen-but-uninstalled-yet old link would still work once
+    # the user requests a fresh link. We also limit blast radius if a previously
+    # sent email was forwarded.
+    LoginToken.query.filter_by(email=email, used_at=None).update(
+        {'used_at': datetime.utcnow()}, synchronize_session=False
+    )
+
     raw = secrets.token_urlsafe(32)
     db.session.add(LoginToken(
         email=email,
@@ -3888,18 +4209,35 @@ def signal_auth():
     if not raw:
         flash("Invalid sign-in link.")
         return redirect(url_for('signal_login'))
-    rec = LoginToken.query.filter_by(token_hash=_hash_token(raw)).first()
-    if not rec or rec.used_at or rec.expires_at < datetime.utcnow():
+    token_hash = _hash_token(raw)
+    rec = LoginToken.query.filter_by(token_hash=token_hash).first()
+    if not rec or rec.expires_at < datetime.utcnow():
         flash("Sign-in link expired or already used. Request a new one.")
         return redirect(url_for('signal_login'))
-    rec.used_at = datetime.utcnow()
+
+    # Atomic consume: only flip used_at if it's still NULL. If two requests
+    # race (e.g. browser pre-fetch + user click), only one wins (rowcount==1),
+    # the other is rejected. Without this, a token could be consumed twice
+    # in concert with read-modify-write timing.
+    now = datetime.utcnow()
+    consumed = db.session.execute(
+        db.update(LoginToken)
+          .where(LoginToken.token_hash == token_hash)
+          .where(LoginToken.used_at.is_(None))
+          .values(used_at=now)
+    )
+    db.session.commit()
+    if consumed.rowcount != 1:
+        flash("Sign-in link expired or already used. Request a new one.")
+        return redirect(url_for('signal_login'))
+
     user = SignalUser.query.filter_by(email=rec.email).first()
     if not user:
         user = SignalUser(email=rec.email)
         db.session.add(user)
         db.session.flush()
         db.session.add(CreditBalance(user_id=user.id, credits_remaining=0))
-    user.last_login_at = datetime.utcnow()
+    user.last_login_at = now
     db.session.commit()
     session['signal_user_id'] = user.id
     nxt = session.pop('signal_post_login_next', None) or url_for('signal_dashboard')
@@ -4074,9 +4412,11 @@ def signal_checkout(product):
 @app.route('/signal/checkout/success')
 def signal_checkout_success():
     sid = (request.args.get('session_id') or '').strip()
-    user = current_signal_user()
+    user = current_signal_user()  # truthy ONLY if the buyer was already signed in
     purchase = None
     problem_statement = None
+    granted_user = None
+    granted_email = None
 
     if sid and stripe_lib and STRIPE_SECRET_KEY:
         try:
@@ -4088,16 +4428,24 @@ def signal_checkout_success():
                 sess_dict = sess_obj
             problem_statement = ((sess_dict.get('metadata') or {}).get('problem_statement') or '').strip() or None
             granted_user, granted_purchase = _grant_credits_from_stripe_session(sess_dict)
-            if granted_user:
-                if not user or user.id != granted_user.id:
-                    session['signal_user_id'] = granted_user.id
-                    user = granted_user
             if granted_purchase:
                 purchase = granted_purchase
+            if granted_user:
+                granted_email = granted_user.email
         except Exception as e:
             print("Stripe success-page processing error:", e)
 
-    credits = current_user_credits(user) if user else 0
+    # SECURITY: do NOT auto-login the request based on possession of session_id.
+    # The Stripe session_id appears in the URL and would leak via Referer,
+    # browser history, sharing, etc. Previously this route did
+    # `session['signal_user_id'] = granted_user.id`, which silently logged in
+    # anyone who held the URL. Now: if the buyer was already signed in, keep
+    # them; otherwise show a "credits granted, sign in via magic-link" message.
+    # The welcome magic-link is already dispatched by
+    # _grant_credits_from_stripe_session for new users (see ~line 4015).
+    credits = current_user_credits(user) if user else (
+        current_user_credits(granted_user) if granted_user else 0
+    )
     return render_template(
         'signal_checkout_success.html',
         ga_measurement_id=GA_MEASUREMENT_ID,
@@ -4105,6 +4453,7 @@ def signal_checkout_success():
         credits=credits,
         purchase=purchase,
         problem_statement=problem_statement,
+        granted_email=granted_email,
     )
 
 

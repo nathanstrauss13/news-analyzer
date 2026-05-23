@@ -35,6 +35,17 @@
             font-size: 14px;
         }
         a.secondary:hover { border-color: #5c6cff; }
+        .signin-note {
+            margin-top: 18px;
+            padding: 14px 16px;
+            background: #0e1a14;
+            border: 1px solid #5aff8a;
+            border-radius: 8px;
+            color: #cfd2ff;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .signin-note strong { color: #5aff8a; }
     </style>
     {% if ga_measurement_id %}
         <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
@@ -46,26 +57,43 @@
         <div class="eyebrow">Innate c3 insights — AI Citation Audit</div>
         <h1>Thanks — payment received.</h1>
         {% if purchase %}
-            <p>Your <strong>{{ purchase.product_label or 'credits' }}</strong> purchase has been confirmed and {{ purchase.credits_granted }} credit{{ '' if purchase.credits_granted == 1 else 's' }} added to your balance.</p>
+            <p>Your <strong>{{ purchase.product_label or 'credits' }}</strong> purchase has been confirmed and {{ purchase.credits_granted }} credit{{ '' if purchase.credits_granted == 1 else 's' }} added to your account.</p>
         {% else %}
             <p>Your purchase is being processed. Credits typically appear within a few seconds after Stripe confirms the payment.</p>
         {% endif %}
-        <div class="meta">
-            <strong>{{ credits }}</strong>
-            credit{{ '' if credits == 1 else 's' }} available
-        </div>
-        {% set audit_qs = '?run_paid=1&autostart=1' + ('&prefill=' + (problem_statement | urlencode) if problem_statement else '') %}
-        <a class="primary" href="{{ url_for('citation_audit') }}{{ audit_qs }}">Run your paid audit now &rarr;</a>
+
         {% if user %}
+            {# Buyer was already signed in — safe to deep-link straight into the audit. #}
+            <div class="meta">
+                <strong>{{ credits }}</strong>
+                credit{{ '' if credits == 1 else 's' }} in your account
+            </div>
+            {% set audit_qs = '?run_paid=1&autostart=1' + ('&prefill=' + (problem_statement | urlencode) if problem_statement else '') %}
+            <a class="primary" href="{{ url_for('citation_audit') }}{{ audit_qs }}">Run your paid audit now &rarr;</a>
             <a class="secondary" href="{{ url_for('signal_dashboard') }}">Dashboard</a>
-        {% endif %}
-        {% if user %}
             <p style="margin-top:18px;font-size:12px;color:#888">
-                Signed in as {{ user.email }}{% if not purchase %} — your purchase is being confirmed, this page refreshes when it's ready.{% endif %}
+                Signed in as {{ user.email }}.
             </p>
         {% else %}
+            {# Not signed in. We deliberately do NOT log the request in based
+               on the Stripe session_id in the URL — that URL leaks via Referer
+               and browser history. Instead, point them at the magic-link email
+               that _grant_credits_from_stripe_session has already dispatched
+               for new users. #}
+            <div class="signin-note">
+                Your <strong>{{ credits }} credit{{ '' if credits == 1 else 's' }}</strong>
+                {% if credits == 1 %}is{% else %}are{% endif %}
+                in the account for
+                <strong>{{ granted_email or 'your email' }}</strong>.<br><br>
+                Check your inbox for a one-tap sign-in link to access them, or
+                request one below.
+            </div>
+            <div style="margin-top:16px">
+                <a class="primary" href="{{ url_for('signal_login') }}">Sign in with magic link</a>
+                <a class="secondary" href="{{ url_for('citation_audit') }}">Back to home</a>
+            </div>
             <p style="margin-top:18px;font-size:12px;color:#888">
-                Confirmation pending. Refresh this page in a few seconds, or check your email for a sign-in link.
+                Credits stay attached to the email address associated with the purchase. The sign-in link is valid for 24 hours.
             </p>
         {% endif %}
     </div>
