@@ -3079,7 +3079,7 @@ def aggregate_citations(all_responses):
     for d in domain_data.values():
         d['llms'] = list(d['llms'])
         d['prompts'] = list(d['prompts'])
-        d['urls'] = list(set(d['urls']))[:10]
+        d['urls'] = list(set(d['urls']))
         # diversity_score = count * (1 + 0.25 * (distinct LLMs - 1))
         # 1 LLM: ×1.00 · 2 LLMs: ×1.25 · 3 LLMs: ×1.50 · 4: ×1.75 · 5: ×2.00
         d['diversity_score'] = d['count'] * (1 + 0.25 * max(0, len(d['llms']) - 1))
@@ -3601,10 +3601,18 @@ Respond with ONLY valid JSON in this exact format:
     institutional_block = fmt_block(institutional_domains, max(10, institutional_limit * 2))
     analyst_block = fmt_block(analyst_domains_found, max(10, analyst_limit * 2))
 
+    # Per-response excerpt size auto-tunes to fit a ~19K-token budget for the
+    # responses block. Free tier (30 responses) gets ~2500 chars each (5x more
+    # context than the old 500-char clip); paid tier (~500 responses) collapses
+    # to a 500-char floor so the prompt stays inside Claude's 200K context.
+    total_chars_budget = 75_000  # roughly 19K tokens for the responses block
+    per_response_chars = max(500, total_chars_budget // max(1, len(all_responses)))
+    per_response_chars = min(per_response_chars, 3000)  # don't exceed 3000 even on small batches
+
     responses_block = ""
     for i, r in enumerate(all_responses):
         citation_urls = [c['url'] for c in r.get('citations', [])]
-        responses_block += f"\n--- Response {i+1} [{r['llm']}] ---\nPrompt: {r['prompt']}\nCitations found: {citation_urls}\n{r['response'][:500]}\n"
+        responses_block += f"\n--- Response {i+1} [{r['llm']}] ---\nPrompt: {r['prompt']}\nCitations found: {citation_urls}\n{r['response'][:per_response_chars]}\n"
 
     analysis_response = anthropic.messages.create(
         model="claude-sonnet-4-20250514",
@@ -3669,7 +3677,7 @@ Respond with ONLY valid JSON:
       "domain": "the actual domain from citation data",
       "reporter": "Named journalist if identifiable from response content, otherwise null",
       "citation_frequency": <actual count from citation data>,
-      "sample_urls": ["1-2 actual URLs that were cited"],
+      "sample_urls": ["up to 10 actual URLs that were cited"],
       "cited_by_llms": ["which LLMs cited this outlet"],
       "competitors_citing": ["competitors discussed in responses that cited this outlet"],
       "rationale": "One sentence on why earned media here would move the needle for {brand}",
@@ -3683,7 +3691,7 @@ Respond with ONLY valid JSON:
       "domain": "the actual domain from citation data",
       "type": "Government | Academic | Research Institute | Trade Association | Certification Body | Advocacy Non-profit",
       "citation_frequency": <actual count from citation data>,
-      "sample_urls": ["1-2 actual URLs that were cited"],
+      "sample_urls": ["up to 10 actual URLs that were cited"],
       "cited_by_llms": ["which LLMs cited this institution"],
       "partnership_play": "One sentence on the specific partnership, certification, sponsorship, research collaboration, or expert engagement that would influence AI citations through this entity"
     }}
@@ -3695,7 +3703,7 @@ Respond with ONLY valid JSON:
       "domain": "the actual domain from citation data",
       "type": "Industry Analyst | Management Consultancy | Boutique Research",
       "citation_frequency": <actual count from citation data>,
-      "sample_urls": ["1-2 actual URLs that were cited"],
+      "sample_urls": ["up to 10 actual URLs that were cited"],
       "cited_by_llms": ["which LLMs cited this firm"],
       "evaluations_referenced": ["Specific reports/evaluations cited if identifiable from response text — e.g. 'Magic Quadrant for APM', 'Forrester Wave: Observability' — otherwise empty array"],
       "analyst_play": "One sentence on the specific analyst relations move: which evaluation to target, briefing cadence to establish, sponsored research, or client subscription that would shift citations"
@@ -3732,7 +3740,14 @@ Respond with ONLY valid JSON:
     ]
 
     analysis["prompts_used"] = prompts
-    analysis["raw_citation_domains"] = ranked_domains[:20]
+    # Full ranked domains list (no cap). Each dict already carries:
+    # {domain, count, llms, prompts, urls, diversity_score} — preserve all.
+    analysis["raw_citation_domains"] = ranked_domains
+    # Full raw per-response data: {llm, prompt, response, citations}. Lets users
+    # re-analyze, audit, debug, or rerun analysis on a past report.
+    analysis["all_responses"] = all_responses
+    # Surface to the frontend so it can offer a "Download raw data" affordance.
+    analysis["full_responses_available"] = True
     return analysis
 
 
@@ -3859,6 +3874,7 @@ def view_signal_report(slug):
     share_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=slug)
     pdf_url = request.url_root.rstrip('/') + url_for('signal_report_pdf', slug=slug)
     csv_url = request.url_root.rstrip('/') + url_for('signal_report_csv', slug=slug)
+    json_url = request.url_root.rstrip('/') + url_for('signal_report_json', slug=slug)
     user = current_signal_user()
     return render_template(
         'citation_audit.html',
@@ -3867,6 +3883,7 @@ def view_signal_report(slug):
         share_url=share_url,
         pdf_url=pdf_url,
         csv_url=csv_url,
+        json_url=json_url,
         signal_user=user,
         signal_credits=current_user_credits(user),
     )
@@ -3983,6 +4000,27 @@ def signal_report_csv(slug):
     return Response(
         csv_bytes,
         mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+    )
+
+
+@app.route('/signal/<slug>.json')
+def signal_report_json(slug):
+    """Return the full saved payload as a JSON download — includes the analyzed
+    target lists AND the raw per-response data (`all_responses`) and the
+    complete ranked domain list. Lets consultants re-analyze, audit, or
+    feed the data into other tools.
+    """
+    data = _load_signal_report(slug)
+    if not data:
+        flash("Report not found or expired.")
+        return redirect(url_for('citation_audit'))
+
+    brand_slug = re.sub(r'[^a-z0-9]+', '-', (data.get('brand') or 'report').lower()).strip('-') or 'report'
+    filename = f"signal-finder-{brand_slug}-{slug}.json"
+    return Response(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        mimetype='application/json',
         headers={'Content-Disposition': f'attachment; filename="{filename}"'}
     )
 

@@ -982,6 +982,7 @@
         window.SIGNAL_SHARE_URL = {{ share_url | tojson | safe if share_url else 'null' }};
         window.SIGNAL_PDF_URL   = {{ pdf_url   | tojson | safe if pdf_url   else 'null' }};
         window.SIGNAL_CSV_URL   = {{ csv_url   | tojson | safe if csv_url   else 'null' }};
+        window.SIGNAL_JSON_URL  = {{ json_url  | tojson | safe if json_url  else 'null' }};
         window.SIGNAL_USER      = {{ 'true' if signal_user else 'false' }};
         window.SIGNAL_CREDITS   = {{ signal_credits or 0 }};
     </script>
@@ -1315,6 +1316,9 @@
             const shareUrl = window.SIGNAL_SHARE_URL || (slug ? `${origin}/signal/${slug}` : null);
             const pdfUrl   = window.SIGNAL_PDF_URL   || (slug ? `${origin}/signal/${slug}.pdf` : null);
             const csvUrl   = window.SIGNAL_CSV_URL   || (slug ? `${origin}/signal/${slug}.csv` : null);
+            // Raw JSON download only exposed when the payload was saved with the full
+            // per-response data (newer audits). Older payloads silently omit the button.
+            const jsonUrl  = (data.full_responses_available && (window.SIGNAL_JSON_URL || (slug ? `${origin}/signal/${slug}.json` : null))) || null;
 
             let html = `
                 <div class="results-header">
@@ -1327,11 +1331,12 @@
                     <div class="citation-total">
                         ${data.total_citations_extracted || 0} citation URLs extracted across ${data.total_responses || 30} responses
                     </div>
-                    ${(shareUrl || pdfUrl || csvUrl) ? `
+                    ${(shareUrl || pdfUrl || csvUrl || jsonUrl) ? `
                         <div class="action-bar">
                             ${shareUrl ? `<button class="action-btn" id="shareBtn" onclick="copyShareLink('${esc(shareUrl)}')">Share report</button>` : ''}
                             ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
                             ${csvUrl ? `<a class="action-btn" href="${esc(csvUrl)}" rel="noopener">Download CSV</a>` : ''}
+                            ${jsonUrl ? `<a class="action-btn" href="${esc(jsonUrl)}" rel="noopener" title="Full raw audit data including every LLM response and citation">Download raw data (JSON)</a>` : ''}
                         </div>
                     ` : ''}
                 </div>
@@ -1348,7 +1353,7 @@
 
             html += `<div class="section-title">Top 5 editorial media targets — based on actual LLM citations</div>`;
             for (const t of targets) {
-                const sampleUrls = (t.sample_urls || []).slice(0, 3);
+                const sampleUrls = (t.sample_urls || []).slice(0, 10);
                 const llms = (t.cited_by_llms || []);
                 html += `
                     <div class="media-card">
@@ -1376,7 +1381,7 @@
                 html += `<div class="section-title" style="margin-top:32px">Associations, authorities & partnerships</div>`;
                 html += `<div class="section-note">These trade associations, certification bodies, advocacy non-profits, .gov, and .edu sources also shape AI responses — but require partnership, sponsorship, certification, or research collaboration rather than traditional PR pitching.</div>`;
                 for (const t of institutional) {
-                    const sampleUrls = (t.sample_urls || []).slice(0, 3);
+                    const sampleUrls = (t.sample_urls || []).slice(0, 10);
                     const llms = (t.cited_by_llms || []);
                     html += `
                         <div class="institutional-card">
@@ -1403,7 +1408,7 @@
                 html += `<div class="section-title" style="margin-top:32px">Industry analyst citations</div>`;
                 html += `<div class="section-note">These analyst firms shape AI responses through reports and evaluations (Magic Quadrants, Waves, MarketScapes). Influence is via analyst relations — briefings, inclusion in evaluations, sponsored research — not pitching.</div>`;
                 for (const t of analysts) {
-                    const sampleUrls = (t.sample_urls || []).slice(0, 3);
+                    const sampleUrls = (t.sample_urls || []).slice(0, 10);
                     const llms = (t.cited_by_llms || []);
                     const evals = (t.evaluations_referenced || []);
                     html += `
@@ -1427,16 +1432,17 @@
                 }
             }
 
-            if (shareUrl || pdfUrl || csvUrl) {
+            if (shareUrl || pdfUrl || csvUrl || jsonUrl) {
                 html += `
                     <div class="save-panel">
                         <div class="save-panel-label">Save & share</div>
                         <h4>Hold onto this report</h4>
-                        <div class="save-panel-desc">Anyone with the link can view this report. The PDF includes the full target list with cited URLs; the CSV lets you sort/filter the target list in Excel or Google Sheets.</div>
+                        <div class="save-panel-desc">Anyone with the link can view this report. The PDF includes the full target list with cited URLs; the CSV lets you sort/filter the target list in Excel or Google Sheets; the JSON contains every LLM response and citation for re-analysis.</div>
                         <div class="save-panel-actions">
                             ${shareUrl ? `<button class="action-btn primary-action" onclick="copyShareLink('${esc(shareUrl)}')">Copy share link</button>` : ''}
                             ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
                             ${csvUrl ? `<a class="action-btn" href="${esc(csvUrl)}" rel="noopener">Download CSV</a>` : ''}
+                            ${jsonUrl ? `<a class="action-btn" href="${esc(jsonUrl)}" rel="noopener">Download raw data (JSON)</a>` : ''}
                         </div>
                         ${shareUrl ? `<input type="text" class="share-url-display" value="${esc(shareUrl)}" readonly onclick="this.select()">` : ''}
                     </div>
