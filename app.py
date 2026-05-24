@@ -3581,6 +3581,214 @@ def _compute_audit_anomaly_flags(result, duration_seconds, per_provider_done, pe
     return flags
 
 
+class AuditAnalysisError(Exception):
+    """Raised when the analysis-step Claude response cannot be parsed as JSON.
+
+    Carries the raw response text and the parser's debug trace so the SSE
+    worker can email diagnostics to the owner before refunding the credit.
+    """
+
+    def __init__(self, message, raw_response="", debug_info=None):
+        super().__init__(message)
+        self.raw_response = raw_response or ""
+        self.debug_info = debug_info or {}
+
+
+def _parse_analysis_json(raw_text, retry_callback=None):
+    """Try multiple strategies to extract valid JSON from Claude's response.
+
+    Returns (parsed_dict, debug_info_dict). Raises AuditAnalysisError on
+    irrecoverable failure. debug_info has keys: strategy_used, attempts,
+    raw_first_500, raw_last_500.
+    """
+    debug = {
+        'attempts': [],
+        'raw_first_500': raw_text[:500],
+        'raw_last_500': raw_text[-500:],
+        'raw_length': len(raw_text),
+    }
+
+    def attempt(name, text):
+        try:
+            d = json.loads(text)
+            debug['attempts'].append({'name': name, 'ok': True})
+            debug['strategy_used'] = name
+            return d
+        except Exception as e:
+            debug['attempts'].append({'name': name, 'ok': False, 'err': str(e)[:200]})
+            return None
+
+    # Strategy 1: strip ```json fences if present, parse as-is.
+    cleaned = raw_text.strip()
+    if cleaned.startswith('```'):
+        cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned)
+        cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+
+    d = attempt('cleaned_strip_fences', cleaned)
+    if d:
+        return d, debug
+
+    # Strategy 2: find first { ... last } via regex.
+    m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+    if m:
+        d = attempt('regex_first_to_last_brace', m.group())
+        if d:
+            return d, debug
+
+    # Strategy 3: fix common errors (trailing commas before } or ]).
+    if m:
+        candidate = re.sub(r',(\s*[}\]])', r'\1', m.group())
+        d = attempt('fix_trailing_commas', candidate)
+        if d:
+            return d, debug
+
+    # Strategy 4: if it looks truncated (more { than }), try to close it.
+    if m:
+        candidate = m.group()
+        if candidate.count('{') > candidate.count('}'):
+            for trunc_marker in ['"\n  ]', '"\n]', '"\n  }', '"\n}', '"}', '"]']:
+                idx = candidate.rfind(trunc_marker)
+                if idx > 0:
+                    truncated = candidate[:idx + len(trunc_marker)]
+                    opens = truncated.count('{')
+                    closes = truncated.count('}')
+                    truncated = truncated + ('}' * (opens - closes))
+                    d = attempt(f'truncate_at_{trunc_marker[:5]!r}_pad_braces', truncated)
+                    if d:
+                        return d, debug
+
+    # Strategy 5: ask Claude to fix its own broken JSON.
+    if retry_callback:
+        try:
+            fixed = retry_callback(raw_text, debug['attempts'])
+            d = attempt('claude_retry', fixed)
+            if d:
+                return d, debug
+            # If the retry came back but still wouldn't parse, try the same
+            # strip-fences logic on it as well.
+            fixed_clean = (fixed or '').strip()
+            if fixed_clean.startswith('```'):
+                fixed_clean = re.sub(r'^```(?:json)?\s*\n?', '', fixed_clean)
+                fixed_clean = re.sub(r'\n?```\s*$', '', fixed_clean)
+                d = attempt('claude_retry_stripped', fixed_clean)
+                if d:
+                    return d, debug
+        except Exception as e:
+            debug['attempts'].append({'name': 'claude_retry', 'ok': False, 'err': str(e)[:200]})
+
+    last_err = (debug['attempts'][-1] if debug['attempts'] else {}).get('err', 'unknown')
+    raise AuditAnalysisError(
+        f"Failed to parse analysis JSON after {len(debug['attempts'])} strategies. Last error: {last_err}",
+        raw_response=raw_text,
+        debug_info=debug,
+    )
+
+
+def _retry_analysis_json(raw_text, prior_attempts):
+    """Ask Claude to fix its own broken JSON. Returns the corrected text."""
+    last_err = (prior_attempts[-1] if prior_attempts else {}).get('err', 'unknown')
+    fix_resp = anthropic.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=8000,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"The following response was supposed to be valid JSON but "
+                f"failed to parse with error: {last_err}\n\n"
+                f"Fix the JSON and return ONLY the corrected JSON object (no "
+                f"markdown fences, no explanation). Preserve all the data; "
+                f"just fix syntax errors and add any missing closing "
+                f"braces/brackets.\n\nBroken response:\n{raw_text}"
+            ),
+        }]
+    )
+    return fix_resp.content[0].text
+
+
+def _send_audit_failure_email(error, problem_statement, tier):
+    """Fire-and-forget diagnostic email when an audit fails (AuditAnalysisError
+    or any other exception during run_citation_audit).
+
+    Includes the raw Claude response (if available), the parse strategies
+    attempted, and the problem statement. Skipped silently if SENDGRID_API_KEY
+    or AUDIT_DEBUG_EMAIL is unset.
+    """
+    recipient = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not recipient or not sg_key:
+        return
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+
+        err_type = type(error).__name__
+        err_msg = str(error)
+        raw_response = getattr(error, 'raw_response', '') or ''
+        debug_info = getattr(error, 'debug_info', {}) or {}
+
+        # Cap raw response at 5000 chars to keep the email manageable.
+        raw_clip = raw_response[:5000]
+        raw_truncated_note = ""
+        if len(raw_response) > 5000:
+            raw_truncated_note = f"\n\n[...truncated; full length was {len(raw_response)} chars]"
+
+        attempts = debug_info.get('attempts', [])
+        strategy_lines = []
+        for i, a in enumerate(attempts, 1):
+            ok = "OK" if a.get('ok') else "FAIL"
+            line = f"  {i}. [{ok}] {a.get('name', '?')}"
+            if not a.get('ok'):
+                line += f" — {a.get('err', '?')}"
+            strategy_lines.append(line)
+        strategies_text = "\n".join(strategy_lines) or "  (no attempts recorded)"
+
+        subject = f"[Signal Finder · {tier} · FAILED] {err_type}: {err_msg[:80]}"
+
+        text_lines = [
+            "PR Signal Finder audit FAILED",
+            "",
+            f"Error type: {err_type}",
+            f"Error: {err_msg}",
+            f"Tier: {tier}",
+            "",
+            f"Problem statement: {problem_statement[:500]}",
+            "",
+            "Parse strategies attempted:",
+            strategies_text,
+            "",
+            f"Raw Claude response length: {debug_info.get('raw_length', len(raw_response))}",
+            "",
+            "Raw response (first 5000 chars):",
+            "---",
+            raw_clip + raw_truncated_note,
+            "---",
+        ]
+        text_body = "\n".join(text_lines)
+
+        html_body = (
+            f'<h3 style="color:#b00020">PR Signal Finder audit FAILED</h3>'
+            f'<p><strong>Error type:</strong> {html.escape(err_type)}<br>'
+            f'<strong>Error:</strong> {html.escape(err_msg)}<br>'
+            f'<strong>Tier:</strong> {html.escape(tier)}</p>'
+            f'<p><strong>Problem statement:</strong> {html.escape(problem_statement[:500])}</p>'
+            f'<h4>Parse strategies attempted</h4>'
+            f'<pre style="background:#f4f4f4;padding:10px;font-size:12px">{html.escape(strategies_text)}</pre>'
+            f'<h4>Raw Claude response (first 5000 chars; full length {debug_info.get("raw_length", len(raw_response))})</h4>'
+            f'<pre style="background:#f4f4f4;padding:10px;font-size:11px;white-space:pre-wrap;word-wrap:break-word">{html.escape(raw_clip + raw_truncated_note)}</pre>'
+        )
+
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[recipient],
+            subject=subject,
+            plain_text_content=text_body,
+            html_content=html_body,
+        )
+        SendGridAPIClient(sg_key).send(msg)
+    except Exception as e:
+        print("Audit FAILURE-email send failed:", e)
+
+
 def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_provider_errors, tier, problem_statement=""):
     """Fire-and-forget summary email to the owner after each audit.
 
@@ -4012,9 +4220,16 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         citation_urls = [c['url'] for c in r.get('citations', [])]
         responses_block += f"\n--- Response {i+1} [{r['llm']}] ---\nPrompt: {r['prompt']}\nCitations found: {citation_urls}\n{r['response'][:per_response_chars]}\n"
 
+    # Tier-aware token budget. The 4K default was truncating paid-tier responses
+    # mid-JSON (25 media + 10 institutional + 10 analyst + competitors + exec
+    # summary won't fit). 8K gives Claude headroom; the prompt also tells it
+    # to self-budget so it ships concise text rather than truncated JSON.
+    analysis_max_tokens = 8000 if tier == "paid" else 5000
+    output_budget_chars = analysis_max_tokens * 4  # rough char approximation
+
     analysis_response = anthropic.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=4000,
+        max_tokens=analysis_max_tokens,
         messages=[{
             "role": "user",
             "content": f"""You are an AI citation intelligence analyst. You have actual citation data extracted from 30 AI-generated responses (10 prompts × 3 LLMs: Claude, ChatGPT, Gemini) about the category "{category}".
@@ -4064,6 +4279,8 @@ INSTITUTIONAL TYPE GUIDANCE — get the classification right:
 - Visit Seattle, NYC Tourism, Brand USA, etc. → "Destination Marketing Organization (DMO)", NOT "Government Agency". DMOs are quasi-public marketing entities, not government bodies. Partnership plays differ accordingly (DMOs run press trips, co-marketing, partner pages; agencies don't).
 - If the entity publishes news, opinion, or industry coverage REGULARLY (HospitalityNet, Skift, PhocusWire, etc.) it is EDITORIAL — do NOT classify as institutional and do NOT include it in institutional_targets. It belongs in media_targets. Specifically: HospitalityNet is a trade PUBLICATION (industry news + opinion), not a trade association.
 - Trade associations have members, lobbying, certifications, conferences. If the entity primarily PUBLISHES CONTENT, it is editorial, not institutional.
+
+CRITICAL OUTPUT BUDGET: Your entire response must fit in {analysis_max_tokens} tokens (~{output_budget_chars} characters) or less. Be CONCISE — short rationales, short gap_insights, no filler words. Better to ship complete JSON with terse text than truncated JSON with verbose text. The JSON MUST be syntactically complete with all closing braces and brackets.
 
 Respond with ONLY valid JSON:
 {{
@@ -4120,10 +4337,10 @@ Respond with ONLY valid JSON:
     )
 
     analysis_text = analysis_response.content[0].text
-    analysis_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
-    if not analysis_match:
-        raise ValueError("Failed to parse analysis response")
-    analysis = json.loads(analysis_match.group())
+    # Multi-strategy parse with a Claude self-repair fallback. Raises
+    # AuditAnalysisError (which the SSE worker catches and emails diagnostics
+    # for) if every strategy fails.
+    analysis, _parse_debug = _parse_analysis_json(analysis_text, retry_callback=_retry_analysis_json)
 
     # Hard-overwrite competitor counts with the deterministic pre-computed values.
     # Even if Claude drifts on the counts (or invents extra competitors), the
@@ -4278,6 +4495,12 @@ def citation_audit():
             except Exception as email_err:
                 print("debug-email dispatch error:", email_err)
         except Exception as e:
+            # Diagnostic email to owner BEFORE the refund, so even if the
+            # refund somehow blows up the owner still hears about the failure.
+            try:
+                _send_audit_failure_email(e, problem_statement, tier)
+            except Exception as email_err:
+                print("Failure-email dispatch error:", email_err)
             if credit_charged and user_id is not None:
                 try:
                     with app.app_context():
@@ -4287,7 +4510,15 @@ def citation_audit():
                             db.session.commit()
                 except Exception as refund_err:
                     print("Credit refund failed:", refund_err)
-            q.put(json.dumps({"type": "error", "error": str(e)}))
+            # User-facing message stays generic; technical details go to the
+            # owner via _send_audit_failure_email above. Server log still has
+            # the full exception for grep.
+            print(f"run_citation_audit failed: {type(e).__name__}: {e}")
+            if credit_charged:
+                user_message = "Analysis step failed unexpectedly. Your credit has been refunded. Nathan has been notified to investigate."
+            else:
+                user_message = "Analysis step failed unexpectedly. Nathan has been notified to investigate — please try again in a moment."
+            q.put(json.dumps({"type": "error", "error": user_message}))
 
     t = threading.Thread(target=worker)
     t.start()
