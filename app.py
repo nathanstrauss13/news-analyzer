@@ -3524,21 +3524,225 @@ def _call_llm(provider, enriched_prompt):
     raise ValueError(f"Unknown provider: {provider}")
 
 
-def run_citation_audit(problem_statement, on_progress=None, tier="free"):
-    """Full agent pipeline: one prompt in, ranked media/partnership/analyst lists out."""
+def _compute_audit_anomaly_flags(result, duration_seconds, per_provider_done, per_provider_errors):
+    """Inspect a completed audit and return a list of anomaly flag strings.
+
+    Empty list means everything looked normal. Each flag is a short uppercase
+    code (BRAND_INVISIBLE, HIGH_LLM_ERROR_RATE, etc.) surfaced in the debug
+    email subject + body.
+    """
+    flags = []
+    try:
+        total_responses = int(result.get("total_responses") or 0)
+        brand_mentions = int(result.get("brand_mention_count") or 0)
+        total_citations = int(result.get("total_citations_extracted") or 0)
+        media_targets = result.get("media_targets") or []
+        institutional_targets = result.get("institutional_targets") or []
+        analyst_targets = result.get("analyst_targets") or []
+
+        if brand_mentions == 0:
+            flags.append("BRAND_INVISIBLE")
+        elif total_responses > 0 and brand_mentions < (total_responses * 0.1):
+            flags.append("LOW_BRAND_VISIBILITY")
+
+        # Per-provider error rate. Use the per-provider DONE counts where
+        # available so partial-completion batches don't false-flag every
+        # provider as 100% error.
+        for provider, errs in (per_provider_errors or {}).items():
+            done = (per_provider_done or {}).get(provider, 0)
+            if done > 0 and (errs / done) > 0.30:
+                flags.append("HIGH_LLM_ERROR_RATE")
+                break
+
+        # LLM dominance: if one provider produced >70% of total citations.
+        provider_citation_counts = {}
+        for r in (result.get("all_responses") or []):
+            n = len(r.get("citations") or [])
+            provider_citation_counts[r.get("llm") or "?"] = provider_citation_counts.get(r.get("llm") or "?", 0) + n
+        cite_total = sum(provider_citation_counts.values())
+        if cite_total > 0:
+            top = max(provider_citation_counts.values())
+            if (top / cite_total) > 0.70:
+                flags.append("SINGLE_LLM_DOMINANCE")
+
+        if total_citations < 20:
+            flags.append("LOW_CITATION_COUNT")
+
+        if duration_seconds and duration_seconds > 600:
+            flags.append("SLOW_AUDIT")
+
+        if len(media_targets) < 3:
+            flags.append("THIN_RESULTS")
+
+        if not institutional_targets and not analyst_targets:
+            flags.append("NO_INSTITUTIONAL_OR_ANALYST")
+    except Exception as e:
+        print("anomaly-flag computation failed:", e)
+    return flags
+
+
+def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_provider_errors, tier, problem_statement=""):
+    """Fire-and-forget summary email to the owner after each audit.
+
+    Skipped silently if SENDGRID_API_KEY or AUDIT_DEBUG_EMAIL is unset.
+    Never raises — all errors are caught and logged.
+    """
+    recipient = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not recipient or not sg_key:
+        return
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+
+        brand = result.get("brand") or "(unknown brand)"
+        category = result.get("category") or "(unknown category)"
+        slug = result.get("slug") or "(no slug)"
+        total_responses = int(result.get("total_responses") or 0)
+        brand_mentions = int(result.get("brand_mention_count") or 0)
+        total_citations = int(result.get("total_citations_extracted") or 0)
+        competitors = result.get("competitors") or []
+        media_targets = result.get("media_targets") or []
+        institutional_targets = result.get("institutional_targets") or []
+        analyst_targets = result.get("analyst_targets") or []
+        domains = result.get("raw_citation_domains") or []
+        base = (SIGNAL_BASE_URL or "").rstrip("/")
+        if not base:
+            try:
+                base = request.url_root.rstrip("/")
+            except Exception:
+                base = ""
+        report_link = f"{base}/signal/{slug}" if slug != "(no slug)" else "(unavailable)"
+        json_link = f"{base}/signal/{slug}.json" if slug != "(no slug)" else "(unavailable)"
+
+        flags = _compute_audit_anomaly_flags(result, duration_seconds, per_provider_done, per_provider_errors)
+        flags_label = ", ".join(flags) if flags else "OK"
+
+        # Per-provider error summary.
+        err_lines = []
+        for provider, done in (per_provider_done or {}).items():
+            errs = (per_provider_errors or {}).get(provider, 0)
+            err_lines.append(f"{provider}: {errs} errors / {done}")
+        err_summary = " · ".join(err_lines) if err_lines else "(no provider data)"
+
+        # Top 3 outlets / competitors.
+        top_outlets = sorted(domains, key=lambda d: d.get("count", 0), reverse=True)[:3]
+        top_outlet_lines = [f"{d.get('domain', '?')} ({d.get('count', 0)})" for d in top_outlets] or ["(none)"]
+        top_competitors = sorted(competitors, key=lambda c: c.get("mention_count", 0), reverse=True)[:3]
+        top_comp_lines = [f"{c.get('name', '?')} ({c.get('mention_count', 0)})" for c in top_competitors] or ["(none)"]
+
+        subject = f"[Signal Finder · {tier}] {brand} — {flags_label}"
+
+        # Plain text body
+        text_lines = [
+            f"PR Signal Finder audit completed",
+            f"",
+            f"Brand: {brand}",
+            f"Category: {category}",
+            f"Tier: {tier}",
+            f"Slug: {slug}",
+            f"Report: {report_link}",
+            f"Raw JSON: {json_link}",
+            f"",
+            f"Duration: {duration_seconds:.1f}s" if duration_seconds else "Duration: (unknown)",
+            f"",
+            f"Stats:",
+            f"  Total LLM responses: {total_responses}",
+            f"  Brand mentions: {brand_mentions} / {total_responses}",
+            f"  Total citations extracted: {total_citations}",
+            f"  Competitors surfaced: {len(competitors)}",
+            f"  Editorial targets: {len(media_targets)}",
+            f"  Institutional targets: {len(institutional_targets)}",
+            f"  Analyst targets: {len(analyst_targets)}",
+            f"",
+            f"Per-provider errors: {err_summary}",
+            f"",
+            f"Top 3 outlets:",
+        ] + [f"  - {l}" for l in top_outlet_lines] + [
+            f"",
+            f"Top 3 competitors:",
+        ] + [f"  - {l}" for l in top_comp_lines] + [
+            f"",
+            f"Anomaly flags: {flags_label}",
+        ]
+        if problem_statement:
+            text_lines += ["", f"Problem statement: {problem_statement[:500]}"]
+        text_body = "\n".join(text_lines)
+
+        # HTML body
+        flag_html = ""
+        if flags:
+            flag_html = (
+                '<p style="color:#b00020;font-weight:700;margin:10px 0">'
+                'Anomaly flags: ' + html.escape(flags_label) + '</p>'
+            )
+        else:
+            flag_html = (
+                '<p style="color:#2a7a3a;font-weight:600;margin:10px 0">Anomaly flags: OK</p>'
+            )
+        report_html = (
+            f'<a href="{html.escape(report_link)}">{html.escape(report_link)}</a>'
+            if slug != "(no slug)" else '<em>(unavailable)</em>'
+        )
+        json_html = (
+            f'<a href="{html.escape(json_link)}">{html.escape(json_link)}</a>'
+            if slug != "(no slug)" else '<em>(unavailable)</em>'
+        )
+        outlets_html = "".join(f"<li>{html.escape(l)}</li>" for l in top_outlet_lines)
+        comps_html = "".join(f"<li>{html.escape(l)}</li>" for l in top_comp_lines)
+        problem_html = (
+            f'<p style="color:#555"><strong>Problem statement:</strong> {html.escape(problem_statement[:500])}</p>'
+            if problem_statement else ''
+        )
+        duration_html = f'{duration_seconds:.1f}s' if duration_seconds else '(unknown)'
+
+        html_body = (
+            f'<h3>PR Signal Finder audit completed</h3>'
+            f'{flag_html}'
+            f'<p><strong>Brand:</strong> {html.escape(brand)}<br>'
+            f'<strong>Category:</strong> {html.escape(category)}<br>'
+            f'<strong>Tier:</strong> {html.escape(tier)}<br>'
+            f'<strong>Slug:</strong> {html.escape(slug)}<br>'
+            f'<strong>Duration:</strong> {duration_html}</p>'
+            f'<p><strong>Report:</strong> {report_html}<br>'
+            f'<strong>Raw JSON:</strong> {json_html}</p>'
+            f'<h4>Stats</h4>'
+            f'<ul style="margin:0;padding-left:20px">'
+            f'<li>Total LLM responses: {total_responses}</li>'
+            f'<li>Brand mentions: {brand_mentions} / {total_responses}</li>'
+            f'<li>Total citations extracted: {total_citations}</li>'
+            f'<li>Competitors surfaced: {len(competitors)}</li>'
+            f'<li>Editorial targets: {len(media_targets)}</li>'
+            f'<li>Institutional targets: {len(institutional_targets)}</li>'
+            f'<li>Analyst targets: {len(analyst_targets)}</li>'
+            f'</ul>'
+            f'<p><strong>Per-provider errors:</strong> {html.escape(err_summary)}</p>'
+            f'<h4>Top 3 outlets</h4><ul style="margin:0;padding-left:20px">{outlets_html}</ul>'
+            f'<h4>Top 3 competitors</h4><ul style="margin:0;padding-left:20px">{comps_html}</ul>'
+            f'{problem_html}'
+        )
+
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[recipient],
+            subject=subject,
+            plain_text_content=text_body,
+            html_content=html_body,
+        )
+        SendGridAPIClient(sg_key).send(msg)
+    except Exception as e:
+        print("Audit debug-email send failed:", e)
+
+
+def _generate_audit_prompts(problem_statement, tier="free"):
+    """Run ONLY the prompt-generation phase. Returns {brand, category, prompts}.
+
+    Extracted from run_citation_audit so the paid-tier prompt editor can call
+    this without the LLM batch / analysis steps. Tier governs prompt_count.
+    """
     cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
     prompt_count = cfg["prompt_count"]
-    llms = cfg["llms"]
-    media_limit = cfg["media_target_count"]
-    institutional_limit = cfg["institutional_target_count"]
-    analyst_limit = cfg["analyst_target_count"]
-    max_workers = cfg["max_workers"]
 
-    def emit(step, detail, current=0, total=0):
-        if on_progress:
-            on_progress(step, detail, current, total)
-
-    emit("prompts", "Generating search prompts...", 0, 1)
     prompt_gen_response = anthropic.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=4000 if prompt_count > 20 else 2000,
@@ -3575,10 +3779,74 @@ Respond with ONLY valid JSON in this exact format:
     if not json_match:
         raise ValueError("Failed to parse prompt generation response")
     prompt_data = json.loads(json_match.group())
-    brand = prompt_data["brand"]
-    category = prompt_data["category"]
-    prompts = prompt_data["prompts"][:prompt_count]
-    emit("prompts", f"Generated {len(prompts)} prompts for \"{brand}\"", 1, 1)
+    return {
+        "brand": prompt_data["brand"],
+        "category": prompt_data["category"],
+        "prompts": prompt_data["prompts"][:prompt_count],
+    }
+
+
+def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts_override=None):
+    """Full agent pipeline: one prompt in, ranked media/partnership/analyst lists out.
+
+    If `prompts_override` is provided (paid-tier prompt-editor flow), the
+    prompt-generation step is skipped and the supplied prompts are used as-is.
+    Brand + category are derived from a lightweight extraction call so the
+    downstream analysis still gets them.
+    """
+    cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
+    prompt_count = cfg["prompt_count"]
+    llms = cfg["llms"]
+    media_limit = cfg["media_target_count"]
+    institutional_limit = cfg["institutional_target_count"]
+    analyst_limit = cfg["analyst_target_count"]
+    max_workers = cfg["max_workers"]
+
+    def emit(step, detail, current=0, total=0):
+        if on_progress:
+            on_progress(step, detail, current, total)
+
+    if prompts_override:
+        # User-curated prompts (paid tier prompt-editor flow). Still need
+        # brand + category for the analysis prompt; derive them from the
+        # problem statement via a small Claude call.
+        emit("prompts", "Preparing your curated prompts...", 0, 1)
+        try:
+            brand_resp = anthropic.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=300,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f'From this brand-positioning statement, extract the BRAND name and the '
+                        f'CATEGORY/problem space. Respond with ONLY valid JSON: '
+                        f'{{"brand": "...", "category": "..."}}\n\n'
+                        f'Statement: "{problem_statement}"'
+                    ),
+                }]
+            )
+            brand_text = brand_resp.content[0].text
+            bm = re.search(r'\{.*\}', brand_text, re.DOTALL)
+            if not bm:
+                raise ValueError("brand extraction parse failed")
+            bd = json.loads(bm.group())
+            brand = bd["brand"]
+            category = bd["category"]
+        except Exception:
+            # Fallback: strip leading "I want " / verbs from the statement.
+            brand = problem_statement[:60].strip()
+            category = "the brand's category"
+        prompts = [p for p in prompts_override if isinstance(p, str) and p.strip()]
+        if not prompts:
+            raise ValueError("No prompts supplied for the audit.")
+        emit("prompts", f"Using your {len(prompts)} curated prompts for \"{brand}\"", 1, 1)
+    else:
+        emit("prompts", "Generating search prompts...", 0, 1)
+        gen = _generate_audit_prompts(problem_statement, tier=tier)
+        brand = gen["brand"]
+        category = gen["category"]
+        prompts = gen["prompts"]
+        emit("prompts", f"Generated {len(prompts)} prompts for \"{brand}\"", 1, 1)
 
     tasks = [(provider, pi, prompt_text)
              for pi, prompt_text in enumerate(prompts)
@@ -3885,6 +4153,10 @@ Respond with ONLY valid JSON:
     analysis["all_responses"] = all_responses
     # Surface to the frontend so it can offer a "Download raw data" affordance.
     analysis["full_responses_available"] = True
+    # Per-provider error counts (consumed by the debug-email summary). Leading
+    # underscore so a future cleanup pass can strip non-public keys easily.
+    analysis["_per_provider_errors"] = dict(per_provider_errors)
+    analysis["_per_provider_done"] = dict(per_provider_done)
     return analysis
 
 
@@ -3908,6 +4180,23 @@ def citation_audit():
     requested_tier = (request.form.get('tier') or 'free').strip().lower()
     if requested_tier not in ('free', 'paid'):
         requested_tier = 'free'
+
+    # Optional curated prompts (paid-tier prompt-editor flow). Form sends them
+    # as a JSON-encoded string under "prompts" — accept missing/empty as the
+    # signal to run the standard auto-generated path.
+    prompts_override = None
+    raw_prompts = request.form.get('prompts', '').strip()
+    if raw_prompts:
+        try:
+            parsed = json.loads(raw_prompts)
+            if isinstance(parsed, list):
+                cleaned = [p.strip() for p in parsed if isinstance(p, str) and p.strip()]
+                if 10 <= len(cleaned) <= 200:
+                    prompts_override = cleaned
+                else:
+                    return jsonify({"error": "Prompt list must contain between 10 and 200 prompts."}), 400
+        except Exception:
+            return jsonify({"error": "Could not parse the provided prompts."}), 400
 
     tier = 'free'
     credit_charged = False
@@ -3934,6 +4223,10 @@ def citation_audit():
 
     user_id = user.id if user else None
     cfg = TIER_CONFIG[tier]
+    # Free tier ignores any client-supplied prompts (defensive: don't let a
+    # free-tier caller smuggle in a 200-prompt batch).
+    if tier == 'free':
+        prompts_override = None
 
     q = queue.Queue()
 
@@ -3941,9 +4234,19 @@ def citation_audit():
         q.put(json.dumps({"type": "progress", "step": step, "detail": detail, "current": current, "total": total}))
 
     def worker():
+        start_dt = datetime.utcnow()
         try:
-            result = run_citation_audit(problem_statement, on_progress=on_progress, tier=tier)
+            result = run_citation_audit(
+                problem_statement,
+                on_progress=on_progress,
+                tier=tier,
+                prompts_override=prompts_override,
+            )
             slug = uuid.uuid4().hex[:10]
+            # Strip the debug-only keys (leading underscore) before the
+            # payload is persisted to SharedResult / sent to the client.
+            per_provider_errors = result.pop("_per_provider_errors", {}) or {}
+            per_provider_done = result.pop("_per_provider_done", {}) or {}
             with app.app_context():
                 shared = SharedResult(slug=slug, payload=json.dumps(result))
                 db.session.add(shared)
@@ -3960,6 +4263,20 @@ def citation_audit():
             result["slug"] = slug
             result["tier"] = tier
             q.put(json.dumps({"type": "result", "data": result}))
+            # Fire the owner debug email AFTER the result is pushed to the
+            # queue so the user-visible response never waits on email send.
+            duration_seconds = (datetime.utcnow() - start_dt).total_seconds()
+            try:
+                _send_audit_debug_email(
+                    result,
+                    duration_seconds,
+                    per_provider_done,
+                    per_provider_errors,
+                    tier,
+                    problem_statement=problem_statement,
+                )
+            except Exception as email_err:
+                print("debug-email dispatch error:", email_err)
         except Exception as e:
             if credit_charged and user_id is not None:
                 try:
@@ -3984,6 +4301,43 @@ def citation_audit():
                 break
 
     return Response(generate(), mimetype='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/signal/audit/prompts', methods=['POST'])
+def signal_generate_prompts():
+    """Paid-tier two-phase flow: generate prompts for the user to curate,
+    WITHOUT running the LLM batch and WITHOUT decrementing a credit.
+
+    Auth + credit balance are checked (user must have at least one credit so
+    we don't give away free prompt generations to bots), but no credit is
+    consumed at this step. The credit is consumed when the user submits the
+    final POST to /citation-audit with the curated prompts.
+    """
+    user = current_signal_user()
+    if not user:
+        return jsonify({"error": "Please sign in to run a paid audit.", "code": "auth_required"}), 401
+    if current_user_credits(user) < 1:
+        return jsonify({"error": "No audit credits remaining.", "code": "no_credits"}), 402
+
+    body = request.get_json(silent=True) or {}
+    problem_statement = (body.get('problem_statement') or '').strip()
+    if not problem_statement:
+        return jsonify({"error": "Please describe the problem you want your brand to own."}), 400
+    tier = (body.get('tier') or 'paid').strip().lower()
+    if tier not in ('free', 'paid'):
+        tier = 'paid'
+
+    try:
+        gen = _generate_audit_prompts(problem_statement, tier=tier)
+    except Exception as e:
+        print("Prompt generation failed:", e)
+        return jsonify({"error": "Could not generate prompts. Try again."}), 500
+
+    return jsonify({
+        "brand": gen["brand"],
+        "category": gen["category"],
+        "prompts": gen["prompts"],
+    })
 
 
 def _load_signal_report(slug):

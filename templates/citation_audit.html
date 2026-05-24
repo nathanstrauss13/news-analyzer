@@ -580,6 +580,139 @@
         .form-section { }
         .form-section.hidden { display: none; }
 
+        /* Prompt editor (paid-tier two-phase flow) */
+        .prompt-editor { display: none; margin-top: 6px; }
+        .prompt-editor.active { display: block; }
+        .prompt-editor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+        .prompt-editor-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+            margin: 0;
+        }
+        .prompt-editor-desc {
+            font-size: 13px;
+            color: #888;
+            line-height: 1.55;
+            margin: 4px 0 0;
+        }
+        .prompt-editor-desc strong { color: #cfd2ff; font-weight: 600; }
+        .prompt-editor-count {
+            font-size: 12px;
+            color: #7a8aff;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            white-space: nowrap;
+        }
+        .prompt-list {
+            max-height: 480px;
+            overflow-y: auto;
+            border: 1px solid #1c2230;
+            border-radius: 10px;
+            padding: 6px;
+            background: #0a0a18;
+            margin: 14px 0;
+        }
+        .prompt-row {
+            display: grid;
+            grid-template-columns: 28px 1fr auto auto;
+            gap: 8px;
+            align-items: center;
+            padding: 8px 10px;
+            border-bottom: 1px solid #11142a;
+            background: transparent;
+        }
+        .prompt-row:last-child { border-bottom: none; }
+        .prompt-row.editing { grid-template-columns: 28px 1fr auto; align-items: start; }
+        .prompt-row .pidx {
+            font-size: 12px;
+            color: #555;
+            font-variant-numeric: tabular-nums;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .prompt-row .ptext {
+            font-size: 13px;
+            color: #cfd2ff;
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        .prompt-row .ptext-input {
+            width: 100%;
+            min-height: 60px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 13px;
+            color: #cfd2ff;
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 6px;
+            padding: 8px 10px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+        .prompt-row .ptext-input:focus {
+            outline: none;
+            border-color: #5c6cff;
+        }
+        .prompt-row-btn {
+            background: transparent;
+            border: 1px solid #2a2a4a;
+            color: #888;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 12px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .prompt-row-btn:hover { color: #cfd2ff; border-color: #5c6cff; }
+        .prompt-row-btn.danger { color: #aaa; }
+        .prompt-row-btn.danger:hover { color: #ff6b6b; border-color: #5a2030; }
+        .prompt-editor-toolbar {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .prompt-editor-toolbar-left,
+        .prompt-editor-toolbar-right {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .prompt-editor-warning {
+            display: none;
+            margin: 6px 0 12px;
+            font-size: 12px;
+            color: #ffb86b;
+            background: #1a1408;
+            border: 1px solid #3a2818;
+            border-radius: 6px;
+            padding: 8px 12px;
+        }
+        .prompt-editor-warning.active { display: block; }
+        .prompt-editor-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+        .prompt-editor-loading {
+            display: none;
+            font-size: 13px;
+            color: #888;
+            padding: 14px 0;
+        }
+        .prompt-editor-loading.active { display: block; }
+
         /* Bespoke CTA */
         /* Institutional targets */
         .institutional-card {
@@ -958,6 +1091,34 @@
 
         <div class="error-msg" id="errorMsg"></div>
 
+        <div class="prompt-editor" id="promptEditor">
+            <div class="prompt-editor-header">
+                <div>
+                    <h2 class="prompt-editor-title">Curate your audit prompts</h2>
+                    <p class="prompt-editor-desc">
+                        Brand: <strong id="promptEditorBrand">—</strong> · Category: <strong id="promptEditorCategory">—</strong><br>
+                        Edit, delete, or add prompts to control exactly what the audit asks. Min 10, max 200.
+                    </p>
+                </div>
+                <div class="prompt-editor-count" id="promptEditorCount">100 prompts ready</div>
+            </div>
+            <div class="prompt-editor-warning" id="promptEditorWarning"></div>
+            <div class="prompt-editor-toolbar">
+                <div class="prompt-editor-toolbar-left">
+                    <button type="button" class="prompt-row-btn" id="promptEditorAdd">+ Add prompt</button>
+                    <button type="button" class="prompt-row-btn" id="promptEditorReset">Reset to auto-generated</button>
+                </div>
+                <div class="prompt-editor-toolbar-right">
+                    <button type="button" class="prompt-row-btn" id="promptEditorCancel">Cancel</button>
+                </div>
+            </div>
+            <div class="prompt-list" id="promptList"></div>
+            <div class="prompt-editor-loading" id="promptEditorLoading">Generating prompts...</div>
+            <div class="prompt-editor-actions">
+                <button class="btn" id="promptEditorRun" onclick="runAuditWithPrompts()">Run audit with these prompts</button>
+            </div>
+        </div>
+
         <div class="loading" id="loading">
             <div class="countdown-ring">
                 <svg viewBox="0 0 120 120">
@@ -1188,15 +1349,270 @@
             }
         }
 
-        function runAudit() {
-            const input = document.getElementById('problemInput').value.trim();
+        // --- Paid-tier prompt-editor state ---
+        // `editorPrompts` holds the working draft; `originalPrompts` is the
+        // server-generated list used by the Reset button. `editorMeta` keeps
+        // the brand + category + problem statement we received from
+        // /signal/audit/prompts so we don't re-derive them on submit.
+        let editorPrompts = [];
+        let originalPrompts = [];
+        let editorMeta = { brand: '', category: '', problem_statement: '', tier: 'paid' };
+        const PROMPT_MIN = 10;
+        const PROMPT_MAX = 200;
+
+        function _setEditorVisible(on) {
+            const ed = document.getElementById('promptEditor');
+            if (!ed) return;
+            ed.classList.toggle('active', !!on);
+        }
+
+        function _showEditorLoading(on) {
+            const l = document.getElementById('promptEditorLoading');
+            if (l) l.classList.toggle('active', !!on);
+            const btn = document.getElementById('promptEditorRun');
+            if (btn) btn.disabled = !!on;
+        }
+
+        function _setEditorWarning(msg) {
+            const w = document.getElementById('promptEditorWarning');
+            if (!w) return;
+            if (!msg) {
+                w.classList.remove('active');
+                w.textContent = '';
+            } else {
+                w.textContent = msg;
+                w.classList.add('active');
+            }
+        }
+
+        function _updateEditorCount() {
+            const el = document.getElementById('promptEditorCount');
+            if (!el) return;
+            const n = editorPrompts.length;
+            el.textContent = `${n} prompt${n === 1 ? '' : 's'} ready`;
+            if (n > PROMPT_MAX) {
+                _setEditorWarning(`Too many prompts (${n}). Cap is ${PROMPT_MAX}. Remove ${n - PROMPT_MAX} before running.`);
+            } else if (n < PROMPT_MIN) {
+                _setEditorWarning(`Need at least ${PROMPT_MIN} prompts to run an audit. Add ${PROMPT_MIN - n} more.`);
+            } else {
+                _setEditorWarning('');
+            }
+        }
+
+        function _renderPromptList() {
+            const list = document.getElementById('promptList');
+            if (!list) return;
+            const frag = document.createDocumentFragment();
+            editorPrompts.forEach((p, i) => {
+                const row = document.createElement('div');
+                row.className = 'prompt-row';
+                row.dataset.idx = String(i);
+
+                const idx = document.createElement('div');
+                idx.className = 'pidx';
+                idx.textContent = String(i + 1);
+                row.appendChild(idx);
+
+                const text = document.createElement('div');
+                text.className = 'ptext';
+                text.textContent = p;
+                row.appendChild(text);
+
+                const editBtn = document.createElement('button');
+                editBtn.type = 'button';
+                editBtn.className = 'prompt-row-btn';
+                editBtn.textContent = 'Edit';
+                editBtn.addEventListener('click', () => _enterEditMode(i));
+                row.appendChild(editBtn);
+
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.className = 'prompt-row-btn danger';
+                delBtn.textContent = '×';
+                delBtn.title = 'Delete this prompt';
+                delBtn.addEventListener('click', () => {
+                    editorPrompts.splice(i, 1);
+                    _renderPromptList();
+                    _updateEditorCount();
+                });
+                row.appendChild(delBtn);
+
+                frag.appendChild(row);
+            });
+            list.innerHTML = '';
+            list.appendChild(frag);
+        }
+
+        function _enterEditMode(i) {
+            const list = document.getElementById('promptList');
+            if (!list) return;
+            const row = list.querySelector(`[data-idx="${i}"]`);
+            if (!row) return;
+            row.classList.add('editing');
+            const txt = row.querySelector('.ptext');
+            const original = editorPrompts[i] || '';
+            const ta = document.createElement('textarea');
+            ta.className = 'ptext-input';
+            ta.value = original;
+            txt.replaceWith(ta);
+            ta.focus();
+            // Replace the two right-hand buttons with Save / Cancel.
+            const btns = row.querySelectorAll('.prompt-row-btn');
+            btns.forEach(b => b.remove());
+
+            const saveBtn = document.createElement('button');
+            saveBtn.type = 'button';
+            saveBtn.className = 'prompt-row-btn';
+            saveBtn.textContent = 'Save';
+            saveBtn.addEventListener('click', () => {
+                const v = ta.value.trim();
+                if (!v) {
+                    editorPrompts.splice(i, 1);
+                } else {
+                    editorPrompts[i] = v;
+                }
+                _renderPromptList();
+                _updateEditorCount();
+            });
+            row.appendChild(saveBtn);
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'prompt-row-btn danger';
+            cancelBtn.textContent = '×';
+            cancelBtn.title = 'Cancel edit';
+            cancelBtn.addEventListener('click', () => _renderPromptList());
+            row.appendChild(cancelBtn);
+        }
+
+        function _wirePromptEditorToolbar() {
+            const add = document.getElementById('promptEditorAdd');
+            if (add && !add.dataset.wired) {
+                add.dataset.wired = '1';
+                add.addEventListener('click', () => {
+                    if (editorPrompts.length >= PROMPT_MAX) {
+                        _setEditorWarning(`Already at the ${PROMPT_MAX}-prompt cap.`);
+                        return;
+                    }
+                    editorPrompts.push('');
+                    _renderPromptList();
+                    _updateEditorCount();
+                    _enterEditMode(editorPrompts.length - 1);
+                });
+            }
+            const reset = document.getElementById('promptEditorReset');
+            if (reset && !reset.dataset.wired) {
+                reset.dataset.wired = '1';
+                reset.addEventListener('click', () => {
+                    editorPrompts = originalPrompts.slice();
+                    _renderPromptList();
+                    _updateEditorCount();
+                });
+            }
+            const cancel = document.getElementById('promptEditorCancel');
+            if (cancel && !cancel.dataset.wired) {
+                cancel.dataset.wired = '1';
+                cancel.addEventListener('click', () => {
+                    _setEditorVisible(false);
+                    const subtitleEl = document.getElementById('initialSubtitle');
+                    if (subtitleEl) subtitleEl.style.display = '';
+                    document.getElementById('formSection').classList.remove('hidden');
+                });
+            }
+        }
+
+        async function _openPromptEditor(input, tier) {
+            // Show the editor shell + loading indicator, hide the form.
+            const subtitleEl = document.getElementById('initialSubtitle');
+            if (subtitleEl) subtitleEl.style.display = 'none';
+            document.getElementById('formSection').classList.add('hidden');
+            document.getElementById('errorMsg').classList.remove('active');
+            _setEditorVisible(true);
+            _wirePromptEditorToolbar();
+            document.getElementById('promptList').innerHTML = '';
+            document.getElementById('promptEditorBrand').textContent = '—';
+            document.getElementById('promptEditorCategory').textContent = '—';
+            _showEditorLoading(true);
+            try {
+                const resp = await fetch('/signal/audit/prompts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ problem_statement: input, tier: tier }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    _setEditorVisible(false);
+                    if (subtitleEl) subtitleEl.style.display = '';
+                    document.getElementById('formSection').classList.remove('hidden');
+                    if (data.code === 'auth_required') {
+                        window.location.href = '/signal/login?next=' + encodeURIComponent('/citation-audit');
+                        return;
+                    }
+                    if (data.code === 'no_credits') {
+                        window.location.href = '/signal/dashboard';
+                        return;
+                    }
+                    document.getElementById('errorMsg').textContent = data.error || 'Could not generate prompts.';
+                    document.getElementById('errorMsg').classList.add('active');
+                    return;
+                }
+                originalPrompts = (data.prompts || []).slice();
+                editorPrompts = originalPrompts.slice();
+                editorMeta = { brand: data.brand || '', category: data.category || '', problem_statement: input, tier: tier };
+                document.getElementById('promptEditorBrand').textContent = editorMeta.brand || '—';
+                document.getElementById('promptEditorCategory').textContent = editorMeta.category || '—';
+                _renderPromptList();
+                _updateEditorCount();
+            } catch (e) {
+                _setEditorVisible(false);
+                if (subtitleEl) subtitleEl.style.display = '';
+                document.getElementById('formSection').classList.remove('hidden');
+                document.getElementById('errorMsg').textContent = 'Network error fetching prompts. Try again.';
+                document.getElementById('errorMsg').classList.add('active');
+            } finally {
+                _showEditorLoading(false);
+            }
+        }
+
+        function runAuditWithPrompts() {
+            // Final-submit handler from the prompt editor.
+            if (editorPrompts.length < PROMPT_MIN) {
+                _setEditorWarning(`Need at least ${PROMPT_MIN} prompts.`);
+                return;
+            }
+            if (editorPrompts.length > PROMPT_MAX) {
+                _setEditorWarning(`Remove ${editorPrompts.length - PROMPT_MAX} prompts to stay under the ${PROMPT_MAX} cap.`);
+                return;
+            }
+            _setEditorVisible(false);
+            const cleaned = editorPrompts.map(p => p.trim()).filter(Boolean);
+            runAudit({
+                input: editorMeta.problem_statement || document.getElementById('problemInput').value.trim(),
+                tier: editorMeta.tier || 'paid',
+                prompts: cleaned,
+                skipEditor: true,
+            });
+        }
+
+        function runAudit(opts) {
+            opts = opts || {};
+            const input = (opts.input != null ? opts.input : document.getElementById('problemInput').value).trim();
             if (!input) return;
-            const tier = selectedTier || 'free';
+            const tier = opts.tier || selectedTier || 'free';
 
             // Paid tier without credits → route to Stripe Checkout immediately.
             // After payment, the success page auto-logs the user in + restarts the audit.
             if (tier === 'paid' && (!window.SIGNAL_USER || (window.SIGNAL_CREDITS || 0) < 1)) {
                 buyAndRun(input);
+                return;
+            }
+
+            // Paid tier with credits + no prompts supplied + not autostarting from
+            // Stripe success → show the prompt editor first. (Autostart path
+            // intentionally skips the editor; the user already committed by clicking
+            // Buy and shouldn't be asked to curate before their audit fires.)
+            if (tier === 'paid' && !opts.prompts && !opts.skipEditor) {
+                _openPromptEditor(input, tier);
                 return;
             }
 
@@ -1222,6 +1638,9 @@
             const form = new FormData();
             form.append('problem_statement', input);
             form.append('tier', tier);
+            if (opts.prompts && opts.prompts.length) {
+                form.append('prompts', JSON.stringify(opts.prompts));
+            }
 
             fetch('/citation-audit', { method: 'POST', body: form }).then(async response => {
                 if (!response.ok && response.headers.get('content-type')?.includes('application/json')) {
@@ -1663,9 +2082,15 @@
                 // autostart=1 query string when the buyer was ALREADY signed in.
                 // Anonymous buyers click the magic-link in their email instead, and
                 // arrive here logged in but without autostart — they hit "Run audit" by hand.
+                //
+                // Autostart bypasses the paid-tier prompt editor (skipEditor:true): the
+                // buyer already committed by clicking "Buy" and shouldn't be re-prompted
+                // to curate prompts before their paid audit fires.
                 if (autostart && prefill) {
                     setTimeout(() => {
-                        try { runAudit(); } catch (e) { console.error('autostart failed', e); }
+                        try {
+                            runAudit({ skipEditor: true });
+                        } catch (e) { console.error('autostart failed', e); }
                     }, 600);
                 }
             } catch (e) {}
