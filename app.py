@@ -2914,6 +2914,18 @@ EDITORIAL_ORG_ALLOWLIST = {
     'aljazeera.org',
 }
 
+# Organizations confirmed defunct or merged out of existence. Their domains
+# may still serve static pages (so the URL validator passes them), but they
+# cannot be partnered with. Filter them from any analyst/institutional output
+# so Claude never sees them and can never recommend them.
+#
+# EXPAND THIS LIST as we discover others — every entry here is a recommendation
+# we DIDN'T make to a paying client. When a report surfaces a real-world entity
+# that no longer exists, add its domain(s) here.
+KNOWN_DEFUNCT_ORGS = {
+    'acte.org',                # Association of Corporate Travel Executives, dissolved 2018
+}
+
 NON_EDITORIAL_DOMAINS = {
     # User-generated / community
     'wikipedia.org', 'en.wikipedia.org', 'wikimedia.org',
@@ -2935,6 +2947,14 @@ NON_EDITORIAL_DOMAINS = {
     'pubmed.ncbi.nlm.nih.gov', 'ncbi.nlm.nih.gov', 'who.int', 'cdc.gov',
     'arxiv.org', 'researchgate.net', 'sciencedirect.com', 'springer.com',
     'jstor.org', 'nature.com', 'science.org',
+    # Hotel-industry SaaS + consortium + promotional sites (not pitchable editorial)
+    'engine.com',                       # corporate booking SaaS
+    'fcmtravel.com',                    # corporate travel SaaS
+    'ccra.com',                         # travel-tech consortium
+    'independentcollection.com',        # hotel marketing consortium
+    'designhotels.com',                 # hotel marketing collective (curated listings, not editorial)
+    'boutiquehotelsofcalifornia.com',   # regional hotel promo
+    'travelplusstyle.com',              # hotel listings/affiliate, not editorial
 }
 
 # B2B vendors, software marketplaces, and review platforms that LLMs sometimes cite
@@ -2956,10 +2976,19 @@ NON_EDITORIAL_VENDORS = {
 
 
 def classify_citation_domain(domain):
-    """Return 'analyst', 'institutional', 'non_editorial', or 'editorial'."""
+    """Return 'analyst', 'institutional', 'non_editorial', 'defunct', or 'editorial'.
+
+    'defunct' is a terminal classification — defunct orgs are excluded from
+    every downstream target list so Claude never recommends partnering with
+    an entity that no longer exists.
+    """
     d = (domain or "").lower().lstrip('.')
     d_stripped = d[4:] if d.startswith('www.') else d
 
+    # Defunct check first — wins over every other classification so a defunct
+    # .org never leaks into the institutional list.
+    if d_stripped in KNOWN_DEFUNCT_ORGS or d in KNOWN_DEFUNCT_ORGS:
+        return 'defunct'
     if d in NON_EDITORIAL_DOMAINS or d_stripped in NON_EDITORIAL_DOMAINS:
         return 'non_editorial'
     if d in NON_EDITORIAL_VENDORS or d_stripped in NON_EDITORIAL_VENDORS:
@@ -3000,10 +3029,22 @@ def verify_editorial_domains(editorial_domains, brand, category):
                     "Definition of MEDIA: newspapers, magazines, trade press, B2B publications, "
                     "consumer publications, broadcast outlets, and digital-native news sites WITH "
                     "editorial staff who write articles.\n\n"
-                    "Definition of NON-MEDIA (reject these): software vendor sites (e.g. salesforce.com, "
-                    "atlassian.com), review marketplaces (e.g. g2.com, capterra.com, trustradius.com, "
-                    "trustpilot.com), corporate blogs, e-commerce/aggregators (e.g. amazon.com, "
-                    "expedia.com), Wikipedia, Reddit/Stack Overflow communities, LinkedIn, Quora.\n\n"
+                    "Definition of NON-MEDIA (reject these aggressively):\n"
+                    "- SaaS vendor sites (e.g. salesforce.com, atlassian.com, engine.com, fcmtravel.com, "
+                    "sap.com, hubspot.com)\n"
+                    "- Corporate-booking platforms or travel-tech consortia (e.g. ccra.com, gbta.org for "
+                    "SaaS purposes, sabre.com, amadeus.com)\n"
+                    "- Hotel-marketing collectives or member-curated listings (e.g. designhotels.com, "
+                    "independentcollection.com, smallluxuryhotels.com, relaischateaux.com)\n"
+                    "- Tourism boards' member-listing pages (e.g. visitseattle.org/members/..., "
+                    "visitcalifornia.com/listings/...)\n"
+                    "- Affiliate / booking aggregators (e.g. booking.com, expedia.com, hotels.com, "
+                    "tripadvisor.com, kayak.com)\n"
+                    "- Promotional regional consortia (e.g. boutiquehotelsofcalifornia.com)\n"
+                    "- Listing sites that do NOT have editorial bylines or news coverage\n"
+                    "- Review marketplaces (e.g. g2.com, capterra.com, trustradius.com, trustpilot.com)\n"
+                    "- Corporate blogs, Wikipedia, Reddit/Stack Overflow communities, LinkedIn, Quora, "
+                    "Amazon.\n\n"
                     f"Classify each domain below:\n{domain_list}\n\n"
                     "Respond with ONLY valid JSON, no prose:\n"
                     '{"media_domains": ["domain1.com", ...], "non_media_domains": ["domain2.com", ...]}'
@@ -3193,6 +3234,46 @@ _URL_VALIDATION_HEADERS = {
 }
 
 
+# Regexes used by _resolve_vertex_redirect — module-level so we compile once.
+_META_REFRESH_RE = re.compile(
+    r'<meta\s+[^>]*http-equiv=["\']?refresh["\']?\s+content=["\'][^"\']*url=([^"\'>\s]+)',
+    re.IGNORECASE,
+)
+_JS_LOCATION_RE = re.compile(
+    r'window\.location(?:\.(?:href|replace))?\s*[=\(]\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+
+
+def _resolve_vertex_redirect(url, timeout=4):
+    """Gemini grounding URLs (vertexaisearch.cloud.google.com/...) redirect via
+    a <meta http-equiv="refresh"> tag or JS location-assignment — NOT via an
+    HTTP Location header. requests.head + allow_redirects can't follow them,
+    so without this we leave the vertex redirector itself in the citation
+    list, polluting the top of the domain ranking.
+
+    Fetches the redirector body and extracts the real target URL. Returns
+    None if the redirector itself returns an error or no target can be parsed.
+    """
+    try:
+        if not _is_safe_url(url):
+            return None
+        r = requests.get(url, timeout=timeout, allow_redirects=True,
+                         headers=_URL_VALIDATION_HEADERS)
+        if r.status_code >= 400:
+            return None
+        body = r.text or ''
+        m = _META_REFRESH_RE.search(body)
+        if m:
+            return m.group(1)
+        m = _JS_LOCATION_RE.search(body)
+        if m:
+            return m.group(1)
+        return None
+    except Exception:
+        return None
+
+
 def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None):
     """HEAD-check + redirect-resolve a batch of URLs concurrently.
 
@@ -3216,13 +3297,27 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
         # confabulated).
         if not _is_safe_url(u):
             return (u, None)
+        # Vertex grounding redirects need a body-parse to recover the real
+        # target (meta-refresh / JS, not HTTP 30x). Do that BEFORE the normal
+        # HEAD logic — without this the vertexaisearch domain ends up at the
+        # TOP of the ranking, which is useless. If we can't recover the real
+        # source, drop the URL entirely (the redirector itself is not a
+        # citable source).
+        original_u = u
+        if 'vertexaisearch.cloud.google.com' in u.lower():
+            real = _resolve_vertex_redirect(u)
+            if not real:
+                return (original_u, None)
+            u = real
+            if not _is_safe_url(u):
+                return (original_u, None)
         try:
             r = requests.head(u, timeout=timeout, allow_redirects=True,
                               headers=_URL_VALIDATION_HEADERS)
             if r.status_code in (404, 410):
-                return (u, None)
+                return (original_u, None)
             if r.status_code < 400:
-                return (u, r.url)
+                return (original_u, r.url)
             if r.status_code == 403:
                 # Possible bot-block of HEAD; one retry with streaming GET.
                 try:
@@ -3233,18 +3328,18 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
                     except Exception:
                         pass
                     if r2.status_code in (404, 410):
-                        return (u, None)
+                        return (original_u, None)
                     if r2.status_code < 400:
-                        return (u, r2.url)
+                        return (original_u, r2.url)
                 except Exception:
                     pass
-                return (u, u)
-            # 4xx (other than 404/410/403) or 5xx — assume real, keep original.
-            return (u, u)
+                return (original_u, u)
+            # 4xx (other than 404/410/403) or 5xx — assume real, keep resolved URL.
+            return (original_u, u)
         except requests.exceptions.ConnectionError:
-            return (u, None)  # DNS / connection refused = confabulated
+            return (original_u, None)  # DNS / connection refused = confabulated
         except Exception:
-            return (u, u)  # timeout / TLS quirks — keep, don't penalize real URLs
+            return (original_u, u)  # timeout / TLS quirks — keep, don't penalize real URLs
 
     completed = 0
     total = len(urls)
@@ -3353,8 +3448,13 @@ def _call_llm(provider, enriched_prompt):
                 config=grounding_config,
             )
             text = resp.text or ""
-            # Append grounding URIs so extract_urls() picks them up (URL-validation
-            # pass later resolves the redirects back to the real source domain).
+            # Append grounding URIs so extract_urls() picks them up. The chunk
+            # `.web.uri` is almost always a vertexaisearch.cloud.google.com
+            # redirector — useless as a domain. Prefer any real source signal
+            # the SDK exposes (`web.domain`, `web.url`, or a URL-shaped
+            # `web.title`); fall back to the redirector URI only when no
+            # better source is present (the URL-resolution pass later attempts
+            # to follow the vertex meta-refresh to recover the real source).
             try:
                 for cand in (resp.candidates or []):
                     gm = getattr(cand, 'grounding_metadata', None)
@@ -3362,8 +3462,30 @@ def _call_llm(provider, enriched_prompt):
                         continue
                     for chunk in (getattr(gm, 'grounding_chunks', None) or []):
                         web = getattr(chunk, 'web', None)
-                        uri = getattr(web, 'uri', None) if web else None
-                        if uri:
+                        if not web:
+                            continue
+                        uri = getattr(web, 'uri', None)
+                        real_url = getattr(web, 'url', None)
+                        real_domain = getattr(web, 'domain', None)
+                        web_title = getattr(web, 'title', None)
+                        appended = False
+                        # 1) Explicit non-vertex URL field if present.
+                        if real_url and 'vertexaisearch.cloud.google.com' not in real_url.lower():
+                            text += f"\nSource: {real_url}"
+                            appended = True
+                        # 2) Bare domain — synthesize an https URL so extract_urls picks it up.
+                        if not appended and real_domain:
+                            domain_clean = real_domain.strip().rstrip('/')
+                            if domain_clean and 'vertexaisearch' not in domain_clean.lower():
+                                text += f"\nSource: https://{domain_clean}/"
+                                appended = True
+                        # 3) Some SDK builds put a URL in `title`. Use it only if it parses as a URL.
+                        if not appended and web_title and web_title.lower().startswith(('http://', 'https://')):
+                            text += f"\nSource: {web_title}"
+                            appended = True
+                        # 4) Last resort: the vertex redirector. The URL validator
+                        # will try to follow the meta-refresh to recover the real source.
+                        if not appended and uri:
                             text += f"\nSource: {uri}"
             except Exception:
                 pass
@@ -3579,9 +3701,17 @@ Respond with ONLY valid JSON in this exact format:
 
     emit("analysis", "Verifying editorial sources...", 0, 1)
 
+    # Defunct domains (KNOWN_DEFUNCT_ORGS) are intentionally absent from all
+    # three lists — classify_citation_domain returns 'defunct' for them, which
+    # matches none of the filters below. They never reach the analysis prompt,
+    # so Claude can never recommend partnering with an org that no longer exists.
     editorial_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'editorial']
     institutional_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'institutional']
     analyst_domains_found = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'analyst']
+    defunct_domains_found = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'defunct']
+    if defunct_domains_found:
+        print(f"classify_citation_domain: excluded {len(defunct_domains_found)} defunct domains: " +
+              ", ".join(d['domain'] for d in defunct_domains_found[:10]))
 
     # AI verification: filter out B2B vendors / marketplaces / non-media domains the heuristic missed.
     editorial_domains, rejected_editorial = verify_editorial_domains(editorial_domains, brand, category)
@@ -3660,6 +3790,13 @@ For each target:
 
 CRITICAL: Only include entities that actually appear in the citation data above. Do NOT invent or guess.
 
+NULL-VALUED FIELDS: `gap_insight` is the ONE media_targets field allowed to be JSON null. Use null (not "" and not a generic 'opportunity' string) when the data does not support a concrete gap claim. All other string fields should always be populated.
+
+INSTITUTIONAL TYPE GUIDANCE — get the classification right:
+- Visit Seattle, NYC Tourism, Brand USA, etc. → "Destination Marketing Organization (DMO)", NOT "Government Agency". DMOs are quasi-public marketing entities, not government bodies. Partnership plays differ accordingly (DMOs run press trips, co-marketing, partner pages; agencies don't).
+- If the entity publishes news, opinion, or industry coverage REGULARLY (HospitalityNet, Skift, PhocusWire, etc.) it is EDITORIAL — do NOT classify as institutional and do NOT include it in institutional_targets. It belongs in media_targets. Specifically: HospitalityNet is a trade PUBLICATION (industry news + opinion), not a trade association.
+- Trade associations have members, lobbying, certifications, conferences. If the entity primarily PUBLISHES CONTENT, it is editorial, not institutional.
+
 Respond with ONLY valid JSON:
 {{
   "brand": "{brand}",
@@ -3681,7 +3818,7 @@ Respond with ONLY valid JSON:
       "cited_by_llms": ["which LLMs cited this outlet"],
       "competitors_citing": ["competitors discussed in responses that cited this outlet"],
       "rationale": "One sentence on why earned media here would move the needle for {brand}",
-      "gap_insight": "DATA-DRIVEN: If competitors are explicitly discussed alongside the brand at this outlet (see competitors_citing), name the specific format/topic where competitors win (e.g. 'Spanx dominates the best-of roundup format here while {brand} only gets standalone product reviews'). If competitors_citing is empty for this outlet, frame it as untapped whitespace — opportunity, not gap. NEVER invent competitor dominance from thin air."
+      "gap_insight": "DATA-GROUNDED RULE: This field describes a CONCRETE editorial gap at this outlet. Allowed ONLY when you have evidence from the responses_block to support a specific claim. Otherwise return null (JSON null — NOT an empty string, NOT a generic 'opportunity' filler). Specifically:\n        - If competitors_citing is non-empty AND the responses_block names a specific format/topic where they win: write that gap. Example: 'Spanx dominates this outlet's best-of roundup format while {brand} appears only in standalone reviews.'\n        - If competitors_citing is empty AND you have evidence from the responses_block that {brand} is missing from a specific identifiable section: write that. Example: 'Brand absent from {{outlet}}'s Hotels vertical where competitors haven't established presence either.'\n        - In ALL other cases — INCLUDING outlets where the brand IS cited but you have no evidence of a specific gap — return JSON null.\n        - NEVER invent 'whitespace opportunity', 'untapped potential', 'pure whitespace', or 'open editorial territory' framing. These are filler and embarrass the report. If the data doesn't support a specific gap claim, omit it (return null)."
     }}
   ],
   "institutional_targets": [
@@ -3689,7 +3826,7 @@ Respond with ONLY valid JSON:
       "rank": 1,
       "institution": "Proper name of the institution",
       "domain": "the actual domain from citation data",
-      "type": "Government | Academic | Research Institute | Trade Association | Certification Body | Advocacy Non-profit",
+      "type": "Government Agency | Destination Marketing Organization (DMO) | Academic / Research Institute | Trade Association | Certification Body | Advocacy Non-profit | Standards Body",
       "citation_frequency": <actual count from citation data>,
       "sample_urls": ["up to 10 actual URLs that were cited"],
       "cited_by_llms": ["which LLMs cited this institution"],
