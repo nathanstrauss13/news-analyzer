@@ -4230,12 +4230,12 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     analysis_max_tokens = 8000 if tier == "paid" else 5000
     output_budget_chars = analysis_max_tokens * 4  # rough char approximation
 
-    analysis_response = anthropic.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=analysis_max_tokens,
-        messages=[{
-            "role": "user",
-            "content": f"""You are an AI citation intelligence analyst. You have actual citation data extracted from 30 AI-generated responses (10 prompts × 3 LLMs: Claude, ChatGPT, Gemini) about the category "{category}".
+    # Per-call timeout override. The Anthropic client's 60s default was triggering
+    # APITimeoutError on heavy paid-tier analysis (500 responses worth of context +
+    # 8K output tokens). 240s gives the call real headroom on slow inference days.
+    analysis_call_timeout = 240.0 if tier == "paid" else 120.0
+
+    _analysis_prompt_content = f"""You are an AI citation intelligence analyst. You have actual citation data extracted from 30 AI-generated responses (10 prompts × 3 LLMs: Claude, ChatGPT, Gemini) about the category "{category}".
 
 The client's brand is "{brand}". Their goal: "{problem_statement}"
 
@@ -4336,8 +4336,28 @@ Respond with ONLY valid JSON:
   ],
   "executive_summary": "3-4 sentences. DATA-ANCHORED FRAMING — read the actual numbers before choosing your tone:\n  (1) Compare {brand_mention_count} (the brand's mention count) to the TOP competitor mention count from the 'competitors' array.\n  (2) If {brand} >= top competitor: LEAD with the brand's dominant or competitive AI mindshare in the category. Frame the strategy as 'protect and extend the lead' or 'convert volume into the right kind of authoritative coverage'. NEVER say the brand 'lacks editorial authority' or is 'underrepresented' if its mention count beats competitors — that's empirically wrong.\n  (3) If {brand} is significantly behind top competitor: frame as a visibility gap that earned media can close. Be specific.\n  (4) Per-target observations should focus on the EDITORIAL FORMAT gap (e.g. brand wins product reviews but loses 'best of' roundups) — not blanket 'competitors dominate' claims if data doesn't support it. Look at competitors_citing per outlet: an empty competitors_citing means the outlet is open whitespace for {brand}, not a competitive bloodbath.\n  (5) Discuss analyst relations or authority partnerships ONLY if the corresponding target lists below contain actual entries. For consumer brands or categories where analyst firms are not relevant (hospitality, fashion, food & beverage, consumer products, etc.), do NOT mention analysts or speculate about their absence — silence is fine."
 }}"""
-        }]
-    )
+
+    # Retry once with reduced output budget on APITimeoutError. The most common
+    # cause of timeout is Claude generating until it hits max_tokens; trimming
+    # the budget forces it to ship concise JSON inside the deadline.
+    def _call_analysis(max_tok):
+        return anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=max_tok,
+            timeout=analysis_call_timeout,
+            messages=[{"role": "user", "content": _analysis_prompt_content}],
+        )
+
+    try:
+        analysis_response = _call_analysis(analysis_max_tokens)
+    except Exception as _e:
+        _err_name = type(_e).__name__
+        if 'Timeout' in _err_name or 'Connection' in _err_name:
+            _reduced = max(4000, analysis_max_tokens // 2)
+            print(f"[analysis] {_err_name} at max_tokens={analysis_max_tokens}; retrying with max_tokens={_reduced}")
+            analysis_response = _call_analysis(_reduced)
+        else:
+            raise
 
     analysis_text = analysis_response.content[0].text
     # Multi-strategy parse with a Claude self-repair fallback. Raises
