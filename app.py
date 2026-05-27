@@ -3399,7 +3399,10 @@ TIER_CONFIG = {
     },
     "paid": {
         "prompt_count": 100,
-        "llms": ["Claude", "ChatGPT", "Gemini", "Perplexity", "Grok"],
+        # Perplexity temporarily disabled — API account out of credit (insufficient_quota).
+        # To re-enable: top up at https://www.perplexity.ai/settings/api, then add
+        # "Perplexity" back into this list. The provider call site in _call_llm is unchanged.
+        "llms": ["Claude", "ChatGPT", "Gemini", "Grok"],
         "media_target_count": 25,
         "institutional_target_count": 10,
         "analyst_target_count": 10,
