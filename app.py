@@ -3004,6 +3004,44 @@ def classify_citation_domain(domain):
     return 'editorial'
 
 
+def _is_brand_own_domain(domain, brand):
+    """Quick deterministic check: is this domain the brand's own property?
+
+    Catches cases where the LLM cites the brand's own developer site,
+    community forums, help center, business page, etc. These should never
+    appear as "editorial media targets" — you can't pitch yourself. Examples:
+      brand='Adobe' + domain='developer.adobe.com'   → True
+      brand='Adobe' + domain='community.adobe.com'   → True
+      brand='Adobe' + domain='helpx.adobe.com'       → True
+      brand='Adobe' + domain='business.adobe.com'    → True
+      brand='Adobe' + domain='adobe.com'             → True
+      brand='Adobe' + domain='theverge.com'          → False
+
+    Matches on the *root* domain (second-level), so subdomains are caught.
+    Brand slugs under 3 chars are skipped to avoid noise (e.g. matching
+    "ai" inside arbitrary domains).
+    """
+    if not brand or not domain:
+        return False
+    brand_slug = re.sub(r'[^a-z0-9]', '', brand.lower())
+    if len(brand_slug) < 3:
+        return False
+    d = (domain or '').lower().lstrip('.')
+    if d.startswith('www.'):
+        d = d[4:]
+    # Strip path / port if any leaked in.
+    d = d.split('/')[0].split(':')[0]
+    parts = d.split('.')
+    if len(parts) < 2:
+        return False
+    root = parts[-2].lower()
+    # Bidirectional containment so multi-word brands ("HelloFresh" → hellofresh.com)
+    # and single-word brands ("Adobe" → adobe.com / developer.adobe.com) both match.
+    if brand_slug in root or root in brand_slug:
+        return True
+    return False
+
+
 def verify_editorial_domains(editorial_domains, brand, category):
     """Filter the editorial list via Claude to drop B2B vendor/marketplace/non-media domains.
 
@@ -3014,6 +3052,19 @@ def verify_editorial_domains(editorial_domains, brand, category):
         return [], []
     domains_to_check = editorial_domains[:30]
     domain_list = "\n".join(f"- {d['domain']}" for d in domains_to_check)
+    # Brand-specific self-reference examples make the rejection rule concrete
+    # for Claude. Build the most-common self-domain patterns from the brand
+    # slug so the prompt can call them out by name.
+    brand_for_prompt = (brand or '').strip() or '(unknown)'
+    brand_slug = re.sub(r'[^a-z0-9]', '', brand_for_prompt.lower())
+    self_examples = ""
+    if len(brand_slug) >= 3:
+        self_examples = (
+            f"  e.g. for {brand_for_prompt}: {brand_slug}.com, www.{brand_slug}.com, "
+            f"developer.{brand_slug}.com, community.{brand_slug}.com, helpx.{brand_slug}.com, "
+            f"business.{brand_slug}.com, support.{brand_slug}.com, blog.{brand_slug}.com, "
+            f"docs.{brand_slug}.com.\n"
+        )
     try:
         resp = anthropic.messages.create(
             model="claude-sonnet-4-20250514",
@@ -3023,13 +3074,24 @@ def verify_editorial_domains(editorial_domains, brand, category):
                 "content": (
                     "You are filtering a list of web domains to identify which are legitimate editorial "
                     "MEDIA outlets that a PR professional could pitch — vs. which are SaaS vendors, "
-                    "software review marketplaces, e-commerce, community forums, or corporate sites "
-                    "that aren't pitchable media.\n\n"
-                    f"Context — brand: {brand}\nCategory: {category}\n\n"
+                    "software review marketplaces, e-commerce, community forums, the brand's own "
+                    "properties, or corporate sites that aren't pitchable media.\n\n"
+                    f"Context — brand: {brand_for_prompt}\nCategory: {category}\n\n"
                     "Definition of MEDIA: newspapers, magazines, trade press, B2B publications, "
                     "consumer publications, broadcast outlets, and digital-native news sites WITH "
                     "editorial staff who write articles.\n\n"
                     "Definition of NON-MEDIA (reject these aggressively):\n"
+                    f"- THE BRAND'S OWN DOMAINS — including any subdomain of the brand's root domain.\n"
+                    f"{self_examples}"
+                    "  You cannot pitch yourself, and a brand's own developer/community/help/business "
+                    "subdomains are self-promotional infrastructure, not editorial media.\n"
+                    "- Vendor documentation / learning portals (e.g. learn.microsoft.com, docs.aws.amazon.com, "
+                    "developer.nvidia.com, developer.apple.com, developer.mozilla.org). These are vendor docs, "
+                    "not editorial media.\n"
+                    "- AI / SaaS competitor product sites masquerading as 'media' (e.g. synthesia.io, "
+                    "lumen5.com, datarobot.com, h2o.ai, anthropic.com, openai.com, runway.com). These are "
+                    "product/marketing sites for vendors — sometimes they have blogs, but they're not "
+                    "pitchable editorial.\n"
                     "- SaaS vendor sites (e.g. salesforce.com, atlassian.com, engine.com, fcmtravel.com, "
                     "sap.com, hubspot.com)\n"
                     "- Corporate-booking platforms or travel-tech consortia (e.g. ccra.com, gbta.org for "
@@ -3121,6 +3183,12 @@ def aggregate_citations(all_responses):
         d['llms'] = list(d['llms'])
         d['prompts'] = list(d['prompts'])
         d['urls'] = list(set(d['urls']))
+        # Article-only subset for `sample_urls` surfacing. Keeps the full
+        # `urls` list intact (preserves raw citation data for JSON export +
+        # downstream analysis), but exposes a curated list of URLs that look
+        # like real articles — no homepages, no /tag/ index pages, no search
+        # results. The analysis prompt prefers this list for sample_urls.
+        d['specific_urls'] = [u for u in d['urls'] if _is_specific_article(u)]
         # diversity_score = count * (1 + 0.25 * (distinct LLMs - 1))
         # 1 LLM: ×1.00 · 2 LLMs: ×1.25 · 3 LLMs: ×1.50 · 4: ×1.75 · 5: ×2.00
         d['diversity_score'] = d['count'] * (1 + 0.25 * max(0, len(d['llms']) - 1))
@@ -3272,6 +3340,62 @@ def _resolve_vertex_redirect(url, timeout=4):
         return None
     except Exception:
         return None
+
+
+def _is_specific_article(url):
+    """Heuristic: does this URL point to a specific article, not a homepage/tag/category?
+
+    Used to filter the `sample_urls` surfaced in the final report (so we never
+    show a Forbes homepage or a /tag/ai/ index as evidence). The underlying
+    citation data (`raw_citation_domains[*].urls`, `all_responses[*].citations`)
+    is preserved untouched — only the presentation layer filters.
+
+    Returns True when the URL looks like it leads to an actual article:
+    - Has a path beyond `/` (not bare domain, not /index.html)
+    - Doesn't contain known index/listing segments (/tag/, /category/, /search?, etc.)
+    - Has 2+ path segments OR a single segment with a long slug (>= 20 chars,
+      proxy for "this is a slug, not a section name")
+
+    Errs on the side of KEEPING unknown URLs (returns True on parse failure)
+    so legitimate-but-unusual URLs aren't silently dropped.
+
+    KNOWN LIMITATION: A URL that LOOKS like a specific article but is actually
+    off-topic (e.g. a Verge article about an electric golf cart cited as
+    evidence for an AI creative platform audit) will still pass this filter.
+    TODO: optional GET + title-check pass that verifies the article title
+    mentions the brand or category — expensive (network call per URL), so
+    we'd want it as an opt-in for paid audits.
+    """
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        path = (p.path or '').rstrip('/')
+        # Bare domain or root-only = homepage.
+        if not path or path == '/' or path.lower() == '/index.html':
+            return False
+        path_lower = path.lower()
+        # Tag / category / search / archive / pagination / author index pages.
+        bad_segments = (
+            '/tag/', '/tags/', '/category/', '/categories/', '/topic/', '/topics/',
+            '/search/', '/search?', '/archive/', '/archives/', '/page/', '/author/',
+            '/by/', '/feed', '/rss', '/sitemap', '/atom', '/section/',
+        )
+        if any(seg in path_lower for seg in bad_segments):
+            return False
+        # Query-string-only "search" pages.
+        if (p.query or '').lower().startswith(('q=', 'query=', 's=', 'search=')):
+            return False
+        segs = [s for s in path.split('/') if s]
+        if not segs:
+            return False
+        # Single short segment is almost always a section, not an article.
+        # 2+ segments OR a long slug (proxy for "this is a real article slug") = keep.
+        if len(segs) < 2 and len(segs[0]) < 20:
+            return False
+        return True
+    except Exception:
+        # Err on the side of keeping unknown URLs.
+        return True
 
 
 def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None):
@@ -3579,6 +3703,13 @@ def _compute_audit_anomaly_flags(result, duration_seconds, per_provider_done, pe
 
         if not institutional_targets and not analyst_targets:
             flags.append("NO_INSTITUTIONAL_OR_ANALYST")
+
+        # Partial-delivery flag: the LLM batch hit the wall-clock deadline and
+        # cancelled in-flight calls. <95% = degraded; surfaces in the UI +
+        # debug-email so we know to consider re-running.
+        completion_rate = result.get("completion_rate")
+        if isinstance(completion_rate, (int, float)) and completion_rate < 0.95:
+            flags.append("PARTIAL_DELIVERY")
     except Exception as e:
         print("anomaly-flag computation failed:", e)
     return flags
@@ -4081,9 +4212,13 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     progress_lock = threading.Lock()
 
     # Global LLM-batch deadline. Sized generously per tier: free should fit
-    # easily in 2 min; paid in 5 min. If one provider hangs, we still proceed
-    # to analysis with the partial responses we've collected.
-    batch_deadline_seconds = 180 if tier == "free" else 360
+    # easily in 2 min; paid gets 15 min to protect the slow tail (Grok averages
+    # 5-30s/call, and 12 workers can't drain 400 calls in 6 min — at 360s we
+    # were shipping 57% completion on Adobe paid audits). Happy-path paid
+    # audits still finish in 3-5 min; the higher ceiling only kicks in on slow
+    # inference days. If one provider hangs, we still proceed to analysis with
+    # the partial responses we've collected.
+    batch_deadline_seconds = 180 if tier == "free" else 900
 
     emit("llm", f"Querying {len(llms)} LLMs × {len(prompts)} prompts ({total_calls} calls)...", 0, total_calls)
     executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -4192,6 +4327,27 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         print(f"classify_citation_domain: excluded {len(defunct_domains_found)} defunct domains: " +
               ", ".join(d['domain'] for d in defunct_domains_found[:10]))
 
+    # Deterministic self-domain filter: drop the brand's own properties from
+    # editorial + institutional lists before they reach Claude. You can't pitch
+    # yourself, and seeing "developer.adobe.com" as a media target torpedoes
+    # report credibility. Belt-and-suspenders with the Claude-side prompt
+    # update inside verify_editorial_domains.
+    self_domains_dropped = []
+    if brand:
+        before_e = len(editorial_domains)
+        editorial_domains = [d for d in editorial_domains if not _is_brand_own_domain(d['domain'], brand)]
+        self_domains_dropped.extend(
+            d['domain'] for d in (ranked_domains)
+            if classify_citation_domain(d['domain']) == 'editorial'
+            and _is_brand_own_domain(d['domain'], brand)
+        )
+        before_i = len(institutional_domains)
+        institutional_domains = [d for d in institutional_domains if not _is_brand_own_domain(d['domain'], brand)]
+        if self_domains_dropped or before_i > len(institutional_domains):
+            print(f"_is_brand_own_domain: dropped {before_e - len(editorial_domains)} editorial + "
+                  f"{before_i - len(institutional_domains)} institutional self-domains for brand '{brand}': "
+                  + ", ".join(self_domains_dropped[:10]))
+
     # AI verification: filter out B2B vendors / marketplaces / non-media domains the heuristic missed.
     editorial_domains, rejected_editorial = verify_editorial_domains(editorial_domains, brand, category)
     if rejected_editorial:
@@ -4201,8 +4357,15 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     emit("analysis", "Building your signal report...", 0, 1)
 
     def fmt_block(domains, limit):
+        # Prefer specific-article URLs for the sample shown to Claude — keeps
+        # homepages / tag-index pages out of the recommended sample_urls. If a
+        # domain has no specific URLs (only homepages were cited), fall back
+        # to the full urls list so Claude still sees evidence.
+        def sample(d):
+            specific = d.get('specific_urls') or []
+            return specific[:3] if specific else (d.get('urls') or [])[:3]
         return "\n".join(
-            f"  {i+1}. {d['domain']} — cited {d['count']}x by {', '.join(d['llms'])} — sample URLs: {', '.join(d['urls'][:3])}"
+            f"  {i+1}. {d['domain']} — cited {d['count']}x by {', '.join(d['llms'])} — sample URLs: {', '.join(sample(d))}"
             for i, d in enumerate(domains[:limit])
         ) or "  (none)"
 
@@ -4283,6 +4446,11 @@ INSTITUTIONAL TYPE GUIDANCE — get the classification right:
 - If the entity publishes news, opinion, or industry coverage REGULARLY (HospitalityNet, Skift, PhocusWire, etc.) it is EDITORIAL — do NOT classify as institutional and do NOT include it in institutional_targets. It belongs in media_targets. Specifically: HospitalityNet is a trade PUBLICATION (industry news + opinion), not a trade association.
 - Trade associations have members, lobbying, certifications, conferences. If the entity primarily PUBLISHES CONTENT, it is editorial, not institutional.
 
+SAMPLE_URLS RULES — these get surfaced to the client as "evidence" so they must be high-quality:
+- PREFER URLs that point to specific articles (paths like /2025/03/some-headline/ or /article/title-slug/). The sample URLs shown above for each domain have already been filtered to favor article-style paths.
+- AVOID homepage URLs (just the bare domain), tag/category index pages (/tag/ai/, /category/news/), search-result pages, author archive pages.
+- If a domain only offered homepage-style URLs in the sample, include AT MOST 1 — and prefer leaving sample_urls empty over filling it with misleading evidence. An empty array is correct; a homepage URL passed off as "evidence" is not.
+
 CRITICAL OUTPUT BUDGET: Your entire response must fit in {analysis_max_tokens} tokens (~{output_budget_chars} characters) or less. Be CONCISE — short rationales, short gap_insights, no filler words. Better to ship complete JSON with terse text than truncated JSON with verbose text. The JSON MUST be syntactically complete with all closing braces and brackets.
 
 Respond with ONLY valid JSON:
@@ -4302,7 +4470,7 @@ Respond with ONLY valid JSON:
       "domain": "the actual domain from citation data",
       "reporter": "Named journalist if identifiable from response content, otherwise null",
       "citation_frequency": <actual count from citation data>,
-      "sample_urls": ["up to 10 actual URLs that were cited"],
+      "sample_urls": ["up to 10 actual specific-article URLs that were cited — see SAMPLE_URLS RULES above; prefer empty over homepage/tag-page filler"],
       "cited_by_llms": ["which LLMs cited this outlet"],
       "competitors_citing": ["competitors discussed in responses that cited this outlet"],
       "rationale": "One sentence on why earned media here would move the needle for {brand}",
@@ -4316,7 +4484,7 @@ Respond with ONLY valid JSON:
       "domain": "the actual domain from citation data",
       "type": "Government Agency | Destination Marketing Organization (DMO) | Academic / Research Institute | Trade Association | Certification Body | Advocacy Non-profit | Standards Body",
       "citation_frequency": <actual count from citation data>,
-      "sample_urls": ["up to 10 actual URLs that were cited"],
+      "sample_urls": ["up to 10 actual specific-article URLs that were cited — see SAMPLE_URLS RULES above; prefer empty over homepage/tag-page filler"],
       "cited_by_llms": ["which LLMs cited this institution"],
       "partnership_play": "One sentence on the specific partnership, certification, sponsorship, research collaboration, or expert engagement that would influence AI citations through this entity"
     }}
@@ -4328,7 +4496,7 @@ Respond with ONLY valid JSON:
       "domain": "the actual domain from citation data",
       "type": "Industry Analyst | Management Consultancy | Boutique Research",
       "citation_frequency": <actual count from citation data>,
-      "sample_urls": ["up to 10 actual URLs that were cited"],
+      "sample_urls": ["up to 10 actual specific-article URLs that were cited — see SAMPLE_URLS RULES above; prefer empty over homepage/tag-page filler"],
       "cited_by_llms": ["which LLMs cited this firm"],
       "evaluations_referenced": ["Specific reports/evaluations cited if identifiable from response text — e.g. 'Magic Quadrant for APM', 'Forrester Wave: Observability' — otherwise empty array"],
       "analyst_play": "One sentence on the specific analyst relations move: which evaluation to target, briefing cadence to establish, sponsored research, or client subscription that would shift citations"
@@ -4386,7 +4554,7 @@ Respond with ONLY valid JSON:
 
     analysis["prompts_used"] = prompts
     # Full ranked domains list (no cap). Each dict already carries:
-    # {domain, count, llms, prompts, urls, diversity_score} — preserve all.
+    # {domain, count, llms, prompts, urls, specific_urls, diversity_score} — preserve all.
     analysis["raw_citation_domains"] = ranked_domains
     # Full raw per-response data: {llm, prompt, response, citations}. Lets users
     # re-analyze, audit, debug, or rerun analysis on a past report.
@@ -4397,6 +4565,21 @@ Respond with ONLY valid JSON:
     # underscore so a future cleanup pass can strip non-public keys easily.
     analysis["_per_provider_errors"] = dict(per_provider_errors)
     analysis["_per_provider_done"] = dict(per_provider_done)
+
+    # Audit completion tracking. Surfaces partial-delivery in the UI + saved
+    # payload so users (and the debug email) can see when the wall-clock
+    # deadline cancelled the slow tail. `completion_rate` is a 0.0-1.0 ratio.
+    analysis["responses_completed"] = len(all_responses)
+    analysis["responses_planned"] = total_calls
+    completion_rate = round(len(all_responses) / max(1, total_calls), 3)
+    analysis["completion_rate"] = completion_rate
+
+    # Belt-and-suspenders: set tier here so it's guaranteed-set on the saved
+    # payload even if a caller forgets to mutate the dict before persisting.
+    # (Adobe paid audit saved with tier=None — this prevents recurrence.)
+    analysis["tier"] = tier
+
+    print(f"[audit] tier={tier} completion={completion_rate:.1%} ({len(all_responses)}/{total_calls})")
     return analysis
 
 
@@ -4487,6 +4670,12 @@ def citation_audit():
             # payload is persisted to SharedResult / sent to the client.
             per_provider_errors = result.pop("_per_provider_errors", {}) or {}
             per_provider_done = result.pop("_per_provider_done", {}) or {}
+            # Set slug + tier BEFORE serializing to SharedResult so the saved
+            # payload carries them. (Previously these were assigned after
+            # json.dumps — causing every saved payload to have slug=None and
+            # tier=None when re-loaded for a shared report.)
+            result["slug"] = slug
+            result["tier"] = tier
             with app.app_context():
                 shared = SharedResult(slug=slug, payload=json.dumps(result))
                 db.session.add(shared)
@@ -4500,8 +4689,6 @@ def citation_audit():
                     problem_statement=problem_statement,
                 ))
                 db.session.commit()
-            result["slug"] = slug
-            result["tier"] = tier
             q.put(json.dumps({"type": "result", "data": result}))
             # Fire the owner debug email AFTER the result is pushed to the
             # queue so the user-visible response never waits on email send.

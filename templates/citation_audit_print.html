@@ -49,6 +49,31 @@
             border-radius: 10pt;
             margin-right: 6pt;
         }
+        .completion-badge {
+            display: inline-block;
+            font-size: 9pt;
+            margin-top: 6pt;
+            padding: 4pt 9pt;
+            border-radius: 6pt;
+            border: 0.75pt solid #d4d4d4;
+            background: #f7f7fa;
+            color: #2a2a2a;
+        }
+        .completion-badge.full {
+            border-color: #b7d8b7;
+            background: #f0faf0;
+            color: #1f5a1f;
+        }
+        .completion-badge.partial {
+            border-color: #d8c084;
+            background: #faf6e8;
+            color: #7a5a10;
+        }
+        .completion-badge.thin {
+            border-color: #d8a4a4;
+            background: #fbeded;
+            color: #842020;
+        }
         .exec-summary {
             background: #f7f7fa;
             border-left: 3pt solid #5c6cff;
@@ -166,6 +191,17 @@
         Brand cited in <strong>{{ data.brand_mention_count or 0 }} of {{ data.total_responses or 30 }}</strong> AI responses
         · {{ data.total_citations_extracted or 0 }} citation URLs extracted
     </div>
+    {% if data.responses_planned %}
+        {% set _rate = data.completion_rate if data.completion_rate is not none else (data.responses_completed / data.responses_planned if data.responses_planned else 0) %}
+        {% set _pct = (_rate * 100) | round | int %}
+        {% if _rate < 0.7 %}
+            <div class="completion-badge thin">Audit partially completed: {{ data.responses_completed }}/{{ data.responses_planned }} responses ({{ _pct }}%). The slowest LLMs were cancelled by the wall-clock deadline. Consider re-running for fuller coverage.</div>
+        {% elif _rate < 0.95 %}
+            <div class="completion-badge partial">Audit partially completed: {{ data.responses_completed }}/{{ data.responses_planned }} responses ({{ _pct }}%). The slowest LLMs may have been cancelled by the wall-clock deadline.</div>
+        {% else %}
+            <div class="completion-badge full">Audit completed: {{ data.responses_completed }}/{{ data.responses_planned }} responses ({{ _pct }}%).</div>
+        {% endif %}
+    {% endif %}
 
     {% if data.executive_summary %}
     <div class="exec-summary">{{ data.executive_summary }}</div>
