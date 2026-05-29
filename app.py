@@ -24,7 +24,7 @@ try:
 except ImportError:
     pass
 from PIL import Image, ImageDraw, ImageFont
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import hashlib
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response, session, abort
@@ -218,6 +218,27 @@ class LoginToken(db.Model):
     token_hash = db.Column(db.String(128), unique=True, nullable=False, index=True)
     expires_at = db.Column(db.DateTime, nullable=False)
     used_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+# ---------------------------------------------------------------------------
+# MVP branch only: per-IP free-tier rate limit + feedback widget
+# ---------------------------------------------------------------------------
+
+class FreeAuditUse(db.Model):
+    __tablename__ = 'free_audit_use'
+    id = db.Column(db.Integer, primary_key=True)
+    ip = db.Column(db.String(64), nullable=False, index=True)
+    day = db.Column(db.Date, nullable=False, index=True)
+    count = db.Column(db.Integer, default=0, nullable=False)
+    __table_args__ = (db.UniqueConstraint('ip', 'day', name='uniq_ip_day'),)
+
+
+class AuditFeedback(db.Model):
+    __tablename__ = 'audit_feedback'
+    id = db.Column(db.Integer, primary_key=True)
+    slug = db.Column(db.String(32), nullable=False, index=True)
+    rating = db.Column(db.String(16), nullable=False)  # 'up' | 'down'
+    ip = db.Column(db.String(64), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 # Create the database tables
@@ -4583,8 +4604,23 @@ Respond with ONLY valid JSON:
     return analysis
 
 
+# MVP branch: free-tier rate limit + client-IP helper.
+FREE_DAILY_CAP = 3
+
+
+def _client_ip():
+    """Return the best-effort client IP. Respects Render's X-Forwarded-For."""
+    fwd = request.headers.get('X-Forwarded-For', '')
+    if fwd:
+        return fwd.split(',')[0].strip()
+    return request.remote_addr or 'unknown'
+
+
 @app.route('/citation-audit', methods=['GET', 'POST'])
 def citation_audit():
+    # MVP branch: audits are always anonymous + free tier. We still pass
+    # signal_user / signal_credits through to the template (the JS globals
+    # reference them) but they're always falsy.
     user = current_signal_user()
     credits = current_user_credits(user)
 
@@ -4600,56 +4636,32 @@ def citation_audit():
     if not problem_statement:
         return jsonify({"error": "Please describe the problem you want your brand to own."}), 400
 
-    requested_tier = (request.form.get('tier') or 'free').strip().lower()
-    if requested_tier not in ('free', 'paid'):
-        requested_tier = 'free'
-
-    # Optional curated prompts (paid-tier prompt-editor flow). Form sends them
-    # as a JSON-encoded string under "prompts" — accept missing/empty as the
-    # signal to run the standard auto-generated path.
-    prompts_override = None
-    raw_prompts = request.form.get('prompts', '').strip()
-    if raw_prompts:
-        try:
-            parsed = json.loads(raw_prompts)
-            if isinstance(parsed, list):
-                cleaned = [p.strip() for p in parsed if isinstance(p, str) and p.strip()]
-                if 10 <= len(cleaned) <= 200:
-                    prompts_override = cleaned
-                else:
-                    return jsonify({"error": "Prompt list must contain between 10 and 200 prompts."}), 400
-        except Exception:
-            return jsonify({"error": "Could not parse the provided prompts."}), 400
-
+    # MVP branch: paid tier disabled — see feat/pr-signal-finder for full paid flow.
+    # Force-coerce any incoming tier to "free" and ignore any client-supplied prompts.
     tier = 'free'
     credit_charged = False
-    if requested_tier == 'paid':
-        if not user:
-            return jsonify({"error": "Please sign in to run a paid audit.", "code": "auth_required"}), 401
-        # Atomic conditional UPDATE: only succeeds if credits_remaining > 0.
-        # Replaces a read-modify-write that was racy on Postgres — two
-        # concurrent POSTs could both read the same starting value and each
-        # decrement once, double-spending a credit. With this single SQL
-        # UPDATE, exactly one of two concurrent requests wins; the other gets
-        # rowcount == 0 and is rejected with 402.
-        updated = db.session.execute(
-            db.update(CreditBalance)
-              .where(CreditBalance.user_id == user.id)
-              .where(CreditBalance.credits_remaining > 0)
-              .values(credits_remaining=CreditBalance.credits_remaining - 1)
-        )
-        db.session.commit()
-        if updated.rowcount != 1:
-            return jsonify({"error": "No audit credits remaining. Buy more to continue.", "code": "no_credits"}), 402
-        tier = 'paid'
-        credit_charged = True
+    prompts_override = None
+
+    # Per-IP per-day cap. Pre-decrement before kicking off the audit so a
+    # buggy/abusive client can't burst-spawn 30 audits in parallel. We do not
+    # refund on failure: the cap is abuse protection, not a credit ledger.
+    today = date.today()
+    ip = _client_ip()
+    use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
+    if use and use.count >= FREE_DAILY_CAP:
+        return jsonify({
+            "error": f"You've used your {FREE_DAILY_CAP} free audits for today. Talk to Nathan about a bespoke audit for unlimited access.",
+            "code": "rate_limited",
+        }), 429
+    if use:
+        use.count += 1
+    else:
+        use = FreeAuditUse(ip=ip, day=today, count=1)
+        db.session.add(use)
+    db.session.commit()
 
     user_id = user.id if user else None
     cfg = TIER_CONFIG[tier]
-    # Free tier ignores any client-supplied prompts (defensive: don't let a
-    # free-tier caller smuggle in a 200-prompt batch).
-    if tier == 'free':
-        prompts_override = None
 
     q = queue.Queue()
 
@@ -5025,6 +5037,41 @@ def citation_audit_request_demo():
     return jsonify({"ok": True, "dev": not bool(sg_key)})
 
 
+@app.route('/signal/feedback', methods=['POST'])
+def signal_feedback():
+    """MVP branch: thumbs-up / thumbs-down widget at the bottom of each audit.
+
+    Stored in the AuditFeedback table; also fire-and-forget to Nathan via
+    SendGrid so he sees the signal in real time.
+    """
+    data = request.get_json(silent=True) or {}
+    slug = (data.get('slug') or '').strip()
+    rating = (data.get('rating') or '').strip().lower()
+    if not slug or rating not in ('up', 'down'):
+        return jsonify({"error": "bad request"}), 400
+    fb = AuditFeedback(slug=slug, rating=rating, ip=_client_ip())
+    db.session.add(fb)
+    db.session.commit()
+    try:
+        sg_key = os.environ.get("SENDGRID_API_KEY")
+        if sg_key:
+            from sendgrid import SendGridAPIClient
+            from sendgrid.helpers.mail import Mail
+            emoji = '\U0001F44D' if rating == 'up' else '\U0001F44E'
+            link = (SIGNAL_BASE_URL or 'https://signal.innatec3.com') + url_for('view_signal_report', slug=slug)
+            msg = Mail(
+                from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+                to_emails=["nstrauss@innatec3.com"],
+                subject=f"[Signal Finder feedback] {emoji} — {slug}",
+                plain_text_content=f"User rated audit {slug} as {rating}.\n\nReport: {link}",
+                html_content=f"<p>User rated audit <strong>{slug}</strong> as {emoji} <strong>{rating}</strong>.</p><p>Report: <a href=\"{link}\">{link}</a></p>",
+            )
+            SendGridAPIClient(sg_key).send(msg)
+    except Exception as e:
+        print("Feedback email failed:", e)
+    return jsonify({"ok": True})
+
+
 # ---------------------------------------------------------------------------
 # PR Signal Finder — paid-tier auth, billing, dashboard
 # ---------------------------------------------------------------------------
@@ -5222,8 +5269,15 @@ def signal_logout():
 
 
 @app.route('/signal/dashboard')
-@signal_login_required
 def signal_dashboard():
+    # MVP branch: dashboard is unreachable from the UI. Old bookmarks land on
+    # the audit form instead. The original implementation lives below as
+    # `_legacy_signal_dashboard` and on the `feat/pr-signal-finder` branch.
+    return redirect(url_for('citation_audit'))
+
+
+def _legacy_signal_dashboard():
+    """Original paid-tier dashboard. Preserved for reference; not routed."""
     user = current_signal_user()
     if not user:
         return redirect(url_for('signal_login'))

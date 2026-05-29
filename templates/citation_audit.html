@@ -859,6 +859,44 @@
             margin-top: 10px;
         }
 
+        .feedback-widget {
+            margin-top: 28px;
+            padding: 18px 20px;
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .feedback-question {
+            font-size: 14px;
+            color: #cfd2ff;
+            font-weight: 500;
+            margin-bottom: 10px;
+        }
+        .feedback-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .feedback-btn {
+            padding: 8px 14px;
+            font-family: inherit;
+            font-size: 13px;
+            color: #cfd2ff;
+            background: #14142a;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: border-color .15s, background .15s;
+        }
+        .feedback-btn:hover { border-color: #5c6cff; background: #1a1a3a; }
+        .feedback-btn.selected { border-color: #5aff8a; background: #0e1a14; color: #5aff8a; }
+        .feedback-thanks {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #5aff8a;
+        }
         .bespoke-cta {
             margin-top: 40px;
             padding: 28px;
@@ -1091,15 +1129,7 @@
         <div class="signal-header">
             <span style="font-size:13px;font-weight:500;color:#555;text-transform:uppercase;letter-spacing:2px">Innate c3 insights</span>
             <div class="auth-cluster">
-                {% if signal_user %}
-                    <span class="credit-badge">{{ signal_credits or 0 }} credit{{ '' if signal_credits == 1 else 's' }}</span>
-                    <a href="{{ url_for('signal_dashboard') }}">Dashboard</a>
-                    <form method="POST" action="{{ url_for('signal_logout') }}" style="display:inline;margin:0">
-                        <button type="submit" class="logout-btn">Sign out</button>
-                    </form>
-                {% else %}
-                    <a href="{{ url_for('signal_login') }}">Sign in</a>
-                {% endif %}
+                <a href="#" onclick="openDemoModal(); return false;">Talk to Nathan</a>
             </div>
         </div>
         <h1>AI Citation Audit | PR Signal Finder</h1>
@@ -1110,60 +1140,13 @@
                 <textarea id="problemInput" placeholder="e.g. I want ACME Corp to be known as the premier brand of widgets" rows="3"></textarea>
             </div>
 
-            <div class="tier-picker" role="radiogroup" aria-label="Audit depth">
-                <label class="tier-card selected" id="tierCardFree" data-tier="free">
-                    <input type="radio" name="tier" value="free" checked>
-                    <div class="tier-card-head">
-                        <span class="tier-card-title">Free audit</span>
-                        <span class="tier-card-price free">Free</span>
-                    </div>
-                    <div class="tier-card-detail"><strong>10 prompts × 3 LLMs</strong> · Claude · ChatGPT · Gemini · ~60-90s</div>
-                </label>
-                <label class="tier-card" id="tierCardPaid" data-tier="paid">
-                    <input type="radio" name="tier" value="paid">
-                    <div class="tier-card-head">
-                        <span class="tier-card-title">Deeper audit</span>
-                        <span class="tier-card-price" id="tierCardPaidPrice">
-                            {% if signal_user and (signal_credits or 0) > 0 %}1 credit{% else %}$25{% endif %}
-                        </span>
-                    </div>
-                    <div class="tier-card-detail"><strong>100 prompts × 5 LLMs</strong> · adds Perplexity + Grok · top 25 targets · ~3-5 min</div>
-                </label>
-            </div>
-
+            <!-- MVP branch: tier picker + form hint removed. Audit is always anonymous free tier. -->
             <button class="btn" id="submitBtn" onclick="runAudit()">Identify PR Targets</button>
-            <div class="form-hint-link" id="formHint" style="display:none"></div>
         </div>
 
         <div class="error-msg" id="errorMsg"></div>
 
-        <div class="prompt-editor" id="promptEditor">
-            <div class="prompt-editor-header">
-                <div>
-                    <h2 class="prompt-editor-title">Curate your audit prompts</h2>
-                    <p class="prompt-editor-desc">
-                        Brand: <strong id="promptEditorBrand">—</strong> · Category: <strong id="promptEditorCategory">—</strong><br>
-                        Edit, delete, or add prompts to control exactly what the audit asks. Min 10, max 200.
-                    </p>
-                </div>
-                <div class="prompt-editor-count" id="promptEditorCount">100 prompts ready</div>
-            </div>
-            <div class="prompt-editor-warning" id="promptEditorWarning"></div>
-            <div class="prompt-editor-toolbar">
-                <div class="prompt-editor-toolbar-left">
-                    <button type="button" class="prompt-row-btn" id="promptEditorAdd">+ Add prompt</button>
-                    <button type="button" class="prompt-row-btn" id="promptEditorReset">Reset to auto-generated</button>
-                </div>
-                <div class="prompt-editor-toolbar-right">
-                    <button type="button" class="prompt-row-btn" id="promptEditorCancel">Cancel</button>
-                </div>
-            </div>
-            <div class="prompt-list" id="promptList"></div>
-            <div class="prompt-editor-loading" id="promptEditorLoading">Generating prompts...</div>
-            <div class="prompt-editor-actions">
-                <button class="btn" id="promptEditorRun" onclick="runAuditWithPrompts()">Run audit with these prompts</button>
-            </div>
-        </div>
+        <!-- MVP branch: prompt editor stripped. See feat/pr-signal-finder for full paid flow. -->
 
         <div class="loading" id="loading">
             <div class="countdown-ring">
@@ -1316,351 +1299,21 @@
             }
         }
 
-        // --- Tier picker state ---
-        let selectedTier = 'free';
+        // MVP branch: tier picker, paid-tier checkout, and prompt-editor flow
+        // are intentionally disabled. Audits always run anonymously at the free
+        // tier. The full paid flow lives on `feat/pr-signal-finder`.
+        const selectedTier = 'free';
 
-        function selectTier(tier) {
-            selectedTier = tier;
-            const free = document.getElementById('tierCardFree');
-            const paid = document.getElementById('tierCardPaid');
-            if (free) free.classList.toggle('selected', tier === 'free');
-            if (paid) paid.classList.toggle('selected', tier === 'paid');
-            document.querySelectorAll('input[name="tier"]').forEach(r => { r.checked = r.value === tier; });
-            updateSubmitLabel();
-        }
-
-        function updateSubmitLabel() {
-            const btn = document.getElementById('submitBtn');
-            const hint = document.getElementById('formHint');
-            if (!btn) return;
-            const credits = (window.SIGNAL_CREDITS || 0);
-            const loggedIn = !!window.SIGNAL_USER;
-            if (selectedTier === 'paid') {
-                if (loggedIn && credits > 0) {
-                    btn.textContent = 'Run deeper audit (1 credit) →';
-                    if (hint) hint.style.display = 'none';
-                } else {
-                    btn.textContent = 'Buy & run deeper audit · $25 →';
-                    if (hint) {
-                        hint.innerHTML = 'Apple Pay · Google Pay · Card. Secure checkout via Stripe. Your audit starts right after payment.';
-                        hint.style.display = '';
-                    }
-                }
-            } else {
-                btn.textContent = 'Identify PR Targets';
-                if (hint) hint.style.display = 'none';
-            }
-        }
-
-        // Wire tier-card clicks once the DOM is parsed.
-        (function attachTierCardHandlers() {
-            const free = document.getElementById('tierCardFree');
-            const paid = document.getElementById('tierCardPaid');
-            if (free) free.addEventListener('click', (e) => { e.preventDefault(); selectTier('free'); });
-            if (paid) paid.addEventListener('click', (e) => { e.preventDefault(); selectTier('paid'); });
-            updateSubmitLabel();
-        })();
-
-        async function buyAndRun(problemStatement) {
-            const btn = document.getElementById('submitBtn');
-            const errEl = document.getElementById('errorMsg');
-            if (errEl) errEl.classList.remove('active');
-            const origLabel = btn.textContent;
-            btn.disabled = true;
-            btn.textContent = 'Opening secure checkout...';
-            try {
-                const resp = await fetch('/signal/checkout/single', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ problem_statement: problemStatement, autostart: true }),
-                });
-                const data = await resp.json().catch(() => ({}));
-                if (resp.ok && data.url) {
-                    window.location.href = data.url;
-                    return;
-                }
-                if (errEl) {
-                    errEl.textContent = (data && data.error) ? data.error : 'Checkout is not available right now.';
-                    errEl.classList.add('active');
-                }
-                btn.disabled = false;
-                btn.textContent = origLabel;
-            } catch (e) {
-                if (errEl) {
-                    errEl.textContent = 'Network error: ' + (e && e.message ? e.message : 'unknown');
-                    errEl.classList.add('active');
-                }
-                btn.disabled = false;
-                btn.textContent = origLabel;
-            }
-        }
-
-        // --- Paid-tier prompt-editor state ---
-        // `editorPrompts` holds the working draft; `originalPrompts` is the
-        // server-generated list used by the Reset button. `editorMeta` keeps
-        // the brand + category + problem statement we received from
-        // /signal/audit/prompts so we don't re-derive them on submit.
-        let editorPrompts = [];
-        let originalPrompts = [];
-        let editorMeta = { brand: '', category: '', problem_statement: '', tier: 'paid' };
-        const PROMPT_MIN = 10;
-        const PROMPT_MAX = 200;
-
-        function _setEditorVisible(on) {
-            const ed = document.getElementById('promptEditor');
-            if (!ed) return;
-            ed.classList.toggle('active', !!on);
-        }
-
-        function _showEditorLoading(on) {
-            const l = document.getElementById('promptEditorLoading');
-            if (l) l.classList.toggle('active', !!on);
-            const btn = document.getElementById('promptEditorRun');
-            if (btn) btn.disabled = !!on;
-        }
-
-        function _setEditorWarning(msg) {
-            const w = document.getElementById('promptEditorWarning');
-            if (!w) return;
-            if (!msg) {
-                w.classList.remove('active');
-                w.textContent = '';
-            } else {
-                w.textContent = msg;
-                w.classList.add('active');
-            }
-        }
-
-        function _updateEditorCount() {
-            const el = document.getElementById('promptEditorCount');
-            if (!el) return;
-            const n = editorPrompts.length;
-            el.textContent = `${n} prompt${n === 1 ? '' : 's'} ready`;
-            if (n > PROMPT_MAX) {
-                _setEditorWarning(`Too many prompts (${n}). Cap is ${PROMPT_MAX}. Remove ${n - PROMPT_MAX} before running.`);
-            } else if (n < PROMPT_MIN) {
-                _setEditorWarning(`Need at least ${PROMPT_MIN} prompts to run an audit. Add ${PROMPT_MIN - n} more.`);
-            } else {
-                _setEditorWarning('');
-            }
-        }
-
-        function _renderPromptList() {
-            const list = document.getElementById('promptList');
-            if (!list) return;
-            const frag = document.createDocumentFragment();
-            editorPrompts.forEach((p, i) => {
-                const row = document.createElement('div');
-                row.className = 'prompt-row';
-                row.dataset.idx = String(i);
-
-                const idx = document.createElement('div');
-                idx.className = 'pidx';
-                idx.textContent = String(i + 1);
-                row.appendChild(idx);
-
-                const text = document.createElement('div');
-                text.className = 'ptext';
-                text.textContent = p;
-                row.appendChild(text);
-
-                const editBtn = document.createElement('button');
-                editBtn.type = 'button';
-                editBtn.className = 'prompt-row-btn';
-                editBtn.textContent = 'Edit';
-                editBtn.addEventListener('click', () => _enterEditMode(i));
-                row.appendChild(editBtn);
-
-                const delBtn = document.createElement('button');
-                delBtn.type = 'button';
-                delBtn.className = 'prompt-row-btn danger';
-                delBtn.textContent = '×';
-                delBtn.title = 'Delete this prompt';
-                delBtn.addEventListener('click', () => {
-                    editorPrompts.splice(i, 1);
-                    _renderPromptList();
-                    _updateEditorCount();
-                });
-                row.appendChild(delBtn);
-
-                frag.appendChild(row);
-            });
-            list.innerHTML = '';
-            list.appendChild(frag);
-        }
-
-        function _enterEditMode(i) {
-            const list = document.getElementById('promptList');
-            if (!list) return;
-            const row = list.querySelector(`[data-idx="${i}"]`);
-            if (!row) return;
-            row.classList.add('editing');
-            const txt = row.querySelector('.ptext');
-            const original = editorPrompts[i] || '';
-            const ta = document.createElement('textarea');
-            ta.className = 'ptext-input';
-            ta.value = original;
-            txt.replaceWith(ta);
-            ta.focus();
-            // Replace the two right-hand buttons with Save / Cancel.
-            const btns = row.querySelectorAll('.prompt-row-btn');
-            btns.forEach(b => b.remove());
-
-            const saveBtn = document.createElement('button');
-            saveBtn.type = 'button';
-            saveBtn.className = 'prompt-row-btn';
-            saveBtn.textContent = 'Save';
-            saveBtn.addEventListener('click', () => {
-                const v = ta.value.trim();
-                if (!v) {
-                    editorPrompts.splice(i, 1);
-                } else {
-                    editorPrompts[i] = v;
-                }
-                _renderPromptList();
-                _updateEditorCount();
-            });
-            row.appendChild(saveBtn);
-
-            const cancelBtn = document.createElement('button');
-            cancelBtn.type = 'button';
-            cancelBtn.className = 'prompt-row-btn danger';
-            cancelBtn.textContent = '×';
-            cancelBtn.title = 'Cancel edit';
-            cancelBtn.addEventListener('click', () => _renderPromptList());
-            row.appendChild(cancelBtn);
-        }
-
-        function _wirePromptEditorToolbar() {
-            const add = document.getElementById('promptEditorAdd');
-            if (add && !add.dataset.wired) {
-                add.dataset.wired = '1';
-                add.addEventListener('click', () => {
-                    if (editorPrompts.length >= PROMPT_MAX) {
-                        _setEditorWarning(`Already at the ${PROMPT_MAX}-prompt cap.`);
-                        return;
-                    }
-                    editorPrompts.push('');
-                    _renderPromptList();
-                    _updateEditorCount();
-                    _enterEditMode(editorPrompts.length - 1);
-                });
-            }
-            const reset = document.getElementById('promptEditorReset');
-            if (reset && !reset.dataset.wired) {
-                reset.dataset.wired = '1';
-                reset.addEventListener('click', () => {
-                    editorPrompts = originalPrompts.slice();
-                    _renderPromptList();
-                    _updateEditorCount();
-                });
-            }
-            const cancel = document.getElementById('promptEditorCancel');
-            if (cancel && !cancel.dataset.wired) {
-                cancel.dataset.wired = '1';
-                cancel.addEventListener('click', () => {
-                    _setEditorVisible(false);
-                    const subtitleEl = document.getElementById('initialSubtitle');
-                    if (subtitleEl) subtitleEl.style.display = '';
-                    document.getElementById('formSection').classList.remove('hidden');
-                });
-            }
-        }
-
-        async function _openPromptEditor(input, tier) {
-            // Show the editor shell + loading indicator, hide the form.
-            const subtitleEl = document.getElementById('initialSubtitle');
-            if (subtitleEl) subtitleEl.style.display = 'none';
-            document.getElementById('formSection').classList.add('hidden');
-            document.getElementById('errorMsg').classList.remove('active');
-            _setEditorVisible(true);
-            _wirePromptEditorToolbar();
-            document.getElementById('promptList').innerHTML = '';
-            document.getElementById('promptEditorBrand').textContent = '—';
-            document.getElementById('promptEditorCategory').textContent = '—';
-            _showEditorLoading(true);
-            try {
-                const resp = await fetch('/signal/audit/prompts', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ problem_statement: input, tier: tier }),
-                });
-                const data = await resp.json().catch(() => ({}));
-                if (!resp.ok) {
-                    _setEditorVisible(false);
-                    if (subtitleEl) subtitleEl.style.display = '';
-                    document.getElementById('formSection').classList.remove('hidden');
-                    if (data.code === 'auth_required') {
-                        window.location.href = '/signal/login?next=' + encodeURIComponent('/citation-audit');
-                        return;
-                    }
-                    if (data.code === 'no_credits') {
-                        window.location.href = '/signal/dashboard';
-                        return;
-                    }
-                    document.getElementById('errorMsg').textContent = data.error || 'Could not generate prompts.';
-                    document.getElementById('errorMsg').classList.add('active');
-                    return;
-                }
-                originalPrompts = (data.prompts || []).slice();
-                editorPrompts = originalPrompts.slice();
-                editorMeta = { brand: data.brand || '', category: data.category || '', problem_statement: input, tier: tier };
-                document.getElementById('promptEditorBrand').textContent = editorMeta.brand || '—';
-                document.getElementById('promptEditorCategory').textContent = editorMeta.category || '—';
-                _renderPromptList();
-                _updateEditorCount();
-            } catch (e) {
-                _setEditorVisible(false);
-                if (subtitleEl) subtitleEl.style.display = '';
-                document.getElementById('formSection').classList.remove('hidden');
-                document.getElementById('errorMsg').textContent = 'Network error fetching prompts. Try again.';
-                document.getElementById('errorMsg').classList.add('active');
-            } finally {
-                _showEditorLoading(false);
-            }
-        }
-
-        function runAuditWithPrompts() {
-            // Final-submit handler from the prompt editor.
-            if (editorPrompts.length < PROMPT_MIN) {
-                _setEditorWarning(`Need at least ${PROMPT_MIN} prompts.`);
-                return;
-            }
-            if (editorPrompts.length > PROMPT_MAX) {
-                _setEditorWarning(`Remove ${editorPrompts.length - PROMPT_MAX} prompts to stay under the ${PROMPT_MAX} cap.`);
-                return;
-            }
-            _setEditorVisible(false);
-            const cleaned = editorPrompts.map(p => p.trim()).filter(Boolean);
-            runAudit({
-                input: editorMeta.problem_statement || document.getElementById('problemInput').value.trim(),
-                tier: editorMeta.tier || 'paid',
-                prompts: cleaned,
-                skipEditor: true,
-            });
-        }
+        // MVP branch: prompt editor + paid-tier flow stripped. The full
+        // implementation lives on `feat/pr-signal-finder` and is preserved on
+        // the server side (see /signal/audit/prompts route) but is not
+        // reachable from this UI.
 
         function runAudit(opts) {
             opts = opts || {};
             const input = (opts.input != null ? opts.input : document.getElementById('problemInput').value).trim();
             if (!input) return;
-            const tier = opts.tier || selectedTier || 'free';
-
-            // Paid tier without credits → route to Stripe Checkout immediately.
-            // After payment, the success page auto-logs the user in + restarts the audit.
-            if (tier === 'paid' && (!window.SIGNAL_USER || (window.SIGNAL_CREDITS || 0) < 1)) {
-                buyAndRun(input);
-                return;
-            }
-
-            // Paid tier with credits + no prompts supplied + not autostarting from
-            // Stripe success → show the prompt editor first. (Autostart path
-            // intentionally skips the editor; the user already committed by clicking
-            // Buy and shouldn't be asked to curate before their audit fires.)
-            if (tier === 'paid' && !opts.prompts && !opts.skipEditor) {
-                _openPromptEditor(input, tier);
-                return;
-            }
+            const tier = 'free';
 
             lastAuditContext = { slug: null, problem_statement: input, tier: tier };
 
@@ -1677,16 +1330,11 @@
             document.getElementById('countdownTime').textContent = '0%';
             document.getElementById('countdownEta').textContent = 'estimating...';
             auditStartTime = Date.now();
-            document.getElementById('loadingStep').textContent = tier === 'paid'
-                ? 'Starting paid audit (~3-5 min)...'
-                : 'Starting...';
+            document.getElementById('loadingStep').textContent = 'Starting...';
 
             const form = new FormData();
             form.append('problem_statement', input);
             form.append('tier', tier);
-            if (opts.prompts && opts.prompts.length) {
-                form.append('prompts', JSON.stringify(opts.prompts));
-            }
 
             fetch('/citation-audit', { method: 'POST', body: form }).then(async response => {
                 if (!response.ok && response.headers.get('content-type')?.includes('application/json')) {
@@ -1694,12 +1342,11 @@
                     document.getElementById('loading').classList.remove('active');
                     document.getElementById('formSection').classList.remove('hidden');
                     setSubtitleVisible(true);
-                    if (data.code === 'auth_required') {
-                        window.location.href = '/signal/login?next=' + encodeURIComponent('/citation-audit');
-                        return;
-                    }
-                    if (data.code === 'no_credits') {
-                        window.location.href = '/signal/dashboard';
+                    if (data.code === 'rate_limited') {
+                        document.getElementById('errorMsg').textContent = data.error;
+                        document.getElementById('errorMsg').classList.add('active');
+                        // Auto-open the bespoke modal so they see the upsell.
+                        setTimeout(() => openDemoModal(), 800);
                         return;
                     }
                     document.getElementById('errorMsg').textContent = data.error || 'Something went wrong.';
@@ -1939,24 +1586,23 @@
             }
 
             html += `
+                <div class="feedback-widget" id="feedbackWidget">
+                    <div class="feedback-question">Was this audit useful?</div>
+                    <div class="feedback-actions">
+                        <button class="feedback-btn" data-rating="up" onclick="submitFeedback('up', this)">&#128077; Yes</button>
+                        <button class="feedback-btn" data-rating="down" onclick="submitFeedback('down', this)">&#128078; Not really</button>
+                        <button class="feedback-btn" onclick="openDemoModal()">&#9993;&#65039; Tell Nathan more</button>
+                    </div>
+                    <div class="feedback-thanks" style="display:none">Thanks &mdash; your feedback was recorded.</div>
+                </div>
                 <div class="bespoke-cta">
-                    <div class="bespoke-cta-label">Go deeper</div>
-                    <h3>Run a paid audit — $25</h3>
-                    <p>10x the depth: 100 prompts × 5 LLMs (Claude · ChatGPT · Gemini · Perplexity · Grok). Top 25 editorial targets, expanded partnership + analyst lists, full competitor intel.</p>
-                    <div class="bespoke-stats">
-                        <div class="bespoke-stat"><div class="bespoke-stat-num">100</div><div class="bespoke-stat-label">Prompts</div></div>
-                        <div class="bespoke-stat"><div class="bespoke-stat-num">5</div><div class="bespoke-stat-label">LLMs</div></div>
-                        <div class="bespoke-stat"><div class="bespoke-stat-num">25</div><div class="bespoke-stat-label">Media targets</div></div>
-                    </div>
-                    <button class="cta-buy-btn" id="ctaBuyBtn" onclick="buyCheckout('single', this)">
-                        Buy with Apple Pay, Google Pay, or card &rarr;
+                    <div class="bespoke-cta-label">Want deeper insight?</div>
+                    <h3>Get a bespoke AI citation analysis</h3>
+                    <p>This free audit runs 10 prompts &times; 3 LLMs. A bespoke engagement with Nathan covers 100+ prompts across 10 LLMs, custom-curated for your category &mdash; plus a strategic memo, executive briefing, and ongoing analyst-relations support. Typically a $5K+ engagement.</p>
+                    <button class="cta-buy-btn" onclick="openDemoModal()">
+                        Talk to Nathan about a bespoke audit &rarr;
                     </button>
-                    <div class="cta-payment-note"><strong>$25</strong> · Secure checkout via Stripe · No account required</div>
-                    <div class="cta-error" id="ctaError" style="display:none"></div>
-                    <div class="cta-secondary">
-                        Need a fully bespoke analysis? <strong style="color:#cfd2ff">Custom prompts you co-author</strong>, up to <strong style="color:#cfd2ff">10 LLMs</strong>, top 50+ targets, executive briefing, and a strategic memo. From $5K.
-                        <div style="margin-top:8px"><button class="cta-link-btn" onclick="openDemoModal()">Request a call &rarr;</button></div>
-                    </div>
+                    <div class="cta-payment-note">No payment required to start the conversation.</div>
                 </div>
             `;
 
@@ -1982,6 +1628,23 @@
         }
 
         let lastAuditContext = { slug: null, problem_statement: '' };
+
+        function submitFeedback(rating, btn) {
+            const slug = (lastAuditContext && lastAuditContext.slug) || null;
+            if (!slug) return;
+            btn.classList.add('selected');
+            // Disable the other rating button so we only record one rating per audit.
+            document.querySelectorAll('.feedback-btn[data-rating]').forEach(b => {
+                if (b !== btn) b.disabled = true;
+            });
+            fetch('/signal/feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ slug, rating })
+            }).catch(() => {});
+            const thanks = document.querySelector('.feedback-thanks');
+            if (thanks) thanks.style.display = 'block';
+        }
 
         function openDemoModal() {
             document.getElementById('demoForm').style.display = 'block';
@@ -2083,37 +1746,7 @@
             }
         }
 
-        async function buyCheckout(productKey, btn) {
-            const errEl = document.getElementById('ctaError');
-            if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
-            if (btn) {
-                btn.disabled = true;
-                btn._originalText = btn.innerHTML;
-                btn.innerHTML = 'Opening secure checkout...';
-            }
-            try {
-                const ctx = (typeof lastAuditContext === 'object' && lastAuditContext) ? lastAuditContext : {};
-                const resp = await fetch('/signal/checkout/' + encodeURIComponent(productKey), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ problem_statement: ctx.problem_statement || '' }),
-                });
-                const data = await resp.json().catch(() => ({}));
-                if (resp.ok && data.url) {
-                    window.location.href = data.url;
-                    return;
-                }
-                const msg = (data && data.error) ? data.error : 'Checkout is not available right now.';
-                if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
-                if (btn) { btn.disabled = false; btn.innerHTML = btn._originalText; }
-            } catch (e) {
-                if (errEl) {
-                    errEl.textContent = 'Network error: ' + (e && e.message ? e.message : 'unknown');
-                    errEl.style.display = 'block';
-                }
-                if (btn) { btn.disabled = false; btn.innerHTML = btn._originalText; }
-            }
-        }
+        // MVP branch: buyCheckout removed — no Stripe surfaces in the UI.
 
         // When the user clicks Back from /signal/<slug> back to /citation-audit (which they
         // got to via our pushState after audit completion), force a fresh reload so the
@@ -2129,39 +1762,16 @@
             }
         });
 
-        // Prefill from query string (used after successful checkout to resume the same problem statement).
+        // Prefill from query string (kept for deep-linking the input field).
+        // MVP branch: run_paid / autostart query params removed — those paths
+        // came from the Stripe success flow and have no meaning here.
         (function applyPrefill() {
             try {
                 const params = new URLSearchParams(window.location.search);
                 const prefill = params.get('prefill');
-                const runPaid = params.get('run_paid') === '1';
-                const autostart = params.get('autostart') === '1';
                 if (prefill) {
                     const input = document.getElementById('problemInput');
                     if (input) input.value = prefill;
-                }
-                if (runPaid) {
-                    selectTier('paid');
-                }
-                // After Stripe success, autostart=1 triggers the audit automatically.
-                // Brief delay so the user sees the form populate before it disappears into the loading state.
-                // NOTE: as of the security audit fix, the /signal/checkout/success page
-                // no longer auto-logs-in unauthenticated buyers (the previous behavior
-                // silently logged in anyone who held the session_id URL — a leak vector
-                // via Referer / browser history). The success template only emits this
-                // autostart=1 query string when the buyer was ALREADY signed in.
-                // Anonymous buyers click the magic-link in their email instead, and
-                // arrive here logged in but without autostart — they hit "Run audit" by hand.
-                //
-                // Autostart bypasses the paid-tier prompt editor (skipEditor:true): the
-                // buyer already committed by clicking "Buy" and shouldn't be re-prompted
-                // to curate prompts before their paid audit fires.
-                if (autostart && prefill) {
-                    setTimeout(() => {
-                        try {
-                            runAudit({ skipEditor: true });
-                        } catch (e) { console.error('autostart failed', e); }
-                    }, 600);
                 }
             } catch (e) {}
         })();
