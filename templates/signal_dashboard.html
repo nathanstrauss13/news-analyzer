@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard — AI Citation Audit | PR Signal Finder</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'IBM Plex Sans', sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
+        .container { max-width: 880px; margin: 0 auto; padding: 60px 24px 80px; }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+        .eyebrow { font-size: 13px; font-weight: 500; color: #555; text-transform: uppercase; letter-spacing: 2px; }
+        .auth-cluster { font-size: 13px; color: #888; display: flex; gap: 12px; align-items: center; }
+        .auth-cluster a, .auth-cluster button {
+            color: #cfd2ff; text-decoration: none;
+            border: 1px solid #2a2a4a; padding: 5px 12px; border-radius: 8px;
+            background: transparent; font: inherit; font-weight: 500; cursor: pointer;
+        }
+        .auth-cluster a:hover, .auth-cluster button:hover { border-color: #5c6cff; background: #14142a; }
+        h1 { font-size: 28px; color: #fff; font-weight: 700; margin-bottom: 6px; }
+        .subtitle { font-size: 14px; color: #888; margin-bottom: 28px; }
+        h2 { font-size: 18px; color: #fff; font-weight: 600; margin: 28px 0 12px; }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 18px;
+        }
+        @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+        .card {
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 22px;
+        }
+        .stat-num {
+            font-size: 42px;
+            font-weight: 700;
+            color: #fff;
+            line-height: 1;
+        }
+        .stat-label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1.5px; margin-top: 6px; }
+        .product {
+            margin-top: 14px;
+            border-top: 1px solid #2a2a4a;
+            padding-top: 14px;
+        }
+        .product:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+        .product-name { font-size: 15px; font-weight: 600; color: #fff; }
+        .product-desc { font-size: 12px; color: #888; margin-top: 2px; margin-bottom: 8px; }
+        .product-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .product-price { font-size: 14px; color: #cfd2ff; font-weight: 600; }
+        button.buy {
+            background: linear-gradient(180deg, #5c6cff, #4751e8);
+            color: #fff; border: none;
+            padding: 8px 14px; border-radius: 8px;
+            font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+        }
+        button.buy[disabled] { opacity: 0.5; cursor: not-allowed; }
+        button.buy:hover:not([disabled]) { opacity: 0.95; }
+        .runs-list { list-style: none; }
+        .run-item {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 12px 0; border-bottom: 1px solid #1a1a2e; gap: 12px;
+        }
+        .run-item:last-child { border-bottom: none; }
+        .run-meta { font-size: 12px; color: #888; }
+        .run-statement { color: #cfd2ff; font-size: 14px; flex: 1; }
+        .run-tier {
+            font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px;
+            padding: 2px 8px; border-radius: 8px;
+            border: 1px solid #2a2a4a; color: #888;
+        }
+        .run-tier.paid { color: #5aff8a; border-color: #1c4d2e; }
+        .run-link { color: #6a7aff; text-decoration: none; font-size: 12px; white-space: nowrap; }
+        .run-link:hover { text-decoration: underline; }
+        .empty { color: #888; font-size: 13px; }
+        .flash {
+            background: #1a1a2e; border: 1px solid #2a2a4a;
+            padding: 10px 12px; border-radius: 8px;
+            font-size: 13px; color: #cfd2ff;
+            margin-bottom: 14px;
+        }
+        .audit-cta {
+            background: linear-gradient(135deg, #1a1a3a 0%, #11132a 100%);
+            border: 1px solid #5c6cff;
+            border-radius: 12px;
+            padding: 22px;
+            margin-top: 20px;
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+            flex-wrap: wrap;
+        }
+        .audit-cta a {
+            background: linear-gradient(180deg, #5c6cff, #4751e8);
+            color: #fff; padding: 10px 16px; border-radius: 8px;
+            text-decoration: none; font-weight: 600; font-size: 14px;
+        }
+        .audit-cta a:hover { opacity: 0.95; }
+        .note { font-size: 12px; color: #888; margin-top: 10px; }
+    </style>
+    {% if ga_measurement_id %}
+        <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
+        <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','{{ ga_measurement_id }}');</script>
+    {% endif %}
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="eyebrow">Innate c3 insights — AI Citation Audit</div>
+            <div class="auth-cluster">
+                <span>{{ user.email }}</span>
+                <a href="{{ url_for('citation_audit') }}">Run audit</a>
+                <form method="POST" action="{{ url_for('signal_logout') }}" style="display:inline;margin:0">
+                    <button type="submit">Sign out</button>
+                </form>
+            </div>
+        </div>
+
+        <h1>Your dashboard</h1>
+        <p class="subtitle">Track credits, audit history, and purchases.</p>
+
+        {% with msgs = get_flashed_messages() %}
+            {% for m in msgs %}
+                <div class="flash">{{ m }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        <div class="grid">
+            <div class="card">
+                <div class="stat-num">{{ credits }}</div>
+                <div class="stat-label">Credit{{ '' if credits == 1 else 's' }} remaining</div>
+                {% if credits > 0 %}
+                    <div class="audit-cta" style="margin-top:16px">
+                        <span>Ready to run a paid audit?</span>
+                        <a href="{{ url_for('citation_audit') }}">Run paid audit &rarr;</a>
+                    </div>
+                {% endif %}
+            </div>
+            <div class="card">
+                <div style="font-size:14px;color:#cfd2ff;margin-bottom:6px;font-weight:600">Buy more credits</div>
+                {% if not stripe_configured %}
+                    <div class="note">Stripe is not yet configured on this environment. Set <code>STRIPE_SECRET_KEY</code>, <code>STRIPE_WEBHOOK_SECRET</code>, <code>STRIPE_PRICE_SINGLE</code>, and <code>STRIPE_PRICE_PACK_5</code> in env to enable checkout.</div>
+                {% endif %}
+                {% for p in products %}
+                    <div class="product">
+                        <div class="product-name">{{ p.label }}</div>
+                        <div class="product-desc">{{ p.description }}</div>
+                        <div class="product-row">
+                            <div class="product-price">{{ p.amount_display }}</div>
+                            <button class="buy" type="button"
+                                {% if not stripe_configured or not p.configured %}disabled title="Not configured yet"{% endif %}
+                                onclick="startCheckout('{{ p.key }}', this)">
+                                Buy
+                            </button>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <h2>Audit history</h2>
+        {% if runs %}
+            <ul class="runs-list">
+                {% for r in runs %}
+                    <li class="run-item">
+                        <span class="run-tier {{ 'paid' if r.tier == 'paid' else '' }}">{{ r.tier }}</span>
+                        <span class="run-statement">{{ r.problem_statement or '(no statement saved)' }}</span>
+                        <span class="run-meta">{{ r.prompt_count or '?' }}×{{ r.llm_count or '?' }} · {{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                        {% if r.slug %}
+                            <a class="run-link" href="{{ url_for('view_signal_report', slug=r.slug) }}">View &rarr;</a>
+                        {% endif %}
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <div class="empty">No audits yet. <a class="run-link" href="{{ url_for('citation_audit') }}">Run one &rarr;</a></div>
+        {% endif %}
+
+        <h2>Purchases</h2>
+        {% if purchases %}
+            <ul class="runs-list">
+                {% for p in purchases %}
+                    <li class="run-item">
+                        <span class="run-statement">{{ p.product_label or 'Credits' }} · {{ p.credits_granted }} credit{{ '' if p.credits_granted == 1 else 's' }}</span>
+                        <span class="run-meta">${{ (p.amount_cents / 100) | round(2) }} · {{ p.created_at.strftime('%Y-%m-%d') }}</span>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <div class="empty">No purchases yet.</div>
+        {% endif %}
+    </div>
+
+    <script>
+        async function startCheckout(productKey, btn) {
+            btn.disabled = true;
+            const originalText = btn.textContent;
+            btn.textContent = '...';
+            try {
+                const resp = await fetch('/signal/checkout/' + productKey, { method: 'POST' });
+                const data = await resp.json();
+                if (data.url) {
+                    window.location.href = data.url;
+                } else {
+                    alert(data.error || 'Checkout failed.');
+                    btn.disabled = false;
+                    btn.textContent = originalText;
+                }
+            } catch (e) {
+                alert('Network error: ' + e.message);
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
+        }
+    </script>
+</body>
+</html>

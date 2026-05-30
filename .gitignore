@@ -16,6 +16,12 @@ uploads/
 logs/
 .cache/
 coverage/
+*.db
+*.sqlite
+*.sqlite3
+
+# Claude Code / worktrees
+.claude/
 
 # Node/Frontend (if present)
 node_modules/

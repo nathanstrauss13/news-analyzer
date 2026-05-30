@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in — AI Citation Audit | PR Signal Finder</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'IBM Plex Sans', sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+        .card { max-width: 460px; width: 100%; background: #11132a; border: 1px solid #2a2a4a; border-radius: 14px; padding: 40px 36px; }
+        .eyebrow { font-size: 13px; font-weight: 500; color: #555; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 6px; }
+        h1 { font-size: 24px; color: #fff; font-weight: 700; margin-bottom: 8px; }
+        .subtitle { font-size: 14px; color: #888; margin-bottom: 28px; line-height: 1.5; }
+        label { display: block; font-size: 13px; color: #cfd2ff; margin-bottom: 6px; font-weight: 500; }
+        input[type="email"] {
+            width: 100%;
+            padding: 12px 14px;
+            background: #0a0a0a;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            color: #fff;
+            font-family: inherit;
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+        input[type="email"]:focus { outline: none; border-color: #5c6cff; }
+        button.primary {
+            width: 100%;
+            padding: 12px 16px;
+            background: linear-gradient(180deg, #5c6cff, #4751e8);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        button.primary:hover { opacity: 0.95; }
+        .flash, .sent-note {
+            margin-bottom: 16px;
+            padding: 10px 12px;
+            background: #1a1a2e;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #cfd2ff;
+        }
+        .sent-note { border-color: #5c6cff; }
+        .back-link { margin-top: 16px; font-size: 13px; color: #888; text-align: center; }
+        .back-link a { color: #6a7aff; text-decoration: none; }
+        .back-link a:hover { text-decoration: underline; }
+    </style>
+    {% if ga_measurement_id %}
+        <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
+        <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','{{ ga_measurement_id }}');</script>
+    {% endif %}
+</head>
+<body>
+    <div class="card">
+        <div class="eyebrow">Innate c3 insights</div>
+        <h1>Sign in to AI Citation Audit</h1>
+        <p class="subtitle">We'll email you a one-tap sign-in link. No password.</p>
+
+        {% with msgs = get_flashed_messages() %}
+            {% for m in msgs %}
+                <div class="flash">{{ m }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        {% if sent %}
+            <div class="sent-note">
+                Check your inbox at <strong>{{ email }}</strong>. The link expires in 20 minutes.
+            </div>
+        {% endif %}
+
+        {% if dev_magic_link %}
+            <div class="sent-note" style="border-color:#5aff8a;color:#cfd2ff;background:#0e1a14">
+                <div style="color:#5aff8a;font-weight:600;margin-bottom:6px">Dev mode — email is not configured</div>
+                <div style="font-size:12px;color:#888;margin-bottom:8px">Production would deliver this via SendGrid. Use the link directly for now:</div>
+                <a href="{{ dev_magic_link }}" style="color:#5aff8a;word-break:break-all;text-decoration:underline">Click here to sign in</a>
+            </div>
+        {% endif %}
+
+        <form method="POST" action="{{ url_for('signal_login') }}" novalidate>
+            <input type="hidden" name="next" value="{{ next_url }}">
+            <label for="email">Email address</label>
+            <input type="email" id="email" name="email" autocomplete="email" required placeholder="you@example.com" value="{{ email or '' }}">
+            <button type="submit" class="primary">{% if sent %}Resend sign-in link{% else %}Send me a sign-in link{% endif %}</button>
+        </form>
+
+        <div class="back-link"><a href="{{ url_for('citation_audit') }}">&larr; Back to the audit</a></div>
+    </div>
+</body>
+</html>

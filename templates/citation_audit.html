@@ -1,0 +1,2191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if shared_data %}
+    {# Shared-report URLs (/signal/<slug>) embed a customer's brand + competitive intel.
+       Keep them out of search indexes so a casually-shared link doesn't get scraped. #}
+    <meta name="robots" content="noindex,nofollow">
+    {% endif %}
+    <title>AI Citation Audit | PR Signal Finder — Innate c3 insights</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'IBM Plex Sans', sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 60px 24px;
+        }
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            font-size: 15px;
+            color: #888;
+            margin-bottom: 48px;
+            line-height: 1.5;
+        }
+        .input-group {
+            position: relative;
+            margin-bottom: 16px;
+        }
+        textarea {
+            width: 100%;
+            padding: 16px 20px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 16px;
+            background: #141414;
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            color: #fff;
+            resize: none;
+            outline: none;
+            transition: border-color 0.2s;
+            min-height: 80px;
+        }
+        textarea:focus { border-color: #4a9eff; }
+        textarea::placeholder { color: #555; }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 15px;
+            font-weight: 600;
+            background: #fff;
+            color: #000;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        /* Loading state */
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 60px 0;
+        }
+        .loading.active { display: block; }
+        .countdown-ring {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 24px;
+        }
+        .countdown-ring svg {
+            transform: rotate(-90deg);
+            width: 120px;
+            height: 120px;
+        }
+        .countdown-ring .bg {
+            fill: none;
+            stroke: #1a1a1a;
+            stroke-width: 4;
+        }
+        .countdown-ring .progress {
+            fill: none;
+            stroke: #4a9eff;
+            stroke-width: 4;
+            stroke-linecap: round;
+            transition: stroke-dashoffset 1s linear;
+        }
+        .countdown-time {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            font-weight: 600;
+            color: #fff;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.5px;
+        }
+        .countdown-eta {
+            margin-top: 14px;
+            font-size: 12px;
+            color: #888;
+            font-variant-numeric: tabular-nums;
+            min-height: 16px;
+        }
+        .loading-text {
+            font-size: 14px;
+            color: #666;
+        }
+        .loading-step {
+            font-size: 13px;
+            color: #4a9eff;
+            margin-top: 8px;
+        }
+        .loading-note {
+            font-size: 13px;
+            color: #777;
+            margin: 24px auto 0;
+            max-width: 380px;
+            line-height: 1.55;
+            padding: 12px 16px;
+            background: #111;
+            border: 1px solid #1e1e1e;
+            border-radius: 8px;
+        }
+
+        /* Results */
+        .results { display: none; }
+        .results.active { display: block; }
+        .results-header {
+            margin-bottom: 32px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid #1a1a1a;
+        }
+        .results-header h2 {
+            font-size: 22px;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .brand-pill {
+            display: inline-block;
+            padding: 4px 12px;
+            background: #1a1a2e;
+            border: 1px solid #2a2a4e;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #7a8aff;
+            margin-right: 8px;
+        }
+        .mention-count {
+            font-size: 13px;
+            color: #888;
+            margin-top: 12px;
+        }
+        .mention-count strong {
+            color: #ff6b6b;
+        }
+        /* Audit completion badge — reflects share of planned LLM calls that
+           actually returned a response before the wall-clock deadline. */
+        .completion-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12.5px;
+            margin-top: 10px;
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: 1px solid #1e1e1e;
+            background: #0d130d;
+            color: #aaa;
+            line-height: 1.4;
+        }
+        .completion-badge .dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .completion-badge.full {
+            border-color: #1f3a1f;
+            background: #0d150d;
+            color: #c9e8c9;
+        }
+        .completion-badge.full .dot { background: #5aff8a; }
+        .completion-badge.partial {
+            border-color: #4a3a10;
+            background: #1a1510;
+            color: #f0d49a;
+        }
+        .completion-badge.partial .dot { background: #ffae00; }
+        .completion-badge.thin {
+            border-color: #4a1a1a;
+            background: #1a0d0d;
+            color: #ffc4c4;
+        }
+        .completion-badge.thin .dot { background: #ff6b6b; }
+        .completion-badge .advice {
+            display: block;
+            font-size: 11.5px;
+            opacity: 0.85;
+            margin-top: 2px;
+        }
+        .executive-summary {
+            font-size: 15px;
+            line-height: 1.6;
+            color: #aaa;
+            margin: 20px 0 32px;
+            padding: 16px 20px;
+            background: #111;
+            border-radius: 10px;
+            border-left: 3px solid #4a9eff;
+        }
+
+        /* Competitors */
+        .section-title {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #555;
+            margin-bottom: 16px;
+        }
+        .competitors {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 40px;
+        }
+        .competitor-chip {
+            padding: 6px 14px;
+            background: #1a1210;
+            border: 1px solid #3a2a1a;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #e8a04c;
+        }
+        .competitor-chip .count {
+            color: #aa7030;
+            margin-left: 4px;
+        }
+
+        /* Media targets */
+        .media-card {
+            background: #111;
+            border: 1px solid #1e1e1e;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 16px;
+            transition: border-color 0.2s;
+        }
+        .media-card:hover { border-color: #333; }
+        .media-rank {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #4a9eff;
+            margin-bottom: 8px;
+        }
+        .media-outlet {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .media-reporter {
+            font-size: 14px;
+            color: #888;
+            margin-bottom: 12px;
+        }
+        .media-stat {
+            display: inline-block;
+            padding: 3px 10px;
+            background: #0d1a0d;
+            border: 1px solid #1a3a1a;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #5a9a5a;
+            margin-right: 6px;
+            margin-bottom: 8px;
+        }
+        .media-rationale {
+            font-size: 14px;
+            color: #aaa;
+            line-height: 1.5;
+            margin-top: 12px;
+        }
+        .media-gap {
+            font-size: 13px;
+            color: #e8a04c;
+            margin-top: 8px;
+            padding: 10px 14px;
+            background: #1a1510;
+            border-radius: 8px;
+        }
+        .media-gap strong {
+            color: #ffb860;
+        }
+        .media-domain {
+            font-size: 12px;
+            color: #4a9eff;
+            margin-bottom: 10px;
+            font-family: monospace;
+        }
+        .media-urls {
+            margin-top: 10px;
+            padding: 10px 14px;
+            background: #0a0a14;
+            border-radius: 8px;
+            border: 1px solid #1a1a2e;
+        }
+        .media-urls a {
+            font-size: 12px;
+            color: #6a7aff;
+            text-decoration: none;
+            display: block;
+            padding: 3px 0;
+            word-break: break-all;
+        }
+        .media-urls a:hover { text-decoration: underline; }
+        .media-urls-label {
+            font-size: 11px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+        .citation-total {
+            font-size: 13px;
+            color: #888;
+            margin-top: 4px;
+        }
+        .action-bar {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 16px 0 4px;
+        }
+        .action-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 9px 16px;
+            border-radius: 8px;
+            border: 1px solid #2a2a4a;
+            background: #14142a;
+            color: #cfd2ff;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background .15s, border-color .15s, transform .1s;
+        }
+        .action-btn:hover { background: #1a1a3a; border-color: #5c6cff; }
+        .action-btn:active { transform: translateY(1px); }
+        .action-btn[disabled] { opacity: 0.6; cursor: not-allowed; }
+        .toast {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%) translateY(20px);
+            background: #14142a;
+            border: 1px solid #5c6cff;
+            color: #cfd2ff;
+            padding: 10px 18px;
+            border-radius: 8px;
+            font-size: 13px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s, transform .2s;
+            z-index: 2000;
+        }
+        .toast.active {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+        .share-banner {
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 10px;
+            padding: 14px 18px;
+            margin-bottom: 24px;
+            font-size: 13px;
+            color: #cfd2ff;
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .share-banner a {
+            color: #6a7aff;
+            text-decoration: none;
+        }
+        .share-banner a:hover { text-decoration: underline; }
+
+        .signal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+        .signal-header .auth-cluster {
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: #888;
+        }
+        .signal-header .auth-cluster a {
+            color: #cfd2ff;
+            text-decoration: none;
+            border: 1px solid #2a2a4a;
+            padding: 5px 12px;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+        .signal-header .auth-cluster a:hover {
+            border-color: #5c6cff;
+            background: #14142a;
+        }
+        .signal-header .auth-cluster .credit-badge {
+            background: #14142a;
+            border: 1px solid #5c6cff;
+            color: #cfd2ff;
+            padding: 4px 10px;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        .signal-header .auth-cluster .logout-btn {
+            background: transparent;
+            border: 1px solid #2a2a4a;
+            color: #aaa;
+            font: inherit;
+            padding: 5px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        .signal-header .auth-cluster .logout-btn:hover { border-color: #5c6cff; color: #cfd2ff; }
+        /* Tier picker (segmented two-button) on the main search page */
+        .tier-picker {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin: 14px 0 18px;
+        }
+        @media (max-width: 560px) { .tier-picker { grid-template-columns: 1fr; } }
+        .tier-card {
+            position: relative;
+            padding: 14px 16px;
+            border-radius: 10px;
+            border: 1px solid #2a2a4a;
+            background: #11132a;
+            cursor: pointer;
+            transition: border-color .15s, background .15s, transform .1s;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .tier-card:hover { border-color: #4a5aff; background: #14163a; }
+        .tier-card.selected {
+            border-color: #5c6cff;
+            background: linear-gradient(135deg, #1a1a3a 0%, #14163a 100%);
+            box-shadow: 0 0 0 2px rgba(92, 108, 255, 0.25);
+        }
+        .tier-card input { position: absolute; opacity: 0; pointer-events: none; }
+        .tier-card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .tier-card-title { font-size: 14px; font-weight: 600; color: #fff; }
+        .tier-card-price {
+            font-size: 13px;
+            font-weight: 700;
+            color: #cfd2ff;
+            background: #1a1a3a;
+            padding: 2px 8px;
+            border-radius: 12px;
+        }
+        .tier-card-price.free { color: #5aff8a; background: #0e1a14; }
+        .tier-card-detail {
+            font-size: 12px;
+            color: #888;
+            line-height: 1.45;
+        }
+        .tier-card-detail strong { color: #cfd2ff; font-weight: 600; }
+        /* Legacy tier-toggle styles retained as fallback if other templates depend on them */
+        .tier-toggle { display: none; }
+        .form-hint-link {
+            font-size: 13px;
+            color: #888;
+            margin-top: 12px;
+        }
+        .form-hint-link a {
+            color: #6a7aff;
+            text-decoration: none;
+        }
+        .form-hint-link a:hover { text-decoration: underline; }
+
+        .save-panel {
+            margin-top: 36px;
+            padding: 22px 24px;
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+        }
+        .save-panel-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #7a8aff;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 8px;
+        }
+        .save-panel h4 {
+            font-size: 17px;
+            color: #fff;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        .save-panel-desc {
+            font-size: 13px;
+            color: #888;
+            line-height: 1.55;
+            margin-bottom: 14px;
+        }
+        .save-panel-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .save-panel-actions .action-btn { padding: 11px 18px; font-size: 14px; }
+        .save-panel-actions .action-btn.primary-action {
+            background: linear-gradient(180deg, #5c6cff, #4751e8);
+            border-color: transparent;
+            color: #fff;
+            font-weight: 600;
+        }
+        .save-panel-actions .action-btn.primary-action:hover { opacity: 0.95; }
+        .share-url-display {
+            width: 100%;
+            padding: 9px 12px;
+            background: #0a0a0a;
+            border: 1px solid #1a1a2e;
+            border-radius: 8px;
+            color: #6a7aff;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+        }
+        .share-url-display:focus { outline: none; border-color: #5c6cff; }
+
+        /* Prompts used */
+        .prompts-toggle {
+            font-size: 13px;
+            color: #555;
+            cursor: pointer;
+            margin-top: 32px;
+            padding: 12px 0;
+            border-top: 1px solid #1a1a1a;
+        }
+        .prompts-toggle:hover { color: #888; }
+        .prompts-list {
+            display: none;
+            margin-top: 12px;
+        }
+        .prompts-list.open { display: block; }
+        .prompts-list li {
+            font-size: 13px;
+            color: #666;
+            padding: 6px 0;
+            list-style: none;
+            border-bottom: 1px solid #111;
+        }
+        .prompts-list li::before {
+            content: counter(prompt-counter) ".";
+            counter-increment: prompt-counter;
+            color: #444;
+            margin-right: 8px;
+            font-variant-numeric: tabular-nums;
+        }
+        .prompts-list ol {
+            counter-reset: prompt-counter;
+            padding: 0;
+        }
+
+        .error-msg {
+            display: none;
+            padding: 16px 20px;
+            background: #1a1010;
+            border: 1px solid #3a1a1a;
+            border-radius: 10px;
+            color: #ff6b6b;
+            font-size: 14px;
+        }
+        .error-msg.active { display: block; }
+
+        .form-section { }
+        .form-section.hidden { display: none; }
+
+        /* Prompt editor (paid-tier two-phase flow) */
+        .prompt-editor { display: none; margin-top: 6px; }
+        .prompt-editor.active { display: block; }
+        .prompt-editor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+        .prompt-editor-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+            margin: 0;
+        }
+        .prompt-editor-desc {
+            font-size: 13px;
+            color: #888;
+            line-height: 1.55;
+            margin: 4px 0 0;
+        }
+        .prompt-editor-desc strong { color: #cfd2ff; font-weight: 600; }
+        .prompt-editor-count {
+            font-size: 12px;
+            color: #7a8aff;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            white-space: nowrap;
+        }
+        .prompt-list {
+            max-height: 480px;
+            overflow-y: auto;
+            border: 1px solid #1c2230;
+            border-radius: 10px;
+            padding: 6px;
+            background: #0a0a18;
+            margin: 14px 0;
+        }
+        .prompt-row {
+            display: grid;
+            grid-template-columns: 28px 1fr auto auto;
+            gap: 8px;
+            align-items: center;
+            padding: 8px 10px;
+            border-bottom: 1px solid #11142a;
+            background: transparent;
+        }
+        .prompt-row:last-child { border-bottom: none; }
+        .prompt-row.editing { grid-template-columns: 28px 1fr auto; align-items: start; }
+        .prompt-row .pidx {
+            font-size: 12px;
+            color: #555;
+            font-variant-numeric: tabular-nums;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .prompt-row .ptext {
+            font-size: 13px;
+            color: #cfd2ff;
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        .prompt-row .ptext-input {
+            width: 100%;
+            min-height: 60px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 13px;
+            color: #cfd2ff;
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 6px;
+            padding: 8px 10px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+        .prompt-row .ptext-input:focus {
+            outline: none;
+            border-color: #5c6cff;
+        }
+        .prompt-row-btn {
+            background: transparent;
+            border: 1px solid #2a2a4a;
+            color: #888;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 12px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .prompt-row-btn:hover { color: #cfd2ff; border-color: #5c6cff; }
+        .prompt-row-btn.danger { color: #aaa; }
+        .prompt-row-btn.danger:hover { color: #ff6b6b; border-color: #5a2030; }
+        .prompt-editor-toolbar {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .prompt-editor-toolbar-left,
+        .prompt-editor-toolbar-right {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .prompt-editor-warning {
+            display: none;
+            margin: 6px 0 12px;
+            font-size: 12px;
+            color: #ffb86b;
+            background: #1a1408;
+            border: 1px solid #3a2818;
+            border-radius: 6px;
+            padding: 8px 12px;
+        }
+        .prompt-editor-warning.active { display: block; }
+        .prompt-editor-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+        .prompt-editor-loading {
+            display: none;
+            font-size: 13px;
+            color: #888;
+            padding: 14px 0;
+        }
+        .prompt-editor-loading.active { display: block; }
+
+        /* Bespoke CTA */
+        /* Institutional targets */
+        .institutional-card {
+            background: #0e1118;
+            border: 1px solid #1c2230;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 12px;
+        }
+        .institutional-rank {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #8a9aff;
+            margin-bottom: 6px;
+        }
+        .institutional-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .institutional-type {
+            display: inline-block;
+            font-size: 11px;
+            padding: 2px 8px;
+            background: #1a1f30;
+            border: 1px solid #2a3550;
+            border-radius: 5px;
+            color: #8a9aff;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .institutional-play {
+            font-size: 13px;
+            color: #a8b0c8;
+            line-height: 1.5;
+            margin-top: 10px;
+        }
+        .section-note {
+            font-size: 12px;
+            color: #777;
+            margin: -8px 0 16px;
+            font-style: italic;
+        }
+
+        /* Analyst targets */
+        .analyst-card {
+            background: #150e18;
+            border: 1px solid #2a1c30;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 12px;
+        }
+        .analyst-rank {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #d088ff;
+            margin-bottom: 6px;
+        }
+        .analyst-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .analyst-type {
+            display: inline-block;
+            font-size: 11px;
+            padding: 2px 8px;
+            background: #1f1228;
+            border: 1px solid #3a2050;
+            border-radius: 5px;
+            color: #d088ff;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .analyst-eval {
+            display: inline-block;
+            font-size: 11px;
+            padding: 2px 8px;
+            background: #18101f;
+            border: 1px solid #3a2050;
+            border-radius: 5px;
+            color: #c898e8;
+            margin-right: 4px;
+            margin-bottom: 4px;
+        }
+        .analyst-play {
+            font-size: 13px;
+            color: #c8b8d8;
+            line-height: 1.5;
+            margin-top: 10px;
+        }
+
+        .bespoke-cta {
+            margin-top: 40px;
+            padding: 28px;
+            background: linear-gradient(135deg, #0e1830 0%, #1a1530 100%);
+            border: 1px solid #2a3a5e;
+            border-radius: 14px;
+        }
+        .bespoke-cta-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #7a8aff;
+            margin-bottom: 10px;
+        }
+        .bespoke-cta h3 {
+            font-size: 20px;
+            color: #fff;
+            margin-bottom: 10px;
+            line-height: 1.3;
+        }
+        .bespoke-cta p {
+            font-size: 14px;
+            color: #aaa;
+            line-height: 1.55;
+            margin-bottom: 18px;
+        }
+        .bespoke-stats {
+            display: flex;
+            gap: 14px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .bespoke-stat {
+            flex: 1;
+            min-width: 130px;
+            padding: 12px 14px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid #1e2a4e;
+            border-radius: 8px;
+        }
+        .bespoke-stat-num {
+            font-size: 22px;
+            font-weight: 700;
+            color: #fff;
+        }
+        .bespoke-stat-label {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 2px;
+        }
+        .bespoke-btn {
+            padding: 12px 22px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            background: #4a9eff;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .bespoke-btn:hover { background: #6ab0ff; }
+        .cta-buy-btn {
+            width: 100%;
+            padding: 14px 22px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 15px;
+            font-weight: 600;
+            background: linear-gradient(180deg, #5c6cff, #4751e8);
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: opacity .2s, transform .1s;
+            box-shadow: 0 8px 22px rgba(92, 108, 255, 0.25);
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+        }
+        .cta-buy-btn:hover { opacity: 0.95; }
+        .cta-buy-btn:active { transform: translateY(1px); }
+        .cta-buy-btn[disabled] { opacity: 0.55; cursor: not-allowed; }
+        .cta-payment-note {
+            font-size: 12px;
+            color: #888;
+            margin-top: 10px;
+            text-align: center;
+            letter-spacing: 0.5px;
+        }
+        .cta-payment-note strong { color: #cfd2ff; }
+        .cta-secondary {
+            margin-top: 18px;
+            padding-top: 18px;
+            border-top: 1px solid #1e2a4e;
+            font-size: 13px;
+            color: #888;
+            text-align: center;
+            line-height: 1.55;
+        }
+        .cta-link-btn {
+            background: transparent;
+            border: none;
+            color: #6a7aff;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            padding: 0;
+            text-decoration: underline;
+            text-underline-offset: 3px;
+        }
+        .cta-link-btn:hover { color: #8a9aff; }
+        .cta-error {
+            margin-top: 10px;
+            padding: 8px 12px;
+            background: rgba(255, 107, 107, 0.1);
+            border: 1px solid rgba(255, 107, 107, 0.4);
+            border-radius: 6px;
+            color: #ff6b6b;
+            font-size: 13px;
+            text-align: center;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.75);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: #141414;
+            border: 1px solid #2a2a2a;
+            border-radius: 14px;
+            padding: 32px;
+            max-width: 460px;
+            width: 100%;
+            position: relative;
+        }
+        .modal-close {
+            position: absolute;
+            top: 14px;
+            right: 18px;
+            font-size: 22px;
+            color: #555;
+            cursor: pointer;
+            background: none;
+            border: none;
+            line-height: 1;
+        }
+        .modal-close:hover { color: #aaa; }
+        .modal h3 {
+            font-size: 20px;
+            color: #fff;
+            margin-bottom: 6px;
+        }
+        .modal p {
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 22px;
+            line-height: 1.5;
+        }
+        .modal-field {
+            margin-bottom: 12px;
+        }
+        .modal-field label {
+            display: block;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .modal-field input {
+            width: 100%;
+            padding: 10px 14px;
+            background: #0a0a0a;
+            border: 1px solid #2a2a2a;
+            border-radius: 8px;
+            color: #fff;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 14px;
+            outline: none;
+        }
+        .modal-field input:focus { border-color: #4a9eff; }
+        .modal-submit {
+            width: 100%;
+            margin-top: 8px;
+            padding: 12px;
+            background: #fff;
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .modal-submit:hover { opacity: 0.9; }
+        .modal-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+        .modal-error {
+            display: none;
+            margin-top: 10px;
+            font-size: 13px;
+            color: #ff6b6b;
+        }
+        .modal-error.active { display: block; }
+        .modal-success {
+            text-align: center;
+            padding: 16px 0;
+        }
+        .modal-success h3 {
+            color: #5aff8a;
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="signal-header">
+            <span style="font-size:13px;font-weight:500;color:#555;text-transform:uppercase;letter-spacing:2px">Innate c3 insights</span>
+            <div class="auth-cluster">
+                {% if signal_user %}
+                    <span class="credit-badge">{{ signal_credits or 0 }} credit{{ '' if signal_credits == 1 else 's' }}</span>
+                    <a href="{{ url_for('signal_dashboard') }}">Dashboard</a>
+                    <form method="POST" action="{{ url_for('signal_logout') }}" style="display:inline;margin:0">
+                        <button type="submit" class="logout-btn">Sign out</button>
+                    </form>
+                {% else %}
+                    <a href="{{ url_for('signal_login') }}">Sign in</a>
+                {% endif %}
+            </div>
+        </div>
+        <h1>AI Citation Audit | PR Signal Finder</h1>
+        <p class="subtitle" id="initialSubtitle">What do you want your brand to be known for? We'll query Claude, ChatGPT, and Gemini to find which media outlets are shaping AI responses about your competitors — and where earned media will close the gap.</p>
+
+        <div class="form-section" id="formSection">
+            <div class="input-group">
+                <textarea id="problemInput" placeholder="e.g. I want ACME Corp to be known as the premier brand of widgets" rows="3"></textarea>
+            </div>
+
+            <div class="tier-picker" role="radiogroup" aria-label="Audit depth">
+                <label class="tier-card selected" id="tierCardFree" data-tier="free">
+                    <input type="radio" name="tier" value="free" checked>
+                    <div class="tier-card-head">
+                        <span class="tier-card-title">Free audit</span>
+                        <span class="tier-card-price free">Free</span>
+                    </div>
+                    <div class="tier-card-detail"><strong>10 prompts × 3 LLMs</strong> · Claude · ChatGPT · Gemini · ~60-90s</div>
+                </label>
+                <label class="tier-card" id="tierCardPaid" data-tier="paid">
+                    <input type="radio" name="tier" value="paid">
+                    <div class="tier-card-head">
+                        <span class="tier-card-title">Deeper audit</span>
+                        <span class="tier-card-price" id="tierCardPaidPrice">
+                            {% if signal_user and (signal_credits or 0) > 0 %}1 credit{% else %}$25{% endif %}
+                        </span>
+                    </div>
+                    <div class="tier-card-detail"><strong>100 prompts × 5 LLMs</strong> · adds Perplexity + Grok · top 25 targets · ~3-5 min</div>
+                </label>
+            </div>
+
+            <button class="btn" id="submitBtn" onclick="runAudit()">Identify PR Targets</button>
+            <div class="form-hint-link" id="formHint" style="display:none"></div>
+        </div>
+
+        <div class="error-msg" id="errorMsg"></div>
+
+        <div class="prompt-editor" id="promptEditor">
+            <div class="prompt-editor-header">
+                <div>
+                    <h2 class="prompt-editor-title">Curate your audit prompts</h2>
+                    <p class="prompt-editor-desc">
+                        Brand: <strong id="promptEditorBrand">—</strong> · Category: <strong id="promptEditorCategory">—</strong><br>
+                        Edit, delete, or add prompts to control exactly what the audit asks. Min 10, max 200.
+                    </p>
+                </div>
+                <div class="prompt-editor-count" id="promptEditorCount">100 prompts ready</div>
+            </div>
+            <div class="prompt-editor-warning" id="promptEditorWarning"></div>
+            <div class="prompt-editor-toolbar">
+                <div class="prompt-editor-toolbar-left">
+                    <button type="button" class="prompt-row-btn" id="promptEditorAdd">+ Add prompt</button>
+                    <button type="button" class="prompt-row-btn" id="promptEditorReset">Reset to auto-generated</button>
+                </div>
+                <div class="prompt-editor-toolbar-right">
+                    <button type="button" class="prompt-row-btn" id="promptEditorCancel">Cancel</button>
+                </div>
+            </div>
+            <div class="prompt-list" id="promptList"></div>
+            <div class="prompt-editor-loading" id="promptEditorLoading">Generating prompts...</div>
+            <div class="prompt-editor-actions">
+                <button class="btn" id="promptEditorRun" onclick="runAuditWithPrompts()">Run audit with these prompts</button>
+            </div>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="countdown-ring">
+                <svg viewBox="0 0 120 120">
+                    <circle class="bg" cx="60" cy="60" r="52"/>
+                    <circle class="progress" id="countdownProgress" cx="60" cy="60" r="52"
+                        stroke-dasharray="326.73" stroke-dashoffset="326.73"/>
+                </svg>
+                <div class="countdown-time" id="countdownTime">0%</div>
+            </div>
+            <div class="loading-text">Identifying your PR targets</div>
+            <div class="loading-step" id="loadingStep">Generating search prompts...</div>
+            <div class="countdown-eta" id="countdownEta"></div>
+        </div>
+
+        <div class="results" id="results"></div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        window.SHARED_REPORT = {{ shared_data | tojson | safe if shared_data else 'null' }};
+        window.SIGNAL_SHARE_URL = {{ share_url | tojson | safe if share_url else 'null' }};
+        window.SIGNAL_PDF_URL   = {{ pdf_url   | tojson | safe if pdf_url   else 'null' }};
+        window.SIGNAL_CSV_URL   = {{ csv_url   | tojson | safe if csv_url   else 'null' }};
+        window.SIGNAL_JSON_URL  = {{ json_url  | tojson | safe if json_url  else 'null' }};
+        window.SIGNAL_USER      = {{ 'true' if signal_user else 'false' }};
+        window.SIGNAL_CREDITS   = {{ signal_credits or 0 }};
+    </script>
+
+    <div class="modal-overlay" id="demoModal" onclick="if(event.target===this)closeDemoModal()">
+        <div class="modal">
+            <button class="modal-close" onclick="closeDemoModal()">&times;</button>
+            <div id="demoForm">
+                <h3>Request a call</h3>
+                <p>For a bespoke AI citation analysis — $5K+ engagement delivered personally by Nathan. Includes custom prompts you co-author (so the audit reflects how your real customers actually ask), up to 10 LLMs (Claude · ChatGPT · Gemini · Perplexity · Grok · plus regional and reasoning models), top 50+ media targets, executive briefing, and a strategic memo tailored to your category, competitors, and earned-media goals.</p>
+                <p style="font-size:13px;color:#888;margin-bottom:14px">Drop your details and Nathan will reach out within 24 hours to scope the engagement.</p>
+                <div class="modal-field">
+                    <label>Name *</label>
+                    <input type="text" id="demoName" autocomplete="name">
+                </div>
+                <div class="modal-field">
+                    <label>Title</label>
+                    <input type="text" id="demoTitle" autocomplete="organization-title">
+                </div>
+                <div class="modal-field">
+                    <label>Organization</label>
+                    <input type="text" id="demoOrg" autocomplete="organization">
+                </div>
+                <div class="modal-field">
+                    <label>Email *</label>
+                    <input type="email" id="demoEmail" autocomplete="email">
+                </div>
+                <button type="button" class="modal-submit" id="demoSubmit" onclick="submitDemoRequest()">Request a call</button>
+                <div class="modal-error" id="demoError"></div>
+            </div>
+            <div class="modal-success" id="demoSuccess" style="display:none">
+                <h3>Thanks — we'll be in touch.</h3>
+                <p>Your request is in. Nathan will reach out within 24 hours to scope your bespoke analysis.</p>
+                <p id="demoDevNote" style="display:none;margin-top:12px;font-size:12px;color:#5aff8a;border:1px solid #1c4d2e;background:#0e1a14;padding:8px 12px;border-radius:6px">
+                    Dev mode — your request is saved locally. In production this would email <strong>nstrauss@innatec3.com</strong> via SendGrid.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const CIRCUMFERENCE = 2 * Math.PI * 52; // 326.73
+
+        // Tuned to actual wall-clock split after LLM parallelization + URL validation:
+        // free audit ~60-90s, paid audit ~3-5min. The extract step is now ~25% of
+        // wall time (it does URL HEAD checks for every cited URL).
+        const STEP_WEIGHTS = {
+            prompts:  0.10,
+            llm:      0.45,
+            extract:  0.25,
+            analysis: 0.20,
+        };
+
+        const STEP_ORDER = ['prompts', 'llm', 'extract', 'analysis'];
+
+        // --- Learning ETA: store recent audit durations per tier in localStorage,
+        // blend the median historical duration with linear extrapolation so the
+        // ETA is sensible from the very first progress event. ---
+        function _getHistory(tier) {
+            try {
+                const arr = JSON.parse(localStorage.getItem('audit_dur_' + tier) || '[]');
+                if (arr.length < 1) return null;
+                const sorted = [...arr].sort((a, b) => a - b);
+                return sorted[Math.floor(sorted.length / 2)];
+            } catch (e) { return null; }
+        }
+        function _recordDuration(tier, seconds) {
+            try {
+                const key = 'audit_dur_' + tier;
+                const arr = JSON.parse(localStorage.getItem(key) || '[]');
+                arr.push(seconds);
+                while (arr.length > 10) arr.shift();
+                localStorage.setItem(key, JSON.stringify(arr));
+            } catch (e) {}
+        }
+        // Reasonable defaults until the user has run their first audit of each tier.
+        const _ETA_DEFAULTS = { free: 75, paid: 240 };
+
+        let auditStartTime = null;
+
+        function formatDuration(secs) {
+            if (!isFinite(secs) || secs < 0) return '';
+            if (secs < 60) return `${Math.round(secs)}s`;
+            const m = Math.floor(secs / 60);
+            const s = Math.round(secs % 60);
+            return s > 0 ? `${m}m ${s}s` : `${m}m`;
+        }
+
+        function updateProgress(step, detail, current, total) {
+            const stepEl = document.getElementById('loadingStep');
+            const progressEl = document.getElementById('countdownProgress');
+            const timeEl = document.getElementById('countdownTime');
+            const etaEl = document.getElementById('countdownEta');
+
+            stepEl.textContent = detail;
+
+            const stepIdx = STEP_ORDER.indexOf(step);
+            let filled = 0;
+            for (let i = 0; i < stepIdx; i++) filled += STEP_WEIGHTS[STEP_ORDER[i]];
+            if (total > 0) filled += STEP_WEIGHTS[step] * (current / total);
+
+            const clamped = Math.min(filled, 1);
+            const offset = CIRCUMFERENCE * (1 - clamped);
+            progressEl.style.strokeDashoffset = offset.toString();
+            timeEl.textContent = `${Math.round(clamped * 100)}%`;
+
+            // Learning ETA: blend the user's historical median for this tier with
+            // a linear extrapolation from current progress. At low progress we lean
+            // on the historical estimate; as progress fills, linear takes over.
+            if (etaEl && auditStartTime) {
+                if (clamped >= 0.99) {
+                    etaEl.textContent = 'almost done';
+                } else {
+                    const elapsed = (Date.now() - auditStartTime) / 1000;
+                    const tier = (lastAuditContext && lastAuditContext.tier) || 'free';
+                    const historical = _getHistory(tier) || _ETA_DEFAULTS[tier] || 75;
+                    const historicalRemaining = Math.max(2, historical - elapsed);
+                    const linearETA = clamped > 0 ? elapsed * (1 - clamped) / clamped : historicalRemaining;
+                    // Weight historical higher when we're early (less reliable linear).
+                    const w = Math.max(0, 1 - clamped);  // 1.0 → 0
+                    const remaining = w * historicalRemaining + (1 - w) * linearETA;
+                    etaEl.textContent = `~${formatDuration(remaining)} left  ·  ${formatDuration(elapsed)} elapsed`;
+                }
+            }
+        }
+
+        // --- Tier picker state ---
+        let selectedTier = 'free';
+
+        function selectTier(tier) {
+            selectedTier = tier;
+            const free = document.getElementById('tierCardFree');
+            const paid = document.getElementById('tierCardPaid');
+            if (free) free.classList.toggle('selected', tier === 'free');
+            if (paid) paid.classList.toggle('selected', tier === 'paid');
+            document.querySelectorAll('input[name="tier"]').forEach(r => { r.checked = r.value === tier; });
+            updateSubmitLabel();
+        }
+
+        function updateSubmitLabel() {
+            const btn = document.getElementById('submitBtn');
+            const hint = document.getElementById('formHint');
+            if (!btn) return;
+            const credits = (window.SIGNAL_CREDITS || 0);
+            const loggedIn = !!window.SIGNAL_USER;
+            if (selectedTier === 'paid') {
+                if (loggedIn && credits > 0) {
+                    btn.textContent = 'Run deeper audit (1 credit) →';
+                    if (hint) hint.style.display = 'none';
+                } else {
+                    btn.textContent = 'Buy & run deeper audit · $25 →';
+                    if (hint) {
+                        hint.innerHTML = 'Apple Pay · Google Pay · Card. Secure checkout via Stripe. Your audit starts right after payment.';
+                        hint.style.display = '';
+                    }
+                }
+            } else {
+                btn.textContent = 'Identify PR Targets';
+                if (hint) hint.style.display = 'none';
+            }
+        }
+
+        // Wire tier-card clicks once the DOM is parsed.
+        (function attachTierCardHandlers() {
+            const free = document.getElementById('tierCardFree');
+            const paid = document.getElementById('tierCardPaid');
+            if (free) free.addEventListener('click', (e) => { e.preventDefault(); selectTier('free'); });
+            if (paid) paid.addEventListener('click', (e) => { e.preventDefault(); selectTier('paid'); });
+            updateSubmitLabel();
+        })();
+
+        async function buyAndRun(problemStatement) {
+            const btn = document.getElementById('submitBtn');
+            const errEl = document.getElementById('errorMsg');
+            if (errEl) errEl.classList.remove('active');
+            const origLabel = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Opening secure checkout...';
+            try {
+                const resp = await fetch('/signal/checkout/single', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ problem_statement: problemStatement, autostart: true }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok && data.url) {
+                    window.location.href = data.url;
+                    return;
+                }
+                if (errEl) {
+                    errEl.textContent = (data && data.error) ? data.error : 'Checkout is not available right now.';
+                    errEl.classList.add('active');
+                }
+                btn.disabled = false;
+                btn.textContent = origLabel;
+            } catch (e) {
+                if (errEl) {
+                    errEl.textContent = 'Network error: ' + (e && e.message ? e.message : 'unknown');
+                    errEl.classList.add('active');
+                }
+                btn.disabled = false;
+                btn.textContent = origLabel;
+            }
+        }
+
+        // --- Paid-tier prompt-editor state ---
+        // `editorPrompts` holds the working draft; `originalPrompts` is the
+        // server-generated list used by the Reset button. `editorMeta` keeps
+        // the brand + category + problem statement we received from
+        // /signal/audit/prompts so we don't re-derive them on submit.
+        let editorPrompts = [];
+        let originalPrompts = [];
+        let editorMeta = { brand: '', category: '', problem_statement: '', tier: 'paid' };
+        const PROMPT_MIN = 10;
+        const PROMPT_MAX = 200;
+
+        function _setEditorVisible(on) {
+            const ed = document.getElementById('promptEditor');
+            if (!ed) return;
+            ed.classList.toggle('active', !!on);
+        }
+
+        function _showEditorLoading(on) {
+            const l = document.getElementById('promptEditorLoading');
+            if (l) l.classList.toggle('active', !!on);
+            const btn = document.getElementById('promptEditorRun');
+            if (btn) btn.disabled = !!on;
+        }
+
+        function _setEditorWarning(msg) {
+            const w = document.getElementById('promptEditorWarning');
+            if (!w) return;
+            if (!msg) {
+                w.classList.remove('active');
+                w.textContent = '';
+            } else {
+                w.textContent = msg;
+                w.classList.add('active');
+            }
+        }
+
+        function _updateEditorCount() {
+            const el = document.getElementById('promptEditorCount');
+            if (!el) return;
+            const n = editorPrompts.length;
+            el.textContent = `${n} prompt${n === 1 ? '' : 's'} ready`;
+            if (n > PROMPT_MAX) {
+                _setEditorWarning(`Too many prompts (${n}). Cap is ${PROMPT_MAX}. Remove ${n - PROMPT_MAX} before running.`);
+            } else if (n < PROMPT_MIN) {
+                _setEditorWarning(`Need at least ${PROMPT_MIN} prompts to run an audit. Add ${PROMPT_MIN - n} more.`);
+            } else {
+                _setEditorWarning('');
+            }
+        }
+
+        function _renderPromptList() {
+            const list = document.getElementById('promptList');
+            if (!list) return;
+            const frag = document.createDocumentFragment();
+            editorPrompts.forEach((p, i) => {
+                const row = document.createElement('div');
+                row.className = 'prompt-row';
+                row.dataset.idx = String(i);
+
+                const idx = document.createElement('div');
+                idx.className = 'pidx';
+                idx.textContent = String(i + 1);
+                row.appendChild(idx);
+
+                const text = document.createElement('div');
+                text.className = 'ptext';
+                text.textContent = p;
+                row.appendChild(text);
+
+                const editBtn = document.createElement('button');
+                editBtn.type = 'button';
+                editBtn.className = 'prompt-row-btn';
+                editBtn.textContent = 'Edit';
+                editBtn.addEventListener('click', () => _enterEditMode(i));
+                row.appendChild(editBtn);
+
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.className = 'prompt-row-btn danger';
+                delBtn.textContent = '×';
+                delBtn.title = 'Delete this prompt';
+                delBtn.addEventListener('click', () => {
+                    editorPrompts.splice(i, 1);
+                    _renderPromptList();
+                    _updateEditorCount();
+                });
+                row.appendChild(delBtn);
+
+                frag.appendChild(row);
+            });
+            list.innerHTML = '';
+            list.appendChild(frag);
+        }
+
+        function _enterEditMode(i) {
+            const list = document.getElementById('promptList');
+            if (!list) return;
+            const row = list.querySelector(`[data-idx="${i}"]`);
+            if (!row) return;
+            row.classList.add('editing');
+            const txt = row.querySelector('.ptext');
+            const original = editorPrompts[i] || '';
+            const ta = document.createElement('textarea');
+            ta.className = 'ptext-input';
+            ta.value = original;
+            txt.replaceWith(ta);
+            ta.focus();
+            // Replace the two right-hand buttons with Save / Cancel.
+            const btns = row.querySelectorAll('.prompt-row-btn');
+            btns.forEach(b => b.remove());
+
+            const saveBtn = document.createElement('button');
+            saveBtn.type = 'button';
+            saveBtn.className = 'prompt-row-btn';
+            saveBtn.textContent = 'Save';
+            saveBtn.addEventListener('click', () => {
+                const v = ta.value.trim();
+                if (!v) {
+                    editorPrompts.splice(i, 1);
+                } else {
+                    editorPrompts[i] = v;
+                }
+                _renderPromptList();
+                _updateEditorCount();
+            });
+            row.appendChild(saveBtn);
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'prompt-row-btn danger';
+            cancelBtn.textContent = '×';
+            cancelBtn.title = 'Cancel edit';
+            cancelBtn.addEventListener('click', () => _renderPromptList());
+            row.appendChild(cancelBtn);
+        }
+
+        function _wirePromptEditorToolbar() {
+            const add = document.getElementById('promptEditorAdd');
+            if (add && !add.dataset.wired) {
+                add.dataset.wired = '1';
+                add.addEventListener('click', () => {
+                    if (editorPrompts.length >= PROMPT_MAX) {
+                        _setEditorWarning(`Already at the ${PROMPT_MAX}-prompt cap.`);
+                        return;
+                    }
+                    editorPrompts.push('');
+                    _renderPromptList();
+                    _updateEditorCount();
+                    _enterEditMode(editorPrompts.length - 1);
+                });
+            }
+            const reset = document.getElementById('promptEditorReset');
+            if (reset && !reset.dataset.wired) {
+                reset.dataset.wired = '1';
+                reset.addEventListener('click', () => {
+                    editorPrompts = originalPrompts.slice();
+                    _renderPromptList();
+                    _updateEditorCount();
+                });
+            }
+            const cancel = document.getElementById('promptEditorCancel');
+            if (cancel && !cancel.dataset.wired) {
+                cancel.dataset.wired = '1';
+                cancel.addEventListener('click', () => {
+                    _setEditorVisible(false);
+                    const subtitleEl = document.getElementById('initialSubtitle');
+                    if (subtitleEl) subtitleEl.style.display = '';
+                    document.getElementById('formSection').classList.remove('hidden');
+                });
+            }
+        }
+
+        async function _openPromptEditor(input, tier) {
+            // Show the editor shell + loading indicator, hide the form.
+            const subtitleEl = document.getElementById('initialSubtitle');
+            if (subtitleEl) subtitleEl.style.display = 'none';
+            document.getElementById('formSection').classList.add('hidden');
+            document.getElementById('errorMsg').classList.remove('active');
+            _setEditorVisible(true);
+            _wirePromptEditorToolbar();
+            document.getElementById('promptList').innerHTML = '';
+            document.getElementById('promptEditorBrand').textContent = '—';
+            document.getElementById('promptEditorCategory').textContent = '—';
+            _showEditorLoading(true);
+            try {
+                const resp = await fetch('/signal/audit/prompts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ problem_statement: input, tier: tier }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    _setEditorVisible(false);
+                    if (subtitleEl) subtitleEl.style.display = '';
+                    document.getElementById('formSection').classList.remove('hidden');
+                    if (data.code === 'auth_required') {
+                        window.location.href = '/signal/login?next=' + encodeURIComponent('/citation-audit');
+                        return;
+                    }
+                    if (data.code === 'no_credits') {
+                        window.location.href = '/signal/dashboard';
+                        return;
+                    }
+                    document.getElementById('errorMsg').textContent = data.error || 'Could not generate prompts.';
+                    document.getElementById('errorMsg').classList.add('active');
+                    return;
+                }
+                originalPrompts = (data.prompts || []).slice();
+                editorPrompts = originalPrompts.slice();
+                editorMeta = { brand: data.brand || '', category: data.category || '', problem_statement: input, tier: tier };
+                document.getElementById('promptEditorBrand').textContent = editorMeta.brand || '—';
+                document.getElementById('promptEditorCategory').textContent = editorMeta.category || '—';
+                _renderPromptList();
+                _updateEditorCount();
+            } catch (e) {
+                _setEditorVisible(false);
+                if (subtitleEl) subtitleEl.style.display = '';
+                document.getElementById('formSection').classList.remove('hidden');
+                document.getElementById('errorMsg').textContent = 'Network error fetching prompts. Try again.';
+                document.getElementById('errorMsg').classList.add('active');
+            } finally {
+                _showEditorLoading(false);
+            }
+        }
+
+        function runAuditWithPrompts() {
+            // Final-submit handler from the prompt editor.
+            if (editorPrompts.length < PROMPT_MIN) {
+                _setEditorWarning(`Need at least ${PROMPT_MIN} prompts.`);
+                return;
+            }
+            if (editorPrompts.length > PROMPT_MAX) {
+                _setEditorWarning(`Remove ${editorPrompts.length - PROMPT_MAX} prompts to stay under the ${PROMPT_MAX} cap.`);
+                return;
+            }
+            _setEditorVisible(false);
+            const cleaned = editorPrompts.map(p => p.trim()).filter(Boolean);
+            runAudit({
+                input: editorMeta.problem_statement || document.getElementById('problemInput').value.trim(),
+                tier: editorMeta.tier || 'paid',
+                prompts: cleaned,
+                skipEditor: true,
+            });
+        }
+
+        function runAudit(opts) {
+            opts = opts || {};
+            const input = (opts.input != null ? opts.input : document.getElementById('problemInput').value).trim();
+            if (!input) return;
+            const tier = opts.tier || selectedTier || 'free';
+
+            // Paid tier without credits → route to Stripe Checkout immediately.
+            // After payment, the success page auto-logs the user in + restarts the audit.
+            if (tier === 'paid' && (!window.SIGNAL_USER || (window.SIGNAL_CREDITS || 0) < 1)) {
+                buyAndRun(input);
+                return;
+            }
+
+            // Paid tier with credits + no prompts supplied + not autostarting from
+            // Stripe success → show the prompt editor first. (Autostart path
+            // intentionally skips the editor; the user already committed by clicking
+            // Buy and shouldn't be asked to curate before their audit fires.)
+            if (tier === 'paid' && !opts.prompts && !opts.skipEditor) {
+                _openPromptEditor(input, tier);
+                return;
+            }
+
+            lastAuditContext = { slug: null, problem_statement: input, tier: tier };
+
+            const subtitleEl = document.getElementById('initialSubtitle');
+            const setSubtitleVisible = (visible) => { if (subtitleEl) subtitleEl.style.display = visible ? '' : 'none'; };
+            setSubtitleVisible(false);
+            document.getElementById('formSection').classList.add('hidden');
+            document.getElementById('errorMsg').classList.remove('active');
+            document.getElementById('loading').classList.add('active');
+            document.getElementById('results').classList.remove('active');
+
+            const progressEl = document.getElementById('countdownProgress');
+            progressEl.style.strokeDashoffset = CIRCUMFERENCE.toString();
+            document.getElementById('countdownTime').textContent = '0%';
+            document.getElementById('countdownEta').textContent = 'estimating...';
+            auditStartTime = Date.now();
+            document.getElementById('loadingStep').textContent = tier === 'paid'
+                ? 'Starting paid audit (~3-5 min)...'
+                : 'Starting...';
+
+            const form = new FormData();
+            form.append('problem_statement', input);
+            form.append('tier', tier);
+            if (opts.prompts && opts.prompts.length) {
+                form.append('prompts', JSON.stringify(opts.prompts));
+            }
+
+            fetch('/citation-audit', { method: 'POST', body: form }).then(async response => {
+                if (!response.ok && response.headers.get('content-type')?.includes('application/json')) {
+                    const data = await response.json().catch(() => ({}));
+                    document.getElementById('loading').classList.remove('active');
+                    document.getElementById('formSection').classList.remove('hidden');
+                    setSubtitleVisible(true);
+                    if (data.code === 'auth_required') {
+                        window.location.href = '/signal/login?next=' + encodeURIComponent('/citation-audit');
+                        return;
+                    }
+                    if (data.code === 'no_credits') {
+                        window.location.href = '/signal/dashboard';
+                        return;
+                    }
+                    document.getElementById('errorMsg').textContent = data.error || 'Something went wrong.';
+                    document.getElementById('errorMsg').classList.add('active');
+                    return;
+                }
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                function read() {
+                    reader.read().then(({ done, value }) => {
+                        if (done) return;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop();
+                        for (const line of lines) {
+                            if (!line.startsWith('data: ')) continue;
+                            try {
+                                const msg = JSON.parse(line.slice(6));
+                                if (msg.type === 'progress') {
+                                    updateProgress(msg.step, msg.detail, msg.current, msg.total);
+                                } else if (msg.type === 'result') {
+                                    // Record audit duration so the learning ETA gets better.
+                                    if (auditStartTime) {
+                                        const dur = (Date.now() - auditStartTime) / 1000;
+                                        _recordDuration((lastAuditContext && lastAuditContext.tier) || 'free', dur);
+                                    }
+                                    document.getElementById('loading').classList.remove('active');
+                                    lastAuditContext.slug = msg.data.slug || null;
+                                    renderResults(msg.data);
+                                    // Update the URL to the shareable slug so the browser's Back
+                                    // button (from a 404, sign-in page, or any subsequent nav)
+                                    // returns to THIS report instead of reloading the empty form.
+                                    // The /signal/<slug> route re-renders the saved report.
+                                    if (msg.data.slug) {
+                                        try {
+                                            const newPath = '/signal/' + msg.data.slug;
+                                            window.history.pushState({slug: msg.data.slug}, '', newPath);
+                                            if (msg.data.brand) {
+                                                document.title = msg.data.brand + ' signal report — AI Citation Audit';
+                                            }
+                                        } catch (e) {}
+                                    }
+                                    return;
+                                } else if (msg.type === 'error') {
+                                    document.getElementById('loading').classList.remove('active');
+                                    document.getElementById('formSection').classList.remove('hidden');
+                                    setSubtitleVisible(true);
+                                    document.getElementById('errorMsg').textContent = msg.error || 'Something went wrong.';
+                                    document.getElementById('errorMsg').classList.add('active');
+                                    return;
+                                }
+                            } catch (e) {}
+                        }
+                        read();
+                    });
+                }
+                read();
+            }).catch(() => {
+                document.getElementById('loading').classList.remove('active');
+                document.getElementById('formSection').classList.remove('hidden');
+                setSubtitleVisible(true);
+                document.getElementById('errorMsg').textContent = 'Network error. Please try again.';
+                document.getElementById('errorMsg').classList.add('active');
+            });
+        }
+
+        function renderResults(data) {
+            const el = document.getElementById('results');
+            const competitors = (data.competitors || [])
+                .sort((a, b) => b.mention_count - a.mention_count)
+                .slice(0, 8);
+
+            const targets = (data.media_targets || []).slice(0, 5);
+
+            const slug = data.slug || null;
+            const origin = window.location.origin;
+            const shareUrl = window.SIGNAL_SHARE_URL || (slug ? `${origin}/signal/${slug}` : null);
+            const pdfUrl   = window.SIGNAL_PDF_URL   || (slug ? `${origin}/signal/${slug}.pdf` : null);
+            const csvUrl   = window.SIGNAL_CSV_URL   || (slug ? `${origin}/signal/${slug}.csv` : null);
+            // Raw JSON download only exposed when the payload was saved with the full
+            // per-response data (newer audits). Older payloads silently omit the button.
+            const jsonUrl  = (data.full_responses_available && (window.SIGNAL_JSON_URL || (slug ? `${origin}/signal/${slug}.json` : null))) || null;
+
+            // Audit completion badge — shows how many of the planned LLM
+            // calls actually returned a response before the wall-clock
+            // deadline. Hidden when the audit ran before this field existed.
+            const completedN = Number(data.responses_completed);
+            const plannedN = Number(data.responses_planned);
+            const rateN = Number(data.completion_rate);
+            let completionBadge = '';
+            if (Number.isFinite(completedN) && Number.isFinite(plannedN) && plannedN > 0) {
+                const pct = Math.round((Number.isFinite(rateN) ? rateN : completedN / plannedN) * 100);
+                let cls = 'full';
+                let label = `Audit completed: ${completedN}/${plannedN} responses (${pct}%)`;
+                let advice = '';
+                if (rateN < 0.7) {
+                    cls = 'thin';
+                    label = `Audit partially completed: ${completedN}/${plannedN} responses (${pct}%). The slowest LLMs were cancelled by the wall-clock deadline.`;
+                    advice = '<span class="advice">Consider re-running for fuller coverage.</span>';
+                } else if (rateN < 0.95) {
+                    cls = 'partial';
+                    label = `Audit partially completed: ${completedN}/${plannedN} responses (${pct}%). The slowest LLMs may have been cancelled by the wall-clock deadline.`;
+                }
+                completionBadge = `<div class="completion-badge ${cls}"><span class="dot"></span><span>${esc(label)}${advice}</span></div>`;
+            }
+
+            let html = `
+                <div class="results-header">
+                    <h2>Signal Report</h2>
+                    <span class="brand-pill">${esc(data.brand)}</span>
+                    <span class="brand-pill">${esc(data.category)}</span>
+                    <div class="mention-count">
+                        Your brand was cited in <strong>${data.brand_mention_count || 0} of ${data.total_responses || 30}</strong> AI responses
+                    </div>
+                    ${completionBadge}
+                    <div class="citation-total">
+                        ${data.total_citations_extracted || 0} citation URLs extracted across ${data.total_responses || 30} responses
+                    </div>
+                    ${(shareUrl || pdfUrl || csvUrl || jsonUrl) ? `
+                        <div class="action-bar">
+                            ${shareUrl ? `<button class="action-btn" id="shareBtn" onclick="copyShareLink('${esc(shareUrl)}')">Share report</button>` : ''}
+                            ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
+                            ${csvUrl ? `<a class="action-btn" href="${esc(csvUrl)}" rel="noopener">Download CSV</a>` : ''}
+                            ${jsonUrl ? `<a class="action-btn" href="${esc(jsonUrl)}" rel="noopener" title="Full raw audit data including every LLM response and citation">Download raw data (JSON)</a>` : ''}
+                        </div>
+                    ` : ''}
+                </div>
+                <div class="executive-summary">${esc(data.executive_summary || '')}</div>
+            `;
+
+            if (competitors.length) {
+                html += `<div class="section-title">Top competitors in AI responses</div><div class="competitors">`;
+                for (const c of competitors) {
+                    html += `<span class="competitor-chip">${esc(c.name)}<span class="count">${c.mention_count}x</span></span>`;
+                }
+                html += `</div>`;
+            }
+
+            html += `<div class="section-title">Top 5 editorial media targets — based on actual LLM citations</div>`;
+            for (const t of targets) {
+                const sampleUrls = (t.sample_urls || []).slice(0, 10);
+                const llms = (t.cited_by_llms || []);
+                html += `
+                    <div class="media-card">
+                        <div class="media-rank">#${t.rank} target</div>
+                        <div class="media-outlet">${esc(t.outlet)}</div>
+                        ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
+                        ${t.reporter ? `<div class="media-reporter">${esc(t.reporter)}</div>` : ''}
+                        <span class="media-stat">Cited ${t.citation_frequency}x across responses</span>
+                        ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
+                        ${(t.competitors_citing || []).map(c => `<span class="competitor-chip" style="font-size:12px;padding:3px 8px">${esc(c)}</span>`).join('')}
+                        <div class="media-rationale">${esc(t.rationale)}</div>
+                        ${t.gap_insight ? `<div class="media-gap"><strong>Gap:</strong> ${esc(t.gap_insight)}</div>` : ''}
+                        ${sampleUrls.length ? `
+                            <div class="media-urls">
+                                <div class="media-urls-label">Cited URLs</div>
+                                ${sampleUrls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }
+
+            const institutional = (data.institutional_targets || []).slice(0, 5);
+            if (institutional.length) {
+                html += `<div class="section-title" style="margin-top:32px">Associations, authorities & partnerships</div>`;
+                html += `<div class="section-note">These trade associations, certification bodies, advocacy non-profits, .gov, and .edu sources also shape AI responses — but require partnership, sponsorship, certification, or research collaboration rather than traditional PR pitching.</div>`;
+                for (const t of institutional) {
+                    const sampleUrls = (t.sample_urls || []).slice(0, 10);
+                    const llms = (t.cited_by_llms || []);
+                    html += `
+                        <div class="institutional-card">
+                            <div class="institutional-rank">#${t.rank} partnership target</div>
+                            <div class="institutional-name">${esc(t.institution)}</div>
+                            ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
+                            ${t.type ? `<span class="institutional-type">${esc(t.type)}</span><br>` : ''}
+                            <span class="media-stat">Cited ${t.citation_frequency}x across responses</span>
+                            ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
+                            <div class="institutional-play">${esc(t.partnership_play || '')}</div>
+                            ${sampleUrls.length ? `
+                                <div class="media-urls">
+                                    <div class="media-urls-label">Cited URLs</div>
+                                    ${sampleUrls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join('')}
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }
+            }
+
+            const analysts = (data.analyst_targets || []).slice(0, 5);
+            if (analysts.length) {
+                html += `<div class="section-title" style="margin-top:32px">Industry analyst citations</div>`;
+                html += `<div class="section-note">These analyst firms shape AI responses through reports and evaluations (Magic Quadrants, Waves, MarketScapes). Influence is via analyst relations — briefings, inclusion in evaluations, sponsored research — not pitching.</div>`;
+                for (const t of analysts) {
+                    const sampleUrls = (t.sample_urls || []).slice(0, 10);
+                    const llms = (t.cited_by_llms || []);
+                    const evals = (t.evaluations_referenced || []);
+                    html += `
+                        <div class="analyst-card">
+                            <div class="analyst-rank">#${t.rank} analyst target</div>
+                            <div class="analyst-name">${esc(t.firm)}</div>
+                            ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
+                            ${t.type ? `<span class="analyst-type">${esc(t.type)}</span><br>` : ''}
+                            <span class="media-stat">Cited ${t.citation_frequency}x across responses</span>
+                            ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
+                            ${evals.length ? `<div style="margin-top:8px">${evals.map(e => `<span class="analyst-eval">${esc(e)}</span>`).join('')}</div>` : ''}
+                            <div class="analyst-play">${esc(t.analyst_play || '')}</div>
+                            ${sampleUrls.length ? `
+                                <div class="media-urls">
+                                    <div class="media-urls-label">Cited URLs</div>
+                                    ${sampleUrls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join('')}
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }
+            }
+
+            if (shareUrl || pdfUrl || csvUrl || jsonUrl) {
+                html += `
+                    <div class="save-panel">
+                        <div class="save-panel-label">Save & share</div>
+                        <h4>Hold onto this report</h4>
+                        <div class="save-panel-desc">Anyone with the link can view this report. The PDF includes the full target list with cited URLs; the CSV lets you sort/filter the target list in Excel or Google Sheets; the JSON contains every LLM response and citation for re-analysis.</div>
+                        <div class="save-panel-actions">
+                            ${shareUrl ? `<button class="action-btn primary-action" onclick="copyShareLink('${esc(shareUrl)}')">Copy share link</button>` : ''}
+                            ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
+                            ${csvUrl ? `<a class="action-btn" href="${esc(csvUrl)}" rel="noopener">Download CSV</a>` : ''}
+                            ${jsonUrl ? `<a class="action-btn" href="${esc(jsonUrl)}" rel="noopener">Download raw data (JSON)</a>` : ''}
+                        </div>
+                        ${shareUrl ? `<input type="text" class="share-url-display" value="${esc(shareUrl)}" readonly onclick="this.select()">` : ''}
+                    </div>
+                `;
+            }
+
+            html += `
+                <div class="bespoke-cta">
+                    <div class="bespoke-cta-label">Go deeper</div>
+                    <h3>Run a paid audit — $25</h3>
+                    <p>10x the depth: 100 prompts × 5 LLMs (Claude · ChatGPT · Gemini · Perplexity · Grok). Top 25 editorial targets, expanded partnership + analyst lists, full competitor intel.</p>
+                    <div class="bespoke-stats">
+                        <div class="bespoke-stat"><div class="bespoke-stat-num">100</div><div class="bespoke-stat-label">Prompts</div></div>
+                        <div class="bespoke-stat"><div class="bespoke-stat-num">5</div><div class="bespoke-stat-label">LLMs</div></div>
+                        <div class="bespoke-stat"><div class="bespoke-stat-num">25</div><div class="bespoke-stat-label">Media targets</div></div>
+                    </div>
+                    <button class="cta-buy-btn" id="ctaBuyBtn" onclick="buyCheckout('single', this)">
+                        Buy with Apple Pay, Google Pay, or card &rarr;
+                    </button>
+                    <div class="cta-payment-note"><strong>$25</strong> · Secure checkout via Stripe · No account required</div>
+                    <div class="cta-error" id="ctaError" style="display:none"></div>
+                    <div class="cta-secondary">
+                        Need a fully bespoke analysis? <strong style="color:#cfd2ff">Custom prompts you co-author</strong>, up to <strong style="color:#cfd2ff">10 LLMs</strong>, top 50+ targets, executive briefing, and a strategic memo. From $5K.
+                        <div style="margin-top:8px"><button class="cta-link-btn" onclick="openDemoModal()">Request a call &rarr;</button></div>
+                    </div>
+                </div>
+            `;
+
+            if (data.prompts_used && data.prompts_used.length) {
+                html += `
+                    <div class="prompts-toggle" onclick="this.nextElementSibling.classList.toggle('open')">
+                        View ${data.prompts_used.length} prompts used &#9662;
+                    </div>
+                    <div class="prompts-list">
+                        <ol>${data.prompts_used.map(p => `<li>${esc(p)}</li>`).join('')}</ol>
+                    </div>
+                `;
+            }
+
+            el.innerHTML = html;
+            el.classList.add('active');
+        }
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s || '';
+            return d.innerHTML;
+        }
+
+        let lastAuditContext = { slug: null, problem_statement: '' };
+
+        function openDemoModal() {
+            document.getElementById('demoForm').style.display = 'block';
+            document.getElementById('demoSuccess').style.display = 'none';
+            document.getElementById('demoError').classList.remove('active');
+            document.getElementById('demoModal').classList.add('active');
+            setTimeout(() => document.getElementById('demoName').focus(), 50);
+        }
+        function closeDemoModal() {
+            document.getElementById('demoModal').classList.remove('active');
+        }
+
+        async function submitDemoRequest() {
+            const name = document.getElementById('demoName').value.trim();
+            const title = document.getElementById('demoTitle').value.trim();
+            const org = document.getElementById('demoOrg').value.trim();
+            const email = document.getElementById('demoEmail').value.trim();
+            const errEl = document.getElementById('demoError');
+            const btn = document.getElementById('demoSubmit');
+
+            errEl.classList.remove('active');
+            if (!name || !email) {
+                errEl.textContent = 'Name and email are required.';
+                errEl.classList.add('active');
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Submitting...';
+            try {
+                const resp = await fetch('/citation-audit/request-demo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name, title, org, email,
+                        slug: lastAuditContext.slug,
+                        problem_statement: lastAuditContext.problem_statement,
+                    }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    errEl.textContent = data.error || 'Something went wrong.';
+                    errEl.classList.add('active');
+                    btn.disabled = false;
+                    btn.textContent = 'Request a call';
+                    return;
+                }
+                document.getElementById('demoForm').style.display = 'none';
+                document.getElementById('demoSuccess').style.display = 'block';
+                const devNote = document.getElementById('demoDevNote');
+                if (devNote) devNote.style.display = data.dev ? 'block' : 'none';
+            } catch (e) {
+                console.error('Demo request failed:', e);
+                errEl.textContent = 'Network error: ' + (e && e.message ? e.message : 'unknown');
+                errEl.classList.add('active');
+                btn.disabled = false;
+                btn.textContent = 'Request a call';
+            }
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') closeDemoModal();
+        });
+
+        const problemInputEl = document.getElementById('problemInput');
+        if (problemInputEl) {
+            problemInputEl.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    runAudit();
+                }
+            });
+        }
+
+        function showToast(text) {
+            const t = document.getElementById('toast');
+            t.textContent = text;
+            t.classList.add('active');
+            clearTimeout(showToast._timer);
+            showToast._timer = setTimeout(() => t.classList.remove('active'), 2200);
+        }
+
+        async function copyShareLink(url) {
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(url);
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.value = url;
+                    ta.style.position = 'fixed';
+                    ta.style.left = '-9999px';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                }
+                showToast('Share link copied');
+            } catch (e) {
+                showToast('Copy failed — link: ' + url);
+            }
+        }
+
+        async function buyCheckout(productKey, btn) {
+            const errEl = document.getElementById('ctaError');
+            if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+            if (btn) {
+                btn.disabled = true;
+                btn._originalText = btn.innerHTML;
+                btn.innerHTML = 'Opening secure checkout...';
+            }
+            try {
+                const ctx = (typeof lastAuditContext === 'object' && lastAuditContext) ? lastAuditContext : {};
+                const resp = await fetch('/signal/checkout/' + encodeURIComponent(productKey), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ problem_statement: ctx.problem_statement || '' }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok && data.url) {
+                    window.location.href = data.url;
+                    return;
+                }
+                const msg = (data && data.error) ? data.error : 'Checkout is not available right now.';
+                if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
+                if (btn) { btn.disabled = false; btn.innerHTML = btn._originalText; }
+            } catch (e) {
+                if (errEl) {
+                    errEl.textContent = 'Network error: ' + (e && e.message ? e.message : 'unknown');
+                    errEl.style.display = 'block';
+                }
+                if (btn) { btn.disabled = false; btn.innerHTML = btn._originalText; }
+            }
+        }
+
+        // When the user clicks Back from /signal/<slug> back to /citation-audit (which they
+        // got to via our pushState after audit completion), force a fresh reload so the
+        // form view is clean — otherwise the in-memory results would still be visible
+        // even though the URL has reset.
+        window.addEventListener('popstate', function() {
+            const path = window.location.pathname;
+            if (path === '/citation-audit') {
+                window.location.reload();
+            } else if (path.startsWith('/signal/') && !path.endsWith('.pdf')) {
+                // Back/forward to a /signal/<slug> URL — let the server render the saved report.
+                window.location.reload();
+            }
+        });
+
+        // Prefill from query string (used after successful checkout to resume the same problem statement).
+        (function applyPrefill() {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                const prefill = params.get('prefill');
+                const runPaid = params.get('run_paid') === '1';
+                const autostart = params.get('autostart') === '1';
+                if (prefill) {
+                    const input = document.getElementById('problemInput');
+                    if (input) input.value = prefill;
+                }
+                if (runPaid) {
+                    selectTier('paid');
+                }
+                // After Stripe success, autostart=1 triggers the audit automatically.
+                // Brief delay so the user sees the form populate before it disappears into the loading state.
+                // NOTE: as of the security audit fix, the /signal/checkout/success page
+                // no longer auto-logs-in unauthenticated buyers (the previous behavior
+                // silently logged in anyone who held the session_id URL — a leak vector
+                // via Referer / browser history). The success template only emits this
+                // autostart=1 query string when the buyer was ALREADY signed in.
+                // Anonymous buyers click the magic-link in their email instead, and
+                // arrive here logged in but without autostart — they hit "Run audit" by hand.
+                //
+                // Autostart bypasses the paid-tier prompt editor (skipEditor:true): the
+                // buyer already committed by clicking "Buy" and shouldn't be re-prompted
+                // to curate prompts before their paid audit fires.
+                if (autostart && prefill) {
+                    setTimeout(() => {
+                        try {
+                            runAudit({ skipEditor: true });
+                        } catch (e) { console.error('autostart failed', e); }
+                    }, 600);
+                }
+            } catch (e) {}
+        })();
+
+        // Shared-view bootstrap: if the server injected a saved report, skip the input form.
+        if (window.SHARED_REPORT) {
+            const sharedSubtitle = document.getElementById('initialSubtitle');
+            if (sharedSubtitle) sharedSubtitle.style.display = 'none';
+            document.getElementById('formSection').classList.add('hidden');
+            const loading = document.getElementById('loading');
+            if (loading) loading.classList.remove('active');
+            const data = window.SHARED_REPORT;
+            lastAuditContext = { slug: data.slug || null, problem_statement: '' };
+            renderResults(data);
+
+            if (window.SIGNAL_SHARE_URL) {
+                const banner = document.createElement('div');
+                banner.className = 'share-banner';
+                banner.innerHTML = `<span>Viewing a shared PR Signal Finder report.</span>`
+                    + `<span><a href="/citation-audit">Run your own &rarr;</a></span>`;
+                const results = document.getElementById('results');
+                results.insertBefore(banner, results.firstChild);
+            }
+        }
+    </script>
+</body>
+</html>

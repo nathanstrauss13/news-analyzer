@@ -3,7 +3,12 @@ services:
     name: news-analyzer
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    # NOTE: this render.yaml is reference-only — the live Render dashboard for the
+    # pr-signal-finder service overrides this with its own start command. Keep this
+    # value in sync with the dashboard so anyone deploying from yaml gets a working
+    # service. The flags are required for SSE: --timeout protects long audits;
+    # gthread + threads handles concurrent SSE streams without blocking.
+    startCommand: gunicorn app:app --timeout 1000 --worker-class gthread --threads 4
     envVars:
       - key: NEWS_API_KEY
         sync: false

@@ -6,23 +6,99 @@ import requests
 import html
 import uuid
 import io
+import csv
+import queue
+import threading
+import secrets
+import ipaddress
+import socket
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+
+# Use the OS native trust store (macOS keychain / Windows cert store / Linux /etc/ssl).
+# Fixes "self-signed certificate in certificate chain" on Python.org Python builds
+# whose bundled CA path is missing. Harmless no-op on platforms where it's not needed.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
 from PIL import Image, ImageDraw, ImageFont
-from collections import Counter
 from datetime import datetime, timedelta
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file
+import hashlib
+from functools import wraps
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response, session, abort
 from markupsafe import Markup
 from dotenv import load_dotenv
 from anthropic import Anthropic
 from openai import OpenAI
+from google import genai
 from dateutil.parser import parse
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 from utils.simple_file_processor import SimpleMediaFileProcessor
 
-load_dotenv()
+load_dotenv(override=True)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "your_secret_key_here")
+
+# Cookie/session hardening — kills the basic cross-site CSRF vector on
+# credit-spending POSTs and protects the magic-link session cookie in transit.
+# SESSION_COOKIE_SECURE is fine for prod (HTTPS-only); local dev over plain
+# HTTP just means the cookie won't be set, which is the safer default.
+app.config.update(
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+)
+
+# ---------------------------------------------------------------------------
+# Simple in-memory rate limiter for /signal/login. Keyed by email + IP so a
+# single bad actor can't burn through tokens for many emails, and a single
+# email can't get spammed from many IPs. Process-local — fine for Render
+# Starter's single-instance gunicorn; switch to Redis if we scale horizontally.
+# ---------------------------------------------------------------------------
+_login_rate = defaultdict(list)  # key (email or ip) → [unix_ts, ...]
+_LOGIN_RATE_LIMIT = 5            # attempts per window
+_LOGIN_RATE_WINDOW = 600         # seconds (10 min)
+
+
+def _check_login_rate(key):
+    """Returns True if the request is under the limit (and records this hit).
+    Returns False if the caller should be rejected."""
+    now = datetime.utcnow().timestamp()
+    _login_rate[key] = [t for t in _login_rate[key] if now - t < _LOGIN_RATE_WINDOW]
+    if len(_login_rate[key]) >= _LOGIN_RATE_LIMIT:
+        return False
+    _login_rate[key].append(now)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# SSRF guard for outbound URL verification (_resolve_and_verify_urls).
+# Citation URLs are pulled from LLM output, so we can't trust them. Resolve
+# the hostname to an IP and reject anything that points at private/loopback/
+# link-local / reserved space — this prevents the production HEAD requests
+# from being weaponized to probe internal services (Render's metadata, etc.).
+# ---------------------------------------------------------------------------
+def _is_safe_url(url):
+    try:
+        host = url.split('/')[2].split(':')[0]
+        if not host:
+            return False
+        # Resolve all A/AAAA records — reject if any of them is unsafe space.
+        for info in socket.getaddrinfo(host, None):
+            ip = ipaddress.ip_address(info[4][0])
+            if (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+                return False
+        return True
+    except Exception:
+        # If we can't resolve safely, don't fetch — fail closed.
+        return False
+
 
 # File upload configuration
 UPLOAD_FOLDER = 'uploads'
@@ -36,8 +112,20 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
 file_processor = SimpleMediaFileProcessor(os.environ.get("ANTHROPIC_API_KEY"))
 
 # Initialize SQLAlchemy
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///waitlist.db')
+# Render's Postgres provides URLs starting with `postgres://`, but SQLAlchemy 2.x
+# requires `postgresql://`. Normalize so the existing app config works against
+# either local SQLite or production Postgres without further edits.
+_db_url = os.environ.get('DATABASE_URL', 'sqlite:///waitlist.db')
+if _db_url.startswith('postgres://'):
+    _db_url = _db_url.replace('postgres://', 'postgresql://', 1)
+app.config['SQLALCHEMY_DATABASE_URI'] = _db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Postgres-friendly pool settings: recycle stale connections, validate on checkout.
+# Harmless on SQLite (the pool is single-connection anyway).
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+    'pool_recycle': 280,  # under Render Postgres's default 5-min idle timeout
+}
 db = SQLAlchemy(app)
 
 # Define the WaitingList model
@@ -83,6 +171,55 @@ class Subscription(db.Model):
     unsubscribe_token = db.Column(db.String(64), nullable=False, unique=True, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
+# ---------------------------------------------------------------------------
+# PR Signal Finder — paid-tier models
+# ---------------------------------------------------------------------------
+
+class SignalUser(db.Model):
+    __tablename__ = 'signal_users'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    last_login_at = db.Column(db.DateTime, nullable=True)
+
+class CreditBalance(db.Model):
+    __tablename__ = 'credit_balances'
+    user_id = db.Column(db.Integer, db.ForeignKey('signal_users.id'), primary_key=True)
+    credits_remaining = db.Column(db.Integer, default=0, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class Purchase(db.Model):
+    __tablename__ = 'purchases'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('signal_users.id'), index=True, nullable=False)
+    stripe_session_id = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    amount_cents = db.Column(db.Integer, nullable=False)
+    credits_granted = db.Column(db.Integer, nullable=False)
+    product_label = db.Column(db.String(64), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+class AuditRun(db.Model):
+    __tablename__ = 'audit_runs'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('signal_users.id'), index=True, nullable=True)
+    slug = db.Column(db.String(32), nullable=True, index=True)
+    tier = db.Column(db.String(16), default='free', nullable=False)
+    prompt_count = db.Column(db.Integer, nullable=True)
+    llm_count = db.Column(db.Integer, nullable=True)
+    credits_consumed = db.Column(db.Integer, default=0, nullable=False)
+    problem_statement = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+class LoginToken(db.Model):
+    __tablename__ = 'login_tokens'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    token_hash = db.Column(db.String(128), unique=True, nullable=False, index=True)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
 # Create the database tables
 with app.app_context():
     db.create_all()
@@ -103,11 +240,68 @@ print(f"OPENAI_API_KEY is {'set' if OPENAI_API_KEY else 'NOT SET'}")
 print(f"NYT_API_KEY is {'set' if NYT_API_KEY else 'NOT SET'}")
 print(f"GUARDIAN_API_KEY is {'set' if GUARDIAN_API_KEY else 'NOT SET'}")
 
-anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
+anthropic = Anthropic(api_key=ANTHROPIC_API_KEY, timeout=60.0)
 try:
-    openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+    openai_client = OpenAI(api_key=OPENAI_API_KEY, timeout=60.0) if OPENAI_API_KEY else None
 except Exception:
     openai_client = None
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+try:
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+except Exception:
+    gemini_client = None
+print(f"GEMINI_API_KEY is {'set' if GEMINI_API_KEY else 'NOT SET'}")
+
+PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY") or os.environ.get("PPLX_API_KEY")
+try:
+    perplexity_client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="https://api.perplexity.ai", timeout=60.0) if PERPLEXITY_API_KEY else None
+except Exception:
+    perplexity_client = None
+print(f"PERPLEXITY_API_KEY is {'set' if PERPLEXITY_API_KEY else 'NOT SET'}")
+
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+try:
+    # Tight client-level timeout for OpenRouter — Grok via x-ai is the worst-case
+    # latency on this stack and we don't want a hung Grok call to block the audit.
+    openrouter_client = OpenAI(api_key=OPENROUTER_API_KEY, base_url="https://openrouter.ai/api/v1", timeout=30.0) if OPENROUTER_API_KEY else None
+except Exception:
+    openrouter_client = None
+print(f"OPENROUTER_API_KEY is {'set' if OPENROUTER_API_KEY else 'NOT SET'}")
+
+# ---------------------------------------------------------------------------
+# Stripe configuration for paid tier
+# ---------------------------------------------------------------------------
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+STRIPE_PRICE_SINGLE = os.environ.get("STRIPE_PRICE_SINGLE")
+STRIPE_PRICE_PACK_5 = os.environ.get("STRIPE_PRICE_PACK_5")
+SIGNAL_BASE_URL = os.environ.get("SIGNAL_BASE_URL")  # e.g. https://signal.innatec3.com, falls back to request origin
+
+STRIPE_PRODUCTS = {
+    "single": {
+        "label": "Single audit",
+        "credits": 1,
+        "amount_display": "$25",
+        "price_id": STRIPE_PRICE_SINGLE,
+        "description": "One paid audit: 100 prompts × 5 LLMs, top 25 media targets.",
+    },
+    "pack_5": {
+        "label": "5 audit credits",
+        "credits": 5,
+        "amount_display": "$100",
+        "price_id": STRIPE_PRICE_PACK_5,
+        "description": "5 paid audits at $20 each. Credits never expire.",
+    },
+}
+
+try:
+    import stripe as stripe_lib
+    if STRIPE_SECRET_KEY:
+        stripe_lib.api_key = STRIPE_SECRET_KEY
+except Exception:
+    stripe_lib = None
+print(f"STRIPE_SECRET_KEY is {'set' if STRIPE_SECRET_KEY else 'NOT SET'}")
 
 def analyze_articles(articles, query):
     """Extract key metrics and patterns from articles."""
@@ -1718,7 +1912,12 @@ Articles: {json.dumps(summarized_articles[:50])}"""
     
     return render_template("upload.html", ga_measurement_id=GA_MEASUREMENT_ID)
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/")
+def root_redirect():
+    return redirect("/citation-audit", code=308)
+
+
+@app.route("/legacy-index", methods=["GET", "POST"])
 def index():
     # Allow POST from the search form to avoid 405 Method Not Allowed
     if request.method == "POST":
@@ -2235,7 +2434,7 @@ def email_summary():
             from sendgrid import SendGridAPIClient
             from sendgrid.helpers.mail import Mail
             msg = Mail(
-                from_email=("no-reply@innatec3.com", "innate c3"),
+                from_email=("nstrauss@innatec3.com", "innate c3"),
                 to_emails=[email],
                 subject=f"Media Analysis: {query1}" + (f" vs {query2}" if query2 else ""),
                 plain_text_content=text_body,
@@ -2580,7 +2779,7 @@ def _send_alert_email(email: str, slug: str, freq: str, items: list):
         lines.append("")
         lines.append("Unsubscribe: " + (request.url_root.rstrip('/') + f"/unsubscribe?token="))  # token added by caller
         msg = Mail(
-            from_email=("no-reply@innatec3.com", "innate c3"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=[email],
             subject="New coverage alert",
             plain_text_content="\n".join(lines),
@@ -2657,6 +2856,2757 @@ if BackgroundScheduler:
             print("Alert scheduler started.")
     except Exception as e:
         print("Scheduler start error:", e)
+
+# =============================================================================
+# PR Signal Finder — citation audit tool
+# =============================================================================
+
+CITATION_SUFFIX = """
+
+You MUST include citations and sources in your response.
+At the end of your response, add a section titled 'Sources and References:' listing at least 3 credible websites with full URLs.
+Also add a section titled 'Recommended Resources:' listing websites users should visit for more information."""
+
+CITATION_SYSTEM_PROMPT = "You are a helpful research assistant that always cites credible sources with full URLs. Every response must include specific publication names and URLs to support your recommendations."
+
+
+def _today_label():
+    """Returns e.g. 'May 2026' — used to keep LLM responses date-current."""
+    return datetime.utcnow().strftime("%B %Y")
+
+
+def _time_aware_note():
+    """Appended to every prompt so LLMs default to recent (last-12-month) sources."""
+    today = _today_label()
+    return (
+        f"\n\nToday's date is {today}. When the question asks about 'latest', "
+        f"'recent', 'today', 'current', or otherwise time-sensitive information, "
+        f"prioritize sources, articles, and developments from the past 12 months. "
+        f"Do NOT default to older years like 2023 or 2024 when more recent content exists."
+    )
+
+URL_PATTERN = re.compile(r'https?://[^\s<>"\'`\)\]\},]+')
+DOMAIN_BLACKLIST = {'example.com', 'placeholder.com', 'website.com', 'source.com', 'google.com', 'schema.org', 'w3.org', 'googleapis.com'}
+
+INSTITUTIONAL_TLDS = ('.gov', '.gov.uk', '.gov.au', '.gov.ca', '.mil', '.edu', '.ac.uk', '.ac.jp', '.edu.au')
+
+ANALYST_DOMAINS = {
+    'gartner.com', 'forrester.com', 'idc.com',
+    'omdia.com', '451research.com',
+    'frost.com', 'frostandsullivan.com',
+    'mckinsey.com', 'bain.com', 'bcg.com',
+    'accenture.com', 'deloitte.com', 'pwc.com', 'ey.com', 'kpmg.com',
+    'nucleusresearch.com', 'constellationr.com',
+    'moorinsightsstrategy.com', 'moor-insights.com',
+    'nelsonhall.com', 'everestgrp.com', 'isg-one.com',
+    'canalys.com', 'gigaom.com', 'redmonk.com',
+    'enterprisestrategygroup.com', 'esg-global.com',
+    'futurumresearch.com', 'futuriom.com',
+    'tbri.com', 'parkassociates.com',
+}
+
+EDITORIAL_ORG_ALLOWLIST = {
+    'npr.org', 'propublica.org', 'pbs.org', 'bbc.org', 'reuters.org',
+    'consumerreports.org', 'motherjones.org', 'theintercept.org',
+    'texastribune.org', 'minnpost.org', 'voxmedia.org', 'theconversation.org',
+    'cjr.org', 'niemanlab.org', 'poynter.org',
+    'kff.org',
+    'aljazeera.org',
+}
+
+# Organizations confirmed defunct or merged out of existence. Their domains
+# may still serve static pages (so the URL validator passes them), but they
+# cannot be partnered with. Filter them from any analyst/institutional output
+# so Claude never sees them and can never recommend them.
+#
+# EXPAND THIS LIST as we discover others — every entry here is a recommendation
+# we DIDN'T make to a paying client. When a report surfaces a real-world entity
+# that no longer exists, add its domain(s) here.
+KNOWN_DEFUNCT_ORGS = {
+    'acte.org',                # Association of Corporate Travel Executives, dissolved 2018
+}
+
+NON_EDITORIAL_DOMAINS = {
+    # User-generated / community
+    'wikipedia.org', 'en.wikipedia.org', 'wikimedia.org',
+    'reddit.com', 'quora.com', 'stackexchange.com', 'stackoverflow.com',
+    'youtube.com', 'youtu.be',
+    'linkedin.com', 'twitter.com', 'x.com', 'facebook.com', 'instagram.com',
+    'tiktok.com', 'pinterest.com', 'medium.com',
+    # Marketplaces / retail / e-commerce
+    'amazon.com', 'ebay.com', 'etsy.com', 'walmart.com', 'target.com',
+    'aliexpress.com', 'shopify.com',
+    # Software directories / review marketplaces (NOT editorial media)
+    'g2.com', 'capterra.com', 'getapp.com', 'softwareadvice.com',
+    'trustradius.com', 'peerspot.com', 'softwarereviews.com',
+    'crozdesk.com', 'goodfirms.co', 'clutch.co', 'gartner.com/peer-insights',
+    'flexera.com', 'producthunt.com',
+    # Job boards
+    'indeed.com', 'glassdoor.com', 'ziprecruiter.com',
+    # Pure research / not pitchable as editorial
+    'pubmed.ncbi.nlm.nih.gov', 'ncbi.nlm.nih.gov', 'who.int', 'cdc.gov',
+    'arxiv.org', 'researchgate.net', 'sciencedirect.com', 'springer.com',
+    'jstor.org', 'nature.com', 'science.org',
+    # Hotel-industry SaaS + consortium + promotional sites (not pitchable editorial)
+    'engine.com',                       # corporate booking SaaS
+    'fcmtravel.com',                    # corporate travel SaaS
+    'ccra.com',                         # travel-tech consortium
+    'independentcollection.com',        # hotel marketing consortium
+    'designhotels.com',                 # hotel marketing collective (curated listings, not editorial)
+    'boutiquehotelsofcalifornia.com',   # regional hotel promo
+    'travelplusstyle.com',              # hotel listings/affiliate, not editorial
+}
+
+# B2B vendors, software marketplaces, and review platforms that LLMs sometimes cite
+# but which are NOT pitchable media outlets. Used to suppress false-positive editorial classifications.
+NON_EDITORIAL_VENDORS = {
+    # Software review marketplaces
+    'g2.com', 'capterra.com', 'softwareadvice.com', 'getapp.com', 'trustradius.com',
+    'producthunt.com', 'trustpilot.com', 'sourceforge.net', 'alternativeto.net',
+    # Major SaaS / enterprise vendors (their own .com is rarely editorial)
+    'flexera.com', 'salesforce.com', 'hubspot.com', 'oracle.com', 'sap.com',
+    'atlassian.com', 'slack.com', 'monday.com', 'asana.com', 'notion.so',
+    'adobe.com', 'microsoft.com', 'aws.amazon.com', 'cloud.google.com',
+    'shopify.com', 'wordpress.com', 'wix.com', 'squarespace.com',
+    'zendesk.com', 'intercom.com', 'mailchimp.com', 'sendgrid.com',
+    # E-commerce / OTA aggregators
+    'expedia.com', 'booking.com', 'kayak.com', 'tripadvisor.com', 'yelp.com',
+    'glassdoor.com', 'indeed.com',
+}
+
+
+def classify_citation_domain(domain):
+    """Return 'analyst', 'institutional', 'non_editorial', 'defunct', or 'editorial'.
+
+    'defunct' is a terminal classification — defunct orgs are excluded from
+    every downstream target list so Claude never recommends partnering with
+    an entity that no longer exists.
+    """
+    d = (domain or "").lower().lstrip('.')
+    d_stripped = d[4:] if d.startswith('www.') else d
+
+    # Defunct check first — wins over every other classification so a defunct
+    # .org never leaks into the institutional list.
+    if d_stripped in KNOWN_DEFUNCT_ORGS or d in KNOWN_DEFUNCT_ORGS:
+        return 'defunct'
+    if d in NON_EDITORIAL_DOMAINS or d_stripped in NON_EDITORIAL_DOMAINS:
+        return 'non_editorial'
+    if d in NON_EDITORIAL_VENDORS or d_stripped in NON_EDITORIAL_VENDORS:
+        return 'non_editorial'
+    if d_stripped in ANALYST_DOMAINS or d in ANALYST_DOMAINS:
+        return 'analyst'
+    if d_stripped in EDITORIAL_ORG_ALLOWLIST:
+        return 'editorial'
+    if any(d.endswith(tld) for tld in INSTITUTIONAL_TLDS):
+        return 'institutional'
+    if d.endswith('.org'):
+        return 'institutional'
+    return 'editorial'
+
+
+def _is_brand_own_domain(domain, brand):
+    """Quick deterministic check: is this domain the brand's own property?
+
+    Catches cases where the LLM cites the brand's own developer site,
+    community forums, help center, business page, etc. These should never
+    appear as "editorial media targets" — you can't pitch yourself. Examples:
+      brand='Adobe' + domain='developer.adobe.com'   → True
+      brand='Adobe' + domain='community.adobe.com'   → True
+      brand='Adobe' + domain='helpx.adobe.com'       → True
+      brand='Adobe' + domain='business.adobe.com'    → True
+      brand='Adobe' + domain='adobe.com'             → True
+      brand='Adobe' + domain='theverge.com'          → False
+
+    Matches on the *root* domain (second-level), so subdomains are caught.
+    Brand slugs under 3 chars are skipped to avoid noise (e.g. matching
+    "ai" inside arbitrary domains).
+    """
+    if not brand or not domain:
+        return False
+    brand_slug = re.sub(r'[^a-z0-9]', '', brand.lower())
+    if len(brand_slug) < 3:
+        return False
+    d = (domain or '').lower().lstrip('.')
+    if d.startswith('www.'):
+        d = d[4:]
+    # Strip path / port if any leaked in.
+    d = d.split('/')[0].split(':')[0]
+    parts = d.split('.')
+    if len(parts) < 2:
+        return False
+    root = parts[-2].lower()
+    # Bidirectional containment so multi-word brands ("HelloFresh" → hellofresh.com)
+    # and single-word brands ("Adobe" → adobe.com / developer.adobe.com) both match.
+    if brand_slug in root or root in brand_slug:
+        return True
+    return False
+
+
+def verify_editorial_domains(editorial_domains, brand, category):
+    """Filter the editorial list via Claude to drop B2B vendor/marketplace/non-media domains.
+
+    Returns (verified_media, rejected) — both lists in original ranking order.
+    On any failure, returns (editorial_domains, []) — safe to no-op.
+    """
+    if not editorial_domains:
+        return [], []
+    domains_to_check = editorial_domains[:30]
+    domain_list = "\n".join(f"- {d['domain']}" for d in domains_to_check)
+    # Brand-specific self-reference examples make the rejection rule concrete
+    # for Claude. Build the most-common self-domain patterns from the brand
+    # slug so the prompt can call them out by name.
+    brand_for_prompt = (brand or '').strip() or '(unknown)'
+    brand_slug = re.sub(r'[^a-z0-9]', '', brand_for_prompt.lower())
+    self_examples = ""
+    if len(brand_slug) >= 3:
+        self_examples = (
+            f"  e.g. for {brand_for_prompt}: {brand_slug}.com, www.{brand_slug}.com, "
+            f"developer.{brand_slug}.com, community.{brand_slug}.com, helpx.{brand_slug}.com, "
+            f"business.{brand_slug}.com, support.{brand_slug}.com, blog.{brand_slug}.com, "
+            f"docs.{brand_slug}.com.\n"
+        )
+    try:
+        resp = anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1500,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "You are filtering a list of web domains to identify which are legitimate editorial "
+                    "MEDIA outlets that a PR professional could pitch — vs. which are SaaS vendors, "
+                    "software review marketplaces, e-commerce, community forums, the brand's own "
+                    "properties, or corporate sites that aren't pitchable media.\n\n"
+                    f"Context — brand: {brand_for_prompt}\nCategory: {category}\n\n"
+                    "Definition of MEDIA: newspapers, magazines, trade press, B2B publications, "
+                    "consumer publications, broadcast outlets, and digital-native news sites WITH "
+                    "editorial staff who write articles.\n\n"
+                    "Definition of NON-MEDIA (reject these aggressively):\n"
+                    f"- THE BRAND'S OWN DOMAINS — including any subdomain of the brand's root domain.\n"
+                    f"{self_examples}"
+                    "  You cannot pitch yourself, and a brand's own developer/community/help/business "
+                    "subdomains are self-promotional infrastructure, not editorial media.\n"
+                    "- Vendor documentation / learning portals (e.g. learn.microsoft.com, docs.aws.amazon.com, "
+                    "developer.nvidia.com, developer.apple.com, developer.mozilla.org). These are vendor docs, "
+                    "not editorial media.\n"
+                    "- AI / SaaS competitor product sites masquerading as 'media' (e.g. synthesia.io, "
+                    "lumen5.com, datarobot.com, h2o.ai, anthropic.com, openai.com, runway.com). These are "
+                    "product/marketing sites for vendors — sometimes they have blogs, but they're not "
+                    "pitchable editorial.\n"
+                    "- SaaS vendor sites (e.g. salesforce.com, atlassian.com, engine.com, fcmtravel.com, "
+                    "sap.com, hubspot.com)\n"
+                    "- Corporate-booking platforms or travel-tech consortia (e.g. ccra.com, gbta.org for "
+                    "SaaS purposes, sabre.com, amadeus.com)\n"
+                    "- Hotel-marketing collectives or member-curated listings (e.g. designhotels.com, "
+                    "independentcollection.com, smallluxuryhotels.com, relaischateaux.com)\n"
+                    "- Tourism boards' member-listing pages (e.g. visitseattle.org/members/..., "
+                    "visitcalifornia.com/listings/...)\n"
+                    "- Affiliate / booking aggregators (e.g. booking.com, expedia.com, hotels.com, "
+                    "tripadvisor.com, kayak.com)\n"
+                    "- Promotional regional consortia (e.g. boutiquehotelsofcalifornia.com)\n"
+                    "- Listing sites that do NOT have editorial bylines or news coverage\n"
+                    "- Review marketplaces (e.g. g2.com, capterra.com, trustradius.com, trustpilot.com)\n"
+                    "- Corporate blogs, Wikipedia, Reddit/Stack Overflow communities, LinkedIn, Quora, "
+                    "Amazon.\n\n"
+                    f"Classify each domain below:\n{domain_list}\n\n"
+                    "Respond with ONLY valid JSON, no prose:\n"
+                    '{"media_domains": ["domain1.com", ...], "non_media_domains": ["domain2.com", ...]}'
+                )
+            }]
+        )
+        text = resp.content[0].text
+        m = re.search(r'\{.*\}', text, re.DOTALL)
+        if not m:
+            return editorial_domains, []
+        data = json.loads(m.group())
+        media_set = {(d or '').lower() for d in data.get('media_domains', [])}
+        checked_set = {d['domain'].lower() for d in domains_to_check}
+        # Keep: (a) anything beyond the first 30 we didn't check; (b) within the first 30, only verified-media.
+        verified = [
+            d for d in editorial_domains
+            if d['domain'].lower() not in checked_set or d['domain'].lower() in media_set
+        ]
+        rejected = [d for d in domains_to_check if d['domain'].lower() not in media_set]
+        return verified, rejected
+    except Exception as e:
+        print("verify_editorial_domains failed (continuing with unfiltered list):", e)
+        return editorial_domains, []
+
+
+def extract_urls(text):
+    """Extract URLs from a block of text, clean trailing punctuation, filter blacklisted domains."""
+    if not text:
+        return []
+    urls = URL_PATTERN.findall(text)
+    out = []
+    seen = set()
+    for u in urls:
+        u = u.rstrip('.,;:!?\'"\)\]\}')
+        try:
+            host = u.split('/')[2].lower()
+        except Exception:
+            continue
+        host_no_www = host[4:] if host.startswith('www.') else host
+        if host_no_www in DOMAIN_BLACKLIST:
+            continue
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append({"url": u, "domain": host_no_www})
+    return out
+
+
+def aggregate_citations(all_responses):
+    """Count citation URLs by domain across responses, tracking LLMs and prompts.
+    Ranking uses a diversity-weighted score so a domain cited by N LLMs ranks
+    above one cited only by a single LLM at the same raw count — kills the
+    'one LLM dominates and crowds out broader consensus' failure mode.
+    """
+    domain_data = {}
+    for resp in all_responses:
+        urls = resp.get('citations', [])
+        for u in urls:
+            domain = u['domain']
+            if domain not in domain_data:
+                domain_data[domain] = {
+                    'domain': domain,
+                    'urls': [],
+                    'count': 0,
+                    'llms': set(),
+                    'prompts': set(),
+                }
+            domain_data[domain]['count'] += 1
+            domain_data[domain]['urls'].append(u['url'])
+            domain_data[domain]['llms'].add(resp['llm'])
+            domain_data[domain]['prompts'].add(resp['prompt'])
+
+    for d in domain_data.values():
+        d['llms'] = list(d['llms'])
+        d['prompts'] = list(d['prompts'])
+        d['urls'] = list(set(d['urls']))
+        # Article-only subset for `sample_urls` surfacing. Keeps the full
+        # `urls` list intact (preserves raw citation data for JSON export +
+        # downstream analysis), but exposes a curated list of URLs that look
+        # like real articles — no homepages, no /tag/ index pages, no search
+        # results. The analysis prompt prefers this list for sample_urls.
+        d['specific_urls'] = [u for u in d['urls'] if _is_specific_article(u)]
+        # diversity_score = count * (1 + 0.25 * (distinct LLMs - 1))
+        # 1 LLM: ×1.00 · 2 LLMs: ×1.25 · 3 LLMs: ×1.50 · 4: ×1.75 · 5: ×2.00
+        d['diversity_score'] = d['count'] * (1 + 0.25 * max(0, len(d['llms']) - 1))
+
+    return sorted(domain_data.values(), key=lambda x: x['diversity_score'], reverse=True)
+
+
+def _count_brand_mentions(brand, all_responses):
+    """Deterministic, case-insensitive, word-boundary count of how many responses
+    mention the brand. Replaces the previous LLM-estimated count which was
+    biased low because the analysis prompt only saw 500-char excerpts of each
+    response (so mentions past char 500 were silently dropped).
+
+    Multi-form heuristic: for multi-word brand names where the first word is
+    >= 5 chars (avoids false-positives on short common words like "The" / "New"),
+    we also count responses that mention just the first word. Same response
+    counts as one regardless of which form matched. Examples:
+      - "Patagonia"           → matches "Patagonia"
+      - "ACME Corporation"    → matches "ACME Corporation" OR just "ACME"
+      - "The Honest Company"  → only matches the full phrase (first word too short)
+    """
+    if not brand:
+        return 0
+    patterns = [re.compile(r'\b' + re.escape(brand) + r'\b', re.IGNORECASE)]
+    parts = brand.split()
+    if len(parts) > 1 and len(parts[0]) > 5:
+        patterns.append(re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE))
+    count = 0
+    for r in all_responses:
+        text = r.get('response', '') or ''
+        if any(p.search(text) for p in patterns):
+            count += 1
+    return count
+
+
+def _extract_competitor_candidates(brand, category, all_responses, max_candidates=15):
+    """Ask Claude to extract a CANDIDATE LIST of competitor brand names from
+    the actual response text. Returns just names — counts come from
+    _count_brand_mentions (deterministic, authoritative).
+
+    This decouples competitor *discovery* (LLM, judgement call) from competitor
+    *frequency* (deterministic substring match over full response text). Before
+    this split, Claude was asked to estimate counts from 500-char excerpts in
+    the analysis prompt, which produced numbers a consultant could trivially
+    falsify by grepping the raw responses for "Spanx" etc. Now the counts always
+    match what a regex over the full text would produce.
+    """
+    if not all_responses:
+        return []
+    excerpts = ""
+    for i, r in enumerate(all_responses[:30]):  # cap context size; we have ≤30 responses for free, more for paid
+        text = (r.get('response', '') or '')[:2000]
+        excerpts += f"\n--- Response {i+1} [{r.get('llm','?')}] ---\n{text}\n"
+
+    try:
+        resp = anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=600,
+            messages=[{
+                "role": "user",
+                "content": f"""Extract the brand/product/company names that appear as COMPETITORS or PEER OPTIONS to "{brand}" in the category "{category}" across the AI responses below.
+
+Rules:
+- Return ONLY actual brand/product names — not generic categories (e.g. "wireless headphones" is not a brand).
+- Exclude "{brand}" itself.
+- Exclude reviewer/journalist names, publication names, and platform names (Amazon, Reddit, etc.).
+- Maximum {max_candidates} candidates. Prefer the most-mentioned distinct brands.
+- Keep names in their canonical form (e.g. "Sony WH-1000XM5" → "Sony", "Bose QuietComfort" → "Bose"). For brand families, use the umbrella brand, not the SKU.
+- If no clear competitor brands appear, return an empty list.
+
+Respond with ONLY a JSON array of strings: ["Brand A", "Brand B", ...]
+
+RESPONSES:
+{excerpts}"""
+            }]
+        )
+        txt = resp.content[0].text
+        match = re.search(r'\[.*?\]', txt, re.DOTALL)
+        if not match:
+            return []
+        names = json.loads(match.group())
+        if not isinstance(names, list):
+            return []
+        # Sanitize: strings only, dedupe case-insensitively, drop the brand itself.
+        seen = set()
+        out = []
+        brand_lower = (brand or '').strip().lower()
+        for n in names:
+            if not isinstance(n, str):
+                continue
+            n = n.strip()
+            if not n or n.lower() == brand_lower:
+                continue
+            key = n.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(n)
+            if len(out) >= max_candidates:
+                break
+        return out
+    except Exception as e:
+        print("competitor candidate extraction failed (continuing without):", e)
+        return []
+
+
+_URL_VALIDATION_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+}
+
+
+# Regexes used by _resolve_vertex_redirect — module-level so we compile once.
+_META_REFRESH_RE = re.compile(
+    r'<meta\s+[^>]*http-equiv=["\']?refresh["\']?\s+content=["\'][^"\']*url=([^"\'>\s]+)',
+    re.IGNORECASE,
+)
+_JS_LOCATION_RE = re.compile(
+    r'window\.location(?:\.(?:href|replace))?\s*[=\(]\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+
+
+def _resolve_vertex_redirect(url, timeout=4):
+    """Gemini grounding URLs (vertexaisearch.cloud.google.com/...) redirect via
+    a <meta http-equiv="refresh"> tag or JS location-assignment — NOT via an
+    HTTP Location header. requests.head + allow_redirects can't follow them,
+    so without this we leave the vertex redirector itself in the citation
+    list, polluting the top of the domain ranking.
+
+    Fetches the redirector body and extracts the real target URL. Returns
+    None if the redirector itself returns an error or no target can be parsed.
+    """
+    try:
+        if not _is_safe_url(url):
+            return None
+        r = requests.get(url, timeout=timeout, allow_redirects=True,
+                         headers=_URL_VALIDATION_HEADERS)
+        if r.status_code >= 400:
+            return None
+        body = r.text or ''
+        m = _META_REFRESH_RE.search(body)
+        if m:
+            return m.group(1)
+        m = _JS_LOCATION_RE.search(body)
+        if m:
+            return m.group(1)
+        return None
+    except Exception:
+        return None
+
+
+def _is_specific_article(url):
+    """Heuristic: does this URL point to a specific article, not a homepage/tag/category?
+
+    Used to filter the `sample_urls` surfaced in the final report (so we never
+    show a Forbes homepage or a /tag/ai/ index as evidence). The underlying
+    citation data (`raw_citation_domains[*].urls`, `all_responses[*].citations`)
+    is preserved untouched — only the presentation layer filters.
+
+    Returns True when the URL looks like it leads to an actual article:
+    - Has a path beyond `/` (not bare domain, not /index.html)
+    - Doesn't contain known index/listing segments (/tag/, /category/, /search?, etc.)
+    - Has 2+ path segments OR a single segment with a long slug (>= 20 chars,
+      proxy for "this is a slug, not a section name")
+
+    Errs on the side of KEEPING unknown URLs (returns True on parse failure)
+    so legitimate-but-unusual URLs aren't silently dropped.
+
+    KNOWN LIMITATION: A URL that LOOKS like a specific article but is actually
+    off-topic (e.g. a Verge article about an electric golf cart cited as
+    evidence for an AI creative platform audit) will still pass this filter.
+    TODO: optional GET + title-check pass that verifies the article title
+    mentions the brand or category — expensive (network call per URL), so
+    we'd want it as an opt-in for paid audits.
+    """
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        path = (p.path or '').rstrip('/')
+        # Bare domain or root-only = homepage.
+        if not path or path == '/' or path.lower() == '/index.html':
+            return False
+        path_lower = path.lower()
+        # Tag / category / search / archive / pagination / author index pages.
+        bad_segments = (
+            '/tag/', '/tags/', '/category/', '/categories/', '/topic/', '/topics/',
+            '/search/', '/search?', '/archive/', '/archives/', '/page/', '/author/',
+            '/by/', '/feed', '/rss', '/sitemap', '/atom', '/section/',
+        )
+        if any(seg in path_lower for seg in bad_segments):
+            return False
+        # Query-string-only "search" pages.
+        if (p.query or '').lower().startswith(('q=', 'query=', 's=', 'search=')):
+            return False
+        segs = [s for s in path.split('/') if s]
+        if not segs:
+            return False
+        # Single short segment is almost always a section, not an article.
+        # 2+ segments OR a long slug (proxy for "this is a real article slug") = keep.
+        if len(segs) < 2 and len(segs[0]) < 20:
+            return False
+        return True
+    except Exception:
+        # Err on the side of keeping unknown URLs.
+        return True
+
+
+def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None):
+    """HEAD-check + redirect-resolve a batch of URLs concurrently.
+
+    Returns a dict {original_url: final_url_or_None}.
+    - None means: confabulated (404/410), DNS failure, or refused connection.
+    - final_url may differ from original (Gemini's grounding URLs redirect from
+      vertexaisearch.cloud.google.com → real source; we use the real URL/domain).
+    - For 403 / 5xx / timeouts we err toward KEEPING the URL (might be bot-blocked
+      but real). Only definitive negatives are dropped.
+
+    Tuned aggressively: timeout 2.5s + 40 workers. The bottleneck used to be
+    waiting on slow servers; with these settings 100+ URLs verify in 5-10s
+    instead of 30s+. Only retries with GET for 403 (the main bot-block signal).
+    """
+    out = {}
+
+    def check(u):
+        # SSRF guard: never fire HEAD against private/loopback/reserved IPs.
+        # LLM citation URLs are untrusted input; without this a confabulated
+        # internal URL could probe our own infra. Drop on failure (treat as
+        # confabulated).
+        if not _is_safe_url(u):
+            return (u, None)
+        # Vertex grounding redirects need a body-parse to recover the real
+        # target (meta-refresh / JS, not HTTP 30x). Do that BEFORE the normal
+        # HEAD logic — without this the vertexaisearch domain ends up at the
+        # TOP of the ranking, which is useless. If we can't recover the real
+        # source, drop the URL entirely (the redirector itself is not a
+        # citable source).
+        original_u = u
+        if 'vertexaisearch.cloud.google.com' in u.lower():
+            real = _resolve_vertex_redirect(u)
+            if not real:
+                return (original_u, None)
+            u = real
+            if not _is_safe_url(u):
+                return (original_u, None)
+        try:
+            r = requests.head(u, timeout=timeout, allow_redirects=True,
+                              headers=_URL_VALIDATION_HEADERS)
+            if r.status_code in (404, 410):
+                return (original_u, None)
+            if r.status_code < 400:
+                return (original_u, r.url)
+            if r.status_code == 403:
+                # Possible bot-block of HEAD; one retry with streaming GET.
+                try:
+                    r2 = requests.get(u, timeout=timeout, allow_redirects=True, stream=True,
+                                      headers=_URL_VALIDATION_HEADERS)
+                    try:
+                        r2.close()
+                    except Exception:
+                        pass
+                    if r2.status_code in (404, 410):
+                        return (original_u, None)
+                    if r2.status_code < 400:
+                        return (original_u, r2.url)
+                except Exception:
+                    pass
+                return (original_u, u)
+            # 4xx (other than 404/410/403) or 5xx — assume real, keep resolved URL.
+            return (original_u, u)
+        except requests.exceptions.ConnectionError:
+            return (original_u, None)  # DNS / connection refused = confabulated
+        except Exception:
+            return (original_u, u)  # timeout / TLS quirks — keep, don't penalize real URLs
+
+    completed = 0
+    total = len(urls)
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(check, u) for u in urls]
+        for fut in as_completed(futures):
+            try:
+                orig, final = fut.result()
+                out[orig] = final
+            except Exception:
+                pass
+            completed += 1
+            if on_progress:
+                # Emit progress periodically (every 5 URLs or on completion) so the
+                # frontend ETA can update smoothly through this step.
+                if completed % 5 == 0 or completed == total:
+                    try:
+                        on_progress(completed, total)
+                    except Exception:
+                        pass
+    return out
+
+
+_TOPIC_CHECK_HEADERS = dict(_URL_VALIDATION_HEADERS)  # reuse browser UA
+
+
+def _check_url_topic(url, brand_lower, category_keywords, timeout=4):
+    """Fetch a URL and check whether its title or first ~1500 chars of body text
+    actually mentions the brand or any category keyword. Catches the failure
+    mode where a URL passes _is_specific_article (looks article-shaped) but
+    the article is wholly off-topic — e.g. an LLM citing a Verge article about
+    an electric golf cart as "evidence" for an AI creative platforms audit.
+
+    Returns one of:
+      'verified'     — page fetched 200, title or body sample contains the brand
+                       (word-boundary, case-insensitive) OR any category_keyword
+                       (case-insensitive substring).
+      'off_topic'    — page fetched fine with parseable body, but no match. Drop.
+      'inaccessible' — non-200, GET error, timeout, or empty body. Can't tell —
+                       caller applies transitive-trust rules.
+    """
+    try:
+        if not _is_safe_url(url):
+            return 'inaccessible'
+        r = requests.get(url, timeout=timeout, allow_redirects=True,
+                         headers=_TOPIC_CHECK_HEADERS, stream=False)
+        if r.status_code >= 400:
+            return 'inaccessible'
+        body = (r.text or '')[:8000]  # generous slice for title-then-body extraction
+        if not body.strip():
+            return 'inaccessible'
+        title_match = re.search(r'<title[^>]*>([^<]+)</title>', body, re.IGNORECASE)
+        title = (title_match.group(1) if title_match else '').strip()
+        # Strip HTML tags from body sample for keyword check.
+        text_sample = re.sub(r'<[^>]+>', ' ', body[:4000])
+        combined = (title + ' ' + text_sample).lower()
+        # Brand check (word boundary).
+        if brand_lower and re.search(r'\b' + re.escape(brand_lower) + r'\b', combined):
+            return 'verified'
+        # Category keyword check (any substring match).
+        for kw in category_keywords:
+            if kw and kw in combined:
+                return 'verified'
+        return 'off_topic'
+    except Exception:
+        return 'inaccessible'
+
+
+def _category_keywords(category):
+    """Pull noun-ish tokens from the category string for substring matching in
+    _check_url_topic. Drops common stopwords; lowercases; caps at 10 keywords.
+
+    Example: "AI creative platforms with transparency and commercial safety"
+    -> ['creative', 'platforms', 'transparency', 'commercial', 'safety']
+    ('ai' is too short and dropped by the 3-char minimum — 'creative' alone
+    catches Adobe articles.)
+    """
+    if not category:
+        return []
+    STOPWORDS = {'and', 'or', 'the', 'for', 'with', 'a', 'an', 'in', 'of', 'on', 'to',
+                 'is', 'are', 'as', 'at', 'by', 'be', 'this', 'that', 'these', 'those',
+                 'best', 'top', 'leading'}
+    toks = re.findall(r'[A-Za-z][A-Za-z\-]{2,}', category.lower())
+    seen = set()
+    result = []
+    for t in toks:
+        if t in STOPWORDS or t in seen:
+            continue
+        seen.add(t)
+        result.append(t)
+    return result[:10]
+
+
+def _apply_url_resolution(all_responses, url_map):
+    """Rewrite each citation in-place: drop unverified, re-key valid ones under
+    their final (post-redirect) URL + domain. Returns count of dropped URLs."""
+    dropped = 0
+    for r in all_responses:
+        new_cits = []
+        for c in r.get('citations', []) or []:
+            final = url_map.get(c['url'])
+            if not final:
+                dropped += 1
+                continue
+            try:
+                host = final.split('/')[2].lower()
+                host = host[4:] if host.startswith('www.') else host
+                if host in DOMAIN_BLACKLIST:
+                    dropped += 1
+                    continue
+                new_cits.append({'url': final, 'domain': host})
+            except Exception:
+                dropped += 1
+                continue
+        r['citations'] = new_cits
+    return dropped
+
+
+TIER_CONFIG = {
+    "free": {
+        "prompt_count": 10,
+        "llms": ["Claude", "ChatGPT", "Gemini"],
+        "media_target_count": 5,
+        "institutional_target_count": 5,
+        "analyst_target_count": 5,
+        "max_workers": 10,
+    },
+    "paid": {
+        "prompt_count": 100,
+        # Perplexity temporarily disabled — API account out of credit (insufficient_quota).
+        # To re-enable: top up at https://www.perplexity.ai/settings/api, then add
+        # "Perplexity" back into this list. The provider call site in _call_llm is unchanged.
+        "llms": ["Claude", "ChatGPT", "Gemini", "Grok"],
+        "media_target_count": 25,
+        "institutional_target_count": 10,
+        "analyst_target_count": 10,
+        "max_workers": 12,
+    },
+}
+
+
+def _call_llm(provider, enriched_prompt):
+    """Send one citation-forcing prompt to one provider; return response text or raise."""
+    if provider == "Claude":
+        resp = anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            system=CITATION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": enriched_prompt}],
+        )
+        return resp.content[0].text
+    if provider == "ChatGPT":
+        if not openai_client:
+            raise RuntimeError("OPENAI_API_KEY not configured")
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=2000,
+            messages=[
+                {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+                {"role": "user", "content": enriched_prompt},
+            ],
+        )
+        return resp.choices[0].message.content
+    if provider == "Gemini":
+        if not gemini_client:
+            raise RuntimeError("GEMINI_API_KEY not configured")
+        gemini_prompt = enriched_prompt + "\n\nWhen providing information, please include specific sources and references. Format any sources as: Reference: [Source Name] - URL. Include authoritative sources like news sites, company websites, industry reports."
+        # Try gemini-2.5-flash with Google Search grounding (yields real, current URLs).
+        # Fall back to plain 2.0-flash without grounding if the SDK / model / tool isn't available.
+        try:
+            from google.genai import types as _genai_types
+            grounding_config = _genai_types.GenerateContentConfig(
+                tools=[_genai_types.Tool(google_search=_genai_types.GoogleSearch())],
+                temperature=0.7,
+            )
+            resp = gemini_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=gemini_prompt,
+                config=grounding_config,
+            )
+            text = resp.text or ""
+            # Append grounding URIs so extract_urls() picks them up. The chunk
+            # `.web.uri` is almost always a vertexaisearch.cloud.google.com
+            # redirector — useless as a domain. Prefer any real source signal
+            # the SDK exposes (`web.domain`, `web.url`, or a URL-shaped
+            # `web.title`); fall back to the redirector URI only when no
+            # better source is present (the URL-resolution pass later attempts
+            # to follow the vertex meta-refresh to recover the real source).
+            try:
+                for cand in (resp.candidates or []):
+                    gm = getattr(cand, 'grounding_metadata', None)
+                    if not gm:
+                        continue
+                    for chunk in (getattr(gm, 'grounding_chunks', None) or []):
+                        web = getattr(chunk, 'web', None)
+                        if not web:
+                            continue
+                        uri = getattr(web, 'uri', None)
+                        real_url = getattr(web, 'url', None)
+                        real_domain = getattr(web, 'domain', None)
+                        web_title = getattr(web, 'title', None)
+                        appended = False
+                        # 1) Explicit non-vertex URL field if present.
+                        if real_url and 'vertexaisearch.cloud.google.com' not in real_url.lower():
+                            text += f"\nSource: {real_url}"
+                            appended = True
+                        # 2) Bare domain — synthesize an https URL so extract_urls picks it up.
+                        if not appended and real_domain:
+                            domain_clean = real_domain.strip().rstrip('/')
+                            if domain_clean and 'vertexaisearch' not in domain_clean.lower():
+                                text += f"\nSource: https://{domain_clean}/"
+                                appended = True
+                        # 3) Some SDK builds put a URL in `title`. Use it only if it parses as a URL.
+                        if not appended and web_title and web_title.lower().startswith(('http://', 'https://')):
+                            text += f"\nSource: {web_title}"
+                            appended = True
+                        # 4) Last resort: the vertex redirector. The URL validator
+                        # will try to follow the meta-refresh to recover the real source.
+                        if not appended and uri:
+                            text += f"\nSource: {uri}"
+            except Exception:
+                pass
+            return text
+        except Exception as e:
+            print("Gemini grounding fallback:", e)
+            resp = gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=gemini_prompt,
+            )
+            return resp.text
+    if provider == "Perplexity":
+        if not perplexity_client:
+            raise RuntimeError("PERPLEXITY_API_KEY not configured")
+        resp = perplexity_client.chat.completions.create(
+            model="sonar-pro",
+            max_tokens=2000,
+            messages=[
+                {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+                {"role": "user", "content": enriched_prompt},
+            ],
+        )
+        return resp.choices[0].message.content
+    if provider == "Grok":
+        if not openrouter_client:
+            raise RuntimeError("OPENROUTER_API_KEY not configured")
+        resp = openrouter_client.chat.completions.create(
+            model=os.environ.get("XAI_OPENROUTER_MODEL", "x-ai/grok-4"),
+            max_tokens=2000,
+            messages=[
+                {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+                {"role": "user", "content": enriched_prompt},
+            ],
+        )
+        return resp.choices[0].message.content
+    raise ValueError(f"Unknown provider: {provider}")
+
+
+def _compute_audit_anomaly_flags(result, duration_seconds, per_provider_done, per_provider_errors):
+    """Inspect a completed audit and return a list of anomaly flag strings.
+
+    Empty list means everything looked normal. Each flag is a short uppercase
+    code (BRAND_INVISIBLE, HIGH_LLM_ERROR_RATE, etc.) surfaced in the debug
+    email subject + body.
+    """
+    flags = []
+    try:
+        total_responses = int(result.get("total_responses") or 0)
+        brand_mentions = int(result.get("brand_mention_count") or 0)
+        total_citations = int(result.get("total_citations_extracted") or 0)
+        media_targets = result.get("media_targets") or []
+        institutional_targets = result.get("institutional_targets") or []
+        analyst_targets = result.get("analyst_targets") or []
+
+        if brand_mentions == 0:
+            flags.append("BRAND_INVISIBLE")
+        elif total_responses > 0 and brand_mentions < (total_responses * 0.1):
+            flags.append("LOW_BRAND_VISIBILITY")
+
+        # Per-provider error rate. Use the per-provider DONE counts where
+        # available so partial-completion batches don't false-flag every
+        # provider as 100% error.
+        for provider, errs in (per_provider_errors or {}).items():
+            done = (per_provider_done or {}).get(provider, 0)
+            if done > 0 and (errs / done) > 0.30:
+                flags.append("HIGH_LLM_ERROR_RATE")
+                break
+
+        # LLM dominance: if one provider produced >70% of total citations.
+        provider_citation_counts = {}
+        for r in (result.get("all_responses") or []):
+            n = len(r.get("citations") or [])
+            provider_citation_counts[r.get("llm") or "?"] = provider_citation_counts.get(r.get("llm") or "?", 0) + n
+        cite_total = sum(provider_citation_counts.values())
+        if cite_total > 0:
+            top = max(provider_citation_counts.values())
+            if (top / cite_total) > 0.70:
+                flags.append("SINGLE_LLM_DOMINANCE")
+
+        if total_citations < 20:
+            flags.append("LOW_CITATION_COUNT")
+
+        if duration_seconds and duration_seconds > 600:
+            flags.append("SLOW_AUDIT")
+
+        if len(media_targets) < 3:
+            flags.append("THIN_RESULTS")
+
+        if not institutional_targets and not analyst_targets:
+            flags.append("NO_INSTITUTIONAL_OR_ANALYST")
+
+        # Partial-delivery flag: the LLM batch hit the wall-clock deadline and
+        # cancelled in-flight calls. <95% = degraded; surfaces in the UI +
+        # debug-email so we know to consider re-running.
+        completion_rate = result.get("completion_rate")
+        if isinstance(completion_rate, (int, float)) and completion_rate < 0.95:
+            flags.append("PARTIAL_DELIVERY")
+    except Exception as e:
+        print("anomaly-flag computation failed:", e)
+    return flags
+
+
+class AuditAnalysisError(Exception):
+    """Raised when the analysis-step Claude response cannot be parsed as JSON.
+
+    Carries the raw response text and the parser's debug trace so the SSE
+    worker can email diagnostics to the owner before refunding the credit.
+    """
+
+    def __init__(self, message, raw_response="", debug_info=None):
+        super().__init__(message)
+        self.raw_response = raw_response or ""
+        self.debug_info = debug_info or {}
+
+
+def _parse_analysis_json(raw_text, retry_callback=None):
+    """Try multiple strategies to extract valid JSON from Claude's response.
+
+    Returns (parsed_dict, debug_info_dict). Raises AuditAnalysisError on
+    irrecoverable failure. debug_info has keys: strategy_used, attempts,
+    raw_first_500, raw_last_500.
+    """
+    debug = {
+        'attempts': [],
+        'raw_first_500': raw_text[:500],
+        'raw_last_500': raw_text[-500:],
+        'raw_length': len(raw_text),
+    }
+
+    def attempt(name, text):
+        try:
+            d = json.loads(text)
+            debug['attempts'].append({'name': name, 'ok': True})
+            debug['strategy_used'] = name
+            return d
+        except Exception as e:
+            debug['attempts'].append({'name': name, 'ok': False, 'err': str(e)[:200]})
+            return None
+
+    # Strategy 1: strip ```json fences if present, parse as-is.
+    cleaned = raw_text.strip()
+    if cleaned.startswith('```'):
+        cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned)
+        cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+
+    d = attempt('cleaned_strip_fences', cleaned)
+    if d:
+        return d, debug
+
+    # Strategy 2: find first { ... last } via regex.
+    m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+    if m:
+        d = attempt('regex_first_to_last_brace', m.group())
+        if d:
+            return d, debug
+
+    # Strategy 3: fix common errors (trailing commas before } or ]).
+    if m:
+        candidate = re.sub(r',(\s*[}\]])', r'\1', m.group())
+        d = attempt('fix_trailing_commas', candidate)
+        if d:
+            return d, debug
+
+    # Strategy 4: if it looks truncated (more { than }), try to close it.
+    if m:
+        candidate = m.group()
+        if candidate.count('{') > candidate.count('}'):
+            for trunc_marker in ['"\n  ]', '"\n]', '"\n  }', '"\n}', '"}', '"]']:
+                idx = candidate.rfind(trunc_marker)
+                if idx > 0:
+                    truncated = candidate[:idx + len(trunc_marker)]
+                    opens = truncated.count('{')
+                    closes = truncated.count('}')
+                    truncated = truncated + ('}' * (opens - closes))
+                    d = attempt(f'truncate_at_{trunc_marker[:5]!r}_pad_braces', truncated)
+                    if d:
+                        return d, debug
+
+    # Strategy 5: ask Claude to fix its own broken JSON.
+    if retry_callback:
+        try:
+            fixed = retry_callback(raw_text, debug['attempts'])
+            d = attempt('claude_retry', fixed)
+            if d:
+                return d, debug
+            # If the retry came back but still wouldn't parse, try the same
+            # strip-fences logic on it as well.
+            fixed_clean = (fixed or '').strip()
+            if fixed_clean.startswith('```'):
+                fixed_clean = re.sub(r'^```(?:json)?\s*\n?', '', fixed_clean)
+                fixed_clean = re.sub(r'\n?```\s*$', '', fixed_clean)
+                d = attempt('claude_retry_stripped', fixed_clean)
+                if d:
+                    return d, debug
+        except Exception as e:
+            debug['attempts'].append({'name': 'claude_retry', 'ok': False, 'err': str(e)[:200]})
+
+    last_err = (debug['attempts'][-1] if debug['attempts'] else {}).get('err', 'unknown')
+    raise AuditAnalysisError(
+        f"Failed to parse analysis JSON after {len(debug['attempts'])} strategies. Last error: {last_err}",
+        raw_response=raw_text,
+        debug_info=debug,
+    )
+
+
+def _retry_analysis_json(raw_text, prior_attempts):
+    """Ask Claude to fix its own broken JSON. Returns the corrected text."""
+    last_err = (prior_attempts[-1] if prior_attempts else {}).get('err', 'unknown')
+    fix_resp = anthropic.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=8000,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"The following response was supposed to be valid JSON but "
+                f"failed to parse with error: {last_err}\n\n"
+                f"Fix the JSON and return ONLY the corrected JSON object (no "
+                f"markdown fences, no explanation). Preserve all the data; "
+                f"just fix syntax errors and add any missing closing "
+                f"braces/brackets.\n\nBroken response:\n{raw_text}"
+            ),
+        }]
+    )
+    return fix_resp.content[0].text
+
+
+def _send_audit_failure_email(error, problem_statement, tier):
+    """Fire-and-forget diagnostic email when an audit fails (AuditAnalysisError
+    or any other exception during run_citation_audit).
+
+    Includes the raw Claude response (if available), the parse strategies
+    attempted, and the problem statement. Skipped silently if SENDGRID_API_KEY
+    or AUDIT_DEBUG_EMAIL is unset.
+    """
+    recipient = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not recipient or not sg_key:
+        return
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+
+        err_type = type(error).__name__
+        err_msg = str(error)
+        raw_response = getattr(error, 'raw_response', '') or ''
+        debug_info = getattr(error, 'debug_info', {}) or {}
+
+        # Cap raw response at 5000 chars to keep the email manageable.
+        raw_clip = raw_response[:5000]
+        raw_truncated_note = ""
+        if len(raw_response) > 5000:
+            raw_truncated_note = f"\n\n[...truncated; full length was {len(raw_response)} chars]"
+
+        attempts = debug_info.get('attempts', [])
+        strategy_lines = []
+        for i, a in enumerate(attempts, 1):
+            ok = "OK" if a.get('ok') else "FAIL"
+            line = f"  {i}. [{ok}] {a.get('name', '?')}"
+            if not a.get('ok'):
+                line += f" — {a.get('err', '?')}"
+            strategy_lines.append(line)
+        strategies_text = "\n".join(strategy_lines) or "  (no attempts recorded)"
+
+        subject = f"[Signal Finder · {tier} · FAILED] {err_type}: {err_msg[:80]}"
+
+        text_lines = [
+            "PR Signal Finder audit FAILED",
+            "",
+            f"Error type: {err_type}",
+            f"Error: {err_msg}",
+            f"Tier: {tier}",
+            "",
+            f"Problem statement: {problem_statement[:500]}",
+            "",
+            "Parse strategies attempted:",
+            strategies_text,
+            "",
+            f"Raw Claude response length: {debug_info.get('raw_length', len(raw_response))}",
+            "",
+            "Raw response (first 5000 chars):",
+            "---",
+            raw_clip + raw_truncated_note,
+            "---",
+        ]
+        text_body = "\n".join(text_lines)
+
+        html_body = (
+            f'<h3 style="color:#b00020">PR Signal Finder audit FAILED</h3>'
+            f'<p><strong>Error type:</strong> {html.escape(err_type)}<br>'
+            f'<strong>Error:</strong> {html.escape(err_msg)}<br>'
+            f'<strong>Tier:</strong> {html.escape(tier)}</p>'
+            f'<p><strong>Problem statement:</strong> {html.escape(problem_statement[:500])}</p>'
+            f'<h4>Parse strategies attempted</h4>'
+            f'<pre style="background:#f4f4f4;padding:10px;font-size:12px">{html.escape(strategies_text)}</pre>'
+            f'<h4>Raw Claude response (first 5000 chars; full length {debug_info.get("raw_length", len(raw_response))})</h4>'
+            f'<pre style="background:#f4f4f4;padding:10px;font-size:11px;white-space:pre-wrap;word-wrap:break-word">{html.escape(raw_clip + raw_truncated_note)}</pre>'
+        )
+
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[recipient],
+            subject=subject,
+            plain_text_content=text_body,
+            html_content=html_body,
+        )
+        SendGridAPIClient(sg_key).send(msg)
+    except Exception as e:
+        print("Audit FAILURE-email send failed:", e)
+
+
+def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_provider_errors, tier, problem_statement=""):
+    """Fire-and-forget summary email to the owner after each audit.
+
+    Skipped silently if SENDGRID_API_KEY or AUDIT_DEBUG_EMAIL is unset.
+    Never raises — all errors are caught and logged.
+    """
+    recipient = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not recipient or not sg_key:
+        return
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+
+        brand = result.get("brand") or "(unknown brand)"
+        category = result.get("category") or "(unknown category)"
+        slug = result.get("slug") or "(no slug)"
+        total_responses = int(result.get("total_responses") or 0)
+        brand_mentions = int(result.get("brand_mention_count") or 0)
+        total_citations = int(result.get("total_citations_extracted") or 0)
+        competitors = result.get("competitors") or []
+        media_targets = result.get("media_targets") or []
+        institutional_targets = result.get("institutional_targets") or []
+        analyst_targets = result.get("analyst_targets") or []
+        domains = result.get("raw_citation_domains") or []
+        base = (SIGNAL_BASE_URL or "").rstrip("/")
+        if not base:
+            try:
+                base = request.url_root.rstrip("/")
+            except Exception:
+                base = ""
+        report_link = f"{base}/signal/{slug}" if slug != "(no slug)" else "(unavailable)"
+        json_link = f"{base}/signal/{slug}.json" if slug != "(no slug)" else "(unavailable)"
+
+        flags = _compute_audit_anomaly_flags(result, duration_seconds, per_provider_done, per_provider_errors)
+        flags_label = ", ".join(flags) if flags else "OK"
+
+        # Per-provider error summary.
+        err_lines = []
+        for provider, done in (per_provider_done or {}).items():
+            errs = (per_provider_errors or {}).get(provider, 0)
+            err_lines.append(f"{provider}: {errs} errors / {done}")
+        err_summary = " · ".join(err_lines) if err_lines else "(no provider data)"
+
+        # Top 3 outlets / competitors.
+        top_outlets = sorted(domains, key=lambda d: d.get("count", 0), reverse=True)[:3]
+        top_outlet_lines = [f"{d.get('domain', '?')} ({d.get('count', 0)})" for d in top_outlets] or ["(none)"]
+        top_competitors = sorted(competitors, key=lambda c: c.get("mention_count", 0), reverse=True)[:3]
+        top_comp_lines = [f"{c.get('name', '?')} ({c.get('mention_count', 0)})" for c in top_competitors] or ["(none)"]
+
+        subject = f"[Signal Finder · {tier}] {brand} — {flags_label}"
+
+        # Plain text body
+        text_lines = [
+            f"PR Signal Finder audit completed",
+            f"",
+            f"Brand: {brand}",
+            f"Category: {category}",
+            f"Tier: {tier}",
+            f"Slug: {slug}",
+            f"Report: {report_link}",
+            f"Raw JSON: {json_link}",
+            f"",
+            f"Duration: {duration_seconds:.1f}s" if duration_seconds else "Duration: (unknown)",
+            f"",
+            f"Stats:",
+            f"  Total LLM responses: {total_responses}",
+            f"  Brand mentions: {brand_mentions} / {total_responses}",
+            f"  Total citations extracted: {total_citations}",
+            f"  Competitors surfaced: {len(competitors)}",
+            f"  Editorial targets: {len(media_targets)}",
+            f"  Institutional targets: {len(institutional_targets)}",
+            f"  Analyst targets: {len(analyst_targets)}",
+            f"",
+            f"Per-provider errors: {err_summary}",
+            f"",
+            f"Top 3 outlets:",
+        ] + [f"  - {l}" for l in top_outlet_lines] + [
+            f"",
+            f"Top 3 competitors:",
+        ] + [f"  - {l}" for l in top_comp_lines] + [
+            f"",
+            f"Anomaly flags: {flags_label}",
+        ]
+        if problem_statement:
+            text_lines += ["", f"Problem statement: {problem_statement[:500]}"]
+        text_body = "\n".join(text_lines)
+
+        # HTML body
+        flag_html = ""
+        if flags:
+            flag_html = (
+                '<p style="color:#b00020;font-weight:700;margin:10px 0">'
+                'Anomaly flags: ' + html.escape(flags_label) + '</p>'
+            )
+        else:
+            flag_html = (
+                '<p style="color:#2a7a3a;font-weight:600;margin:10px 0">Anomaly flags: OK</p>'
+            )
+        report_html = (
+            f'<a href="{html.escape(report_link)}">{html.escape(report_link)}</a>'
+            if slug != "(no slug)" else '<em>(unavailable)</em>'
+        )
+        json_html = (
+            f'<a href="{html.escape(json_link)}">{html.escape(json_link)}</a>'
+            if slug != "(no slug)" else '<em>(unavailable)</em>'
+        )
+        outlets_html = "".join(f"<li>{html.escape(l)}</li>" for l in top_outlet_lines)
+        comps_html = "".join(f"<li>{html.escape(l)}</li>" for l in top_comp_lines)
+        problem_html = (
+            f'<p style="color:#555"><strong>Problem statement:</strong> {html.escape(problem_statement[:500])}</p>'
+            if problem_statement else ''
+        )
+        duration_html = f'{duration_seconds:.1f}s' if duration_seconds else '(unknown)'
+
+        html_body = (
+            f'<h3>PR Signal Finder audit completed</h3>'
+            f'{flag_html}'
+            f'<p><strong>Brand:</strong> {html.escape(brand)}<br>'
+            f'<strong>Category:</strong> {html.escape(category)}<br>'
+            f'<strong>Tier:</strong> {html.escape(tier)}<br>'
+            f'<strong>Slug:</strong> {html.escape(slug)}<br>'
+            f'<strong>Duration:</strong> {duration_html}</p>'
+            f'<p><strong>Report:</strong> {report_html}<br>'
+            f'<strong>Raw JSON:</strong> {json_html}</p>'
+            f'<h4>Stats</h4>'
+            f'<ul style="margin:0;padding-left:20px">'
+            f'<li>Total LLM responses: {total_responses}</li>'
+            f'<li>Brand mentions: {brand_mentions} / {total_responses}</li>'
+            f'<li>Total citations extracted: {total_citations}</li>'
+            f'<li>Competitors surfaced: {len(competitors)}</li>'
+            f'<li>Editorial targets: {len(media_targets)}</li>'
+            f'<li>Institutional targets: {len(institutional_targets)}</li>'
+            f'<li>Analyst targets: {len(analyst_targets)}</li>'
+            f'</ul>'
+            f'<p><strong>Per-provider errors:</strong> {html.escape(err_summary)}</p>'
+            f'<h4>Top 3 outlets</h4><ul style="margin:0;padding-left:20px">{outlets_html}</ul>'
+            f'<h4>Top 3 competitors</h4><ul style="margin:0;padding-left:20px">{comps_html}</ul>'
+            f'{problem_html}'
+        )
+
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[recipient],
+            subject=subject,
+            plain_text_content=text_body,
+            html_content=html_body,
+        )
+        SendGridAPIClient(sg_key).send(msg)
+    except Exception as e:
+        print("Audit debug-email send failed:", e)
+
+
+def _generate_audit_prompts(problem_statement, tier="free"):
+    """Run ONLY the prompt-generation phase. Returns {brand, category, prompts}.
+
+    Extracted from run_citation_audit so the paid-tier prompt editor can call
+    this without the LLM batch / analysis steps. Tier governs prompt_count.
+    """
+    cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
+    prompt_count = cfg["prompt_count"]
+
+    prompt_gen_response = anthropic.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4000 if prompt_count > 20 else 2000,
+        messages=[{
+            "role": "user",
+            "content": f"""You are an AI citation strategist. A communications professional wants their brand to be the answer when people ask AI assistants about a specific problem.
+
+Their goal: "{problem_statement}"
+
+Today's date is {_today_label()}. Frame the prompts as if a real person is searching right now — so when a prompt uses words like "latest", "recent", "today's", or "current", it should pull sources from the past 12 months, not 2023 or 2024.
+
+Your job:
+1. Identify the BRAND from their statement (the company/product they want to promote).
+2. Identify the CATEGORY or PROBLEM SPACE.
+3. Generate exactly {prompt_count} prompts that a real person would type into ChatGPT, Claude, or Gemini when researching this problem space. These should be natural, varied prompts — some broad ("best X for Y"), some specific (the BRAND itself can be named, e.g. "{{brand}} reviews", "{{brand}} alternatives"), some question-based ("how do I solve Y?"), some recommendation-seeking ("what do experts recommend for Y?"). At higher prompt counts, cover adjacent angles: pricing, alternatives, troubleshooting, expert opinions, regulatory considerations, real-world reviews, integration questions, regional perspectives. Where appropriate, include time-current framing like "in {_today_label()}", "this year", or "the latest" — not year-specific shorthand.
+
+CRITICAL — DO NOT PRE-NAME COMPETITORS:
+- You MAY reference the searched brand by name in some prompts (it's their own audit; that's natural).
+- You MUST NOT pre-name specific competitor brands. NEVER write "BrandA vs BrandB vs BrandC" — that pre-anchors the responses and biases the competitor discovery.
+- For comparison-style prompts, use OPEN framing: "{{brand}} alternatives", "{{brand}} vs competitors", "{{brand}} vs other leading brands in [category]", "how does {{brand}} compare to others in [category]".
+- The goal is to let each LLM organically surface ITS OWN top competitors so we measure the real AI-mindshare competitive landscape, not just confirm the brands the prompt fed in.
+- At most 30% of the prompts should reference the searched brand by name; the rest should be brand-agnostic category queries (e.g. "best [category] for [audience]"). This balances brand-specific recall with discovering the open competitive set.
+
+Respond with ONLY valid JSON in this exact format:
+{{
+  "brand": "the brand name",
+  "category": "the problem/category",
+  "prompts": ["prompt 1", "prompt 2", ... "prompt {prompt_count}"]
+}}"""
+        }]
+    )
+    prompt_gen_text = prompt_gen_response.content[0].text
+    json_match = re.search(r'\{.*\}', prompt_gen_text, re.DOTALL)
+    if not json_match:
+        raise ValueError("Failed to parse prompt generation response")
+    prompt_data = json.loads(json_match.group())
+    return {
+        "brand": prompt_data["brand"],
+        "category": prompt_data["category"],
+        "prompts": prompt_data["prompts"][:prompt_count],
+    }
+
+
+def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts_override=None):
+    """Full agent pipeline: one prompt in, ranked media/partnership/analyst lists out.
+
+    If `prompts_override` is provided (paid-tier prompt-editor flow), the
+    prompt-generation step is skipped and the supplied prompts are used as-is.
+    Brand + category are derived from a lightweight extraction call so the
+    downstream analysis still gets them.
+    """
+    cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
+    prompt_count = cfg["prompt_count"]
+    llms = cfg["llms"]
+    media_limit = cfg["media_target_count"]
+    institutional_limit = cfg["institutional_target_count"]
+    analyst_limit = cfg["analyst_target_count"]
+    max_workers = cfg["max_workers"]
+
+    def emit(step, detail, current=0, total=0):
+        if on_progress:
+            on_progress(step, detail, current, total)
+
+    if prompts_override:
+        # User-curated prompts (paid tier prompt-editor flow). Still need
+        # brand + category for the analysis prompt; derive them from the
+        # problem statement via a small Claude call.
+        emit("prompts", "Preparing your curated prompts...", 0, 1)
+        try:
+            brand_resp = anthropic.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=300,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f'From this brand-positioning statement, extract the BRAND name and the '
+                        f'CATEGORY/problem space. Respond with ONLY valid JSON: '
+                        f'{{"brand": "...", "category": "..."}}\n\n'
+                        f'Statement: "{problem_statement}"'
+                    ),
+                }]
+            )
+            brand_text = brand_resp.content[0].text
+            bm = re.search(r'\{.*\}', brand_text, re.DOTALL)
+            if not bm:
+                raise ValueError("brand extraction parse failed")
+            bd = json.loads(bm.group())
+            brand = bd["brand"]
+            category = bd["category"]
+        except Exception:
+            # Fallback: strip leading "I want " / verbs from the statement.
+            brand = problem_statement[:60].strip()
+            category = "the brand's category"
+        prompts = [p for p in prompts_override if isinstance(p, str) and p.strip()]
+        if not prompts:
+            raise ValueError("No prompts supplied for the audit.")
+        emit("prompts", f"Using your {len(prompts)} curated prompts for \"{brand}\"", 1, 1)
+    else:
+        emit("prompts", "Generating search prompts...", 0, 1)
+        gen = _generate_audit_prompts(problem_statement, tier=tier)
+        brand = gen["brand"]
+        category = gen["category"]
+        prompts = gen["prompts"]
+        emit("prompts", f"Generated {len(prompts)} prompts for \"{brand}\"", 1, 1)
+
+    tasks = [(provider, pi, prompt_text)
+             for pi, prompt_text in enumerate(prompts)
+             for provider in llms]
+    total_calls = len(tasks)
+
+    time_note = _time_aware_note()
+
+    def run_one(provider, pi, prompt_text):
+        enriched = prompt_text + CITATION_SUFFIX + time_note
+        try:
+            resp_text = _call_llm(provider, enriched)
+            return {"llm": provider, "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text), "error": None}
+        except Exception as e:
+            return {"llm": provider, "prompt": prompt_text, "response": f"[Error: {e}]", "citations": [], "error": str(e)[:120]}
+
+    all_responses = []
+    completed = 0
+    per_provider_errors = {p: 0 for p in llms}
+    per_provider_done = {p: 0 for p in llms}
+    progress_lock = threading.Lock()
+
+    # Global LLM-batch deadline. Sized generously per tier: free should fit
+    # easily in 2 min; paid gets 15 min to protect the slow tail (Grok averages
+    # 5-30s/call, and 12 workers can't drain 400 calls in 6 min — at 360s we
+    # were shipping 57% completion on Adobe paid audits). Happy-path paid
+    # audits still finish in 3-5 min; the higher ceiling only kicks in on slow
+    # inference days. If one provider hangs, we still proceed to analysis with
+    # the partial responses we've collected.
+    batch_deadline_seconds = 180 if tier == "free" else 900
+
+    emit("llm", f"Querying {len(llms)} LLMs × {len(prompts)} prompts ({total_calls} calls)...", 0, total_calls)
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        future_map = {executor.submit(run_one, *t): t for t in tasks}
+        deadline = datetime.utcnow() + timedelta(seconds=batch_deadline_seconds)
+        timed_out = False
+        for fut in as_completed(future_map.keys(), timeout=batch_deadline_seconds):
+            try:
+                result = fut.result()
+            except Exception as e:
+                # Shouldn't happen since run_one catches, but defensively log.
+                provider, pi, ptxt = future_map[fut]
+                result = {"llm": provider, "prompt": ptxt, "response": f"[Error: {e}]", "citations": [], "error": str(e)[:120]}
+            with progress_lock:
+                all_responses.append(result)
+                completed += 1
+                per_provider_done[result["llm"]] = per_provider_done.get(result["llm"], 0) + 1
+                if result.get("error"):
+                    per_provider_errors[result["llm"]] = per_provider_errors.get(result["llm"], 0) + 1
+                error_suffix = ""
+                err_summary = [f"{p}: {n}" for p, n in per_provider_errors.items() if n > 0]
+                if err_summary:
+                    error_suffix = f" · errors → {', '.join(err_summary)}"
+                emit(
+                    "llm",
+                    f"Completed {completed}/{total_calls} ({result['llm']}){error_suffix}",
+                    completed,
+                    total_calls,
+                )
+            if datetime.utcnow() >= deadline:
+                timed_out = True
+                break
+    except FuturesTimeoutError:
+        timed_out = True
+    finally:
+        if timed_out and completed < total_calls:
+            # Cancel still-pending futures + report partial completion.
+            cancelled = 0
+            for f, t in future_map.items():
+                if not f.done():
+                    if f.cancel():
+                        cancelled += 1
+            emit(
+                "llm",
+                f"Batch deadline hit; proceeding with {completed}/{total_calls} responses ({cancelled} cancelled)",
+                completed,
+                total_calls,
+            )
+        # Don't wait for in-flight workers — shutdown(wait=False) lets the executor
+        # release without blocking on hung Grok calls. Cancelled futures won't run.
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    # URL verification consumes 80% of the extract step's progress budget; aggregation is the rest.
+    # We size the step "total" relative to URL count so per-URL progress emits map cleanly.
+    all_urls = list({c['url'] for r in all_responses for c in (r.get('citations') or [])})
+    url_total = len(all_urls)
+    # Step total = url_total + 1 (the trailing aggregation tick). Lets ETA interpolate smoothly.
+    extract_total = max(1, url_total + 1)
+    emit("extract", f"Verifying {url_total} cited URLs (filtering 404s & confabulations)...", 0, extract_total)
+
+    if all_urls:
+        def url_progress(done, total):
+            emit("extract", f"Verifying URLs ({done}/{total})...", done, extract_total)
+        url_map = _resolve_and_verify_urls(all_urls, on_progress=url_progress)
+        dropped = _apply_url_resolution(all_responses, url_map)
+        emit("extract", f"Verified {url_total - dropped} of {url_total} URLs (dropped {dropped} dead/confabulated)", url_total, extract_total)
+    else:
+        emit("extract", "No URLs to verify", 0, extract_total)
+
+    ranked_domains = aggregate_citations(all_responses)
+    total_citations = sum(d['count'] for d in ranked_domains)
+    brand_mention_count = _count_brand_mentions(brand, all_responses)
+    emit("extract", f"Found {total_citations} citations across {len(ranked_domains)} domains · brand cited in {brand_mention_count}/{len(all_responses)} responses", extract_total, extract_total)
+
+    emit("analysis", "Identifying competitor brands...", 0, 1)
+    # Deterministic competitor counts: discover candidates via Claude (judgement),
+    # then count via _count_brand_mentions (regex over FULL response text). This
+    # kills the prior failure mode where the analysis prompt's competitor mention
+    # counts were derived from 500-char excerpts and didn't reconcile against
+    # the raw responses a consultant might grep.
+    competitor_candidates = _extract_competitor_candidates(brand, category, all_responses)
+    competitor_counts = []
+    for name in competitor_candidates:
+        cnt = _count_brand_mentions(name, all_responses)
+        if cnt > 0:
+            competitor_counts.append({"name": name, "mention_count": cnt})
+    competitor_counts.sort(key=lambda c: c["mention_count"], reverse=True)
+    competitor_counts = competitor_counts[:10]
+    top_competitor_block = "\n".join(
+        f"  - {c['name']}: cited in {c['mention_count']} of {len(all_responses)} responses"
+        for c in competitor_counts
+    ) or "  (no clear competitor brands surfaced)"
+
+    emit("analysis", "Verifying editorial sources...", 0, 1)
+
+    # Defunct domains (KNOWN_DEFUNCT_ORGS) are intentionally absent from all
+    # three lists — classify_citation_domain returns 'defunct' for them, which
+    # matches none of the filters below. They never reach the analysis prompt,
+    # so Claude can never recommend partnering with an org that no longer exists.
+    editorial_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'editorial']
+    institutional_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'institutional']
+    analyst_domains_found = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'analyst']
+    defunct_domains_found = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'defunct']
+    if defunct_domains_found:
+        print(f"classify_citation_domain: excluded {len(defunct_domains_found)} defunct domains: " +
+              ", ".join(d['domain'] for d in defunct_domains_found[:10]))
+
+    # Deterministic self-domain filter: drop the brand's own properties from
+    # editorial + institutional lists before they reach Claude. You can't pitch
+    # yourself, and seeing "developer.adobe.com" as a media target torpedoes
+    # report credibility. Belt-and-suspenders with the Claude-side prompt
+    # update inside verify_editorial_domains.
+    self_domains_dropped = []
+    if brand:
+        before_e = len(editorial_domains)
+        editorial_domains = [d for d in editorial_domains if not _is_brand_own_domain(d['domain'], brand)]
+        self_domains_dropped.extend(
+            d['domain'] for d in (ranked_domains)
+            if classify_citation_domain(d['domain']) == 'editorial'
+            and _is_brand_own_domain(d['domain'], brand)
+        )
+        before_i = len(institutional_domains)
+        institutional_domains = [d for d in institutional_domains if not _is_brand_own_domain(d['domain'], brand)]
+        if self_domains_dropped or before_i > len(institutional_domains):
+            print(f"_is_brand_own_domain: dropped {before_e - len(editorial_domains)} editorial + "
+                  f"{before_i - len(institutional_domains)} institutional self-domains for brand '{brand}': "
+                  + ", ".join(self_domains_dropped[:10]))
+
+    # AI verification: filter out B2B vendors / marketplaces / non-media domains the heuristic missed.
+    editorial_domains, rejected_editorial = verify_editorial_domains(editorial_domains, brand, category)
+    if rejected_editorial:
+        print(f"verify_editorial_domains: filtered out {len(rejected_editorial)} non-media domains: " +
+              ", ".join(d['domain'] for d in rejected_editorial[:10]))
+
+    # Topic-verify each candidate sample URL. _is_specific_article only checks
+    # URL shape — it can't tell a real-but-off-topic article (Verge piece on a
+    # golf cart) from an LLM hallucination (creativebloq.com/news/adobe-ai-...
+    # that 403s us). Topic verification GETs the page, parses title + first
+    # ~1500 chars of body, and confirms the brand or a category keyword
+    # actually appears. Off-topic URLs get dropped; inaccessible URLs (403,
+    # 5xx, timeouts) get transitive trust if the same domain has at least one
+    # other verified URL.
+    #
+    # We only touch the surfaced `sample_urls` (via `dom['specific_urls']`).
+    # Raw evidence (`all_responses[*].citations`, `raw_citation_domains[*].urls`)
+    # stays intact for the JSON download.
+    emit("analysis", "Topic-verifying displayed sample URLs...", 0, 1)
+    brand_lower = (brand or '').lower().strip()
+    category_kw = _category_keywords(category)
+
+    # Collect candidate URLs to verify: top 10 specific_urls per surviving
+    # domain across all three classifications. Capped per-domain so a single
+    # ranking-heavy outlet can't blow the GET budget.
+    candidate_urls = []
+    for dom in (editorial_domains + institutional_domains + analyst_domains_found):
+        for u in (dom.get('specific_urls') or [])[:10]:
+            candidate_urls.append(u)
+    candidate_urls = list(set(candidate_urls))  # dedup
+
+    url_topic_status = {}  # url -> 'verified' | 'off_topic' | 'inaccessible'
+    if candidate_urls:
+        with ThreadPoolExecutor(max_workers=20) as ex:
+            futures = {ex.submit(_check_url_topic, u, brand_lower, category_kw): u
+                       for u in candidate_urls}
+            for fut in as_completed(futures):
+                try:
+                    status = fut.result()
+                except Exception:
+                    status = 'inaccessible'
+                url_topic_status[futures[fut]] = status
+
+    # Domains earn transitive trust if AT LEAST ONE of their URLs verified —
+    # the LLM probably wasn't fabricating that domain wholesale.
+    def _domain_of(u):
+        try:
+            from urllib.parse import urlparse
+            h = (urlparse(u).netloc or '').lower()
+            return h[4:] if h.startswith('www.') else h
+        except Exception:
+            return ''
+
+    verified_domains = set()
+    for u, status in url_topic_status.items():
+        if status == 'verified':
+            host = _domain_of(u)
+            if host:
+                verified_domains.add(host)
+
+    # Rebuild each domain's specific_urls. A URL survives iff:
+    #   - it's 'verified' itself, OR
+    #   - it's 'inaccessible' AND its host is in verified_domains, OR
+    #   - it wasn't a candidate (beyond top-10 per domain — leave untouched).
+    # 'off_topic' is always dropped.
+    for dom in ranked_domains:
+        new_specific = []
+        for u in (dom.get('specific_urls') or []):
+            status = url_topic_status.get(u)
+            if status == 'verified':
+                new_specific.append(u)
+            elif status == 'off_topic':
+                continue  # drop
+            elif status == 'inaccessible':
+                host = _domain_of(u)
+                if host and host in verified_domains:
+                    new_specific.append(u)
+                # else drop — no transitive trust for this domain.
+            else:
+                # Not in the candidate set (beyond top-10 per domain). Leave alone.
+                new_specific.append(u)
+        dom['specific_urls'] = new_specific
+
+    v_count = sum(1 for s in url_topic_status.values() if s == 'verified')
+    o_count = sum(1 for s in url_topic_status.values() if s == 'off_topic')
+    i_count = sum(1 for s in url_topic_status.values() if s == 'inaccessible')
+    print(f"[audit] topic-verify: {v_count} verified / {o_count} off-topic (dropped) "
+          f"/ {i_count} inaccessible (transitive-trust) of {len(candidate_urls)} candidates")
+
+    emit("analysis", "Building your signal report...", 0, 1)
+
+    def fmt_block(domains, limit):
+        # Prefer specific-article URLs for the sample shown to Claude — keeps
+        # homepages / tag-index pages out of the recommended sample_urls. If a
+        # domain has no specific URLs (only homepages were cited), fall back
+        # to the full urls list so Claude still sees evidence.
+        def sample(d):
+            specific = d.get('specific_urls') or []
+            return specific[:3] if specific else (d.get('urls') or [])[:3]
+        return "\n".join(
+            f"  {i+1}. {d['domain']} — cited {d['count']}x by {', '.join(d['llms'])} — sample URLs: {', '.join(sample(d))}"
+            for i, d in enumerate(domains[:limit])
+        ) or "  (none)"
+
+    editorial_block = fmt_block(editorial_domains, max(15, media_limit * 2))
+    institutional_block = fmt_block(institutional_domains, max(10, institutional_limit * 2))
+    analyst_block = fmt_block(analyst_domains_found, max(10, analyst_limit * 2))
+
+    # Per-response excerpt size auto-tunes to fit a ~19K-token budget for the
+    # responses block. Free tier (30 responses) gets ~2500 chars each (5x more
+    # context than the old 500-char clip); paid tier (~500 responses) collapses
+    # to a 500-char floor so the prompt stays inside Claude's 200K context.
+    total_chars_budget = 75_000  # roughly 19K tokens for the responses block
+    per_response_chars = max(500, total_chars_budget // max(1, len(all_responses)))
+    per_response_chars = min(per_response_chars, 3000)  # don't exceed 3000 even on small batches
+
+    responses_block = ""
+    for i, r in enumerate(all_responses):
+        citation_urls = [c['url'] for c in r.get('citations', [])]
+        responses_block += f"\n--- Response {i+1} [{r['llm']}] ---\nPrompt: {r['prompt']}\nCitations found: {citation_urls}\n{r['response'][:per_response_chars]}\n"
+
+    # Tier-aware token budget. The 4K default was truncating paid-tier responses
+    # mid-JSON (25 media + 10 institutional + 10 analyst + competitors + exec
+    # summary won't fit). 8K gives Claude headroom; the prompt also tells it
+    # to self-budget so it ships concise text rather than truncated JSON.
+    analysis_max_tokens = 8000 if tier == "paid" else 5000
+    output_budget_chars = analysis_max_tokens * 4  # rough char approximation
+
+    # Per-call timeout override. The Anthropic client's 60s default was triggering
+    # APITimeoutError on heavy paid-tier analysis (500 responses worth of context +
+    # 8K output tokens). 240s gives the call real headroom on slow inference days.
+    analysis_call_timeout = 240.0 if tier == "paid" else 120.0
+
+    _analysis_prompt_content = f"""You are an AI citation intelligence analyst. You have actual citation data extracted from 30 AI-generated responses (10 prompts × 3 LLMs: Claude, ChatGPT, Gemini) about the category "{category}".
+
+The client's brand is "{brand}". Their goal: "{problem_statement}"
+
+DETERMINISTIC FACTS (pre-computed from raw response text — use these EXACTLY, do not re-estimate):
+- Brand mention count: {brand_mention_count} of {len(all_responses)} responses mention "{brand}" (deterministic substring count over full response text — authoritative).
+- TOP COMPETITOR MENTION COUNTS (pre-computed deterministically — these are the AUTHORITATIVE counts for the `competitors` array. Do NOT re-estimate, do NOT add competitors not in this list, do NOT change the counts):
+{top_competitor_block}
+
+The citation data has been pre-classified into three groups:
+
+EDITORIAL DOMAINS (news, trade press, magazines, B2B publications — outlets a PR pro can actually pitch):
+{editorial_block}
+
+INSTITUTIONAL / ASSOCIATION DOMAINS (.gov, .edu, .mil, and non-profit/trade-association .orgs — sources of authority that require partnership, certification, sponsorship, or research collaboration, NOT traditional pitching):
+{institutional_block}
+
+ANALYST FIRMS (Gartner, Forrester, IDC, and major consultancies — influence via analyst briefings, inclusion in evaluations like Magic Quadrants / Waves / MarketScapes, sponsored research, and client subscriptions, NOT pitching):
+{analyst_block}
+
+Total unique domains cited: {len(ranked_domains)}
+Total citation instances: {total_citations}
+
+RESPONSE SUMMARIES (with extracted citations):
+{responses_block}
+
+Produce THREE target lists:
+
+1. TOP {media_limit} MEDIA TARGETS — drawn ONLY from the EDITORIAL DOMAINS above. These are pitch-able publications.
+2. AUTHORITY & PARTNERSHIP TARGETS — drawn ONLY from the INSTITUTIONAL / ASSOCIATION DOMAINS above. Up to {institutional_limit}, only if meaningfully present. Universities, agencies, certification bodies, trade associations, advocacy non-profits, or government bodies.
+3. ANALYST TARGETS — drawn ONLY from the ANALYST FIRMS above. Up to {analyst_limit}. ABSOLUTE RULE: if fewer than 2 distinct analyst firms appear in the ANALYST FIRMS list above (or none of them have 2+ citations), return an EMPTY array — `[]`. Do NOT invent analyst recommendations for categories that don't have analyst coverage (e.g. hospitality, fashion, consumer products, food & beverage, design, lifestyle). Influence is via analyst relations, not pitching or partnership.
+
+If a category has nothing, return an empty array for it. NEVER write speculative language like "the absence of analyst citations suggests..." or "limited B2B influence requires analyst investment" — silence is correct when the data is empty.
+
+For each target:
+- Map domain to its proper name (e.g. allure.com → Allure, nih.gov → National Institutes of Health, harvard.edu → Harvard University, omri.org → OMRI, garden.org → National Gardening Association, gartner.com → Gartner, forrester.com → Forrester)
+- Note competitors discussed alongside it
+- Explain the influence strategy (editorial: how a placement helps; authority/partnership: what specific partnership/certification/sponsorship/research collab; analyst: which evaluation to target, briefing cadence, or research sponsorship that would shift citations)
+
+CRITICAL: Only include entities that actually appear in the citation data above. Do NOT invent or guess.
+
+NULL-VALUED FIELDS: `gap_insight` is the ONE media_targets field allowed to be JSON null. Use null (not "" and not a generic 'opportunity' string) when the data does not support a concrete gap claim. All other string fields should always be populated.
+
+INSTITUTIONAL TYPE GUIDANCE — get the classification right:
+- Visit Seattle, NYC Tourism, Brand USA, etc. → "Destination Marketing Organization (DMO)", NOT "Government Agency". DMOs are quasi-public marketing entities, not government bodies. Partnership plays differ accordingly (DMOs run press trips, co-marketing, partner pages; agencies don't).
+- If the entity publishes news, opinion, or industry coverage REGULARLY (HospitalityNet, Skift, PhocusWire, etc.) it is EDITORIAL — do NOT classify as institutional and do NOT include it in institutional_targets. It belongs in media_targets. Specifically: HospitalityNet is a trade PUBLICATION (industry news + opinion), not a trade association.
+- Trade associations have members, lobbying, certifications, conferences. If the entity primarily PUBLISHES CONTENT, it is editorial, not institutional.
+
+SAMPLE_URLS RULES — these get surfaced to the client as "evidence" so they must be high-quality:
+- PREFER URLs that point to specific articles (paths like /2025/03/some-headline/ or /article/title-slug/). The sample URLs shown above for each domain have already been filtered to favor article-style paths.
+- AVOID homepage URLs (just the bare domain), tag/category index pages (/tag/ai/, /category/news/), search-result pages, author archive pages.
+- If a domain only offered homepage-style URLs in the sample, include AT MOST 1 — and prefer leaving sample_urls empty over filling it with misleading evidence. An empty array is correct; a homepage URL passed off as "evidence" is not.
+
+CRITICAL OUTPUT BUDGET: Your entire response must fit in {analysis_max_tokens} tokens (~{output_budget_chars} characters) or less. Be CONCISE — short rationales, short gap_insights, no filler words. Better to ship complete JSON with terse text than truncated JSON with verbose text. The JSON MUST be syntactically complete with all closing braces and brackets.
+
+Respond with ONLY valid JSON:
+{{
+  "brand": "{brand}",
+  "category": "{category}",
+  "brand_mention_count": {brand_mention_count},
+  "total_responses": {len(all_responses)},
+  "total_citations_extracted": {total_citations},
+  "competitors": [
+    {{"name": "competitor name (USE THE NAMES + COUNTS FROM 'TOP COMPETITOR MENTION COUNTS' above EXACTLY — do not invent or omit; fill `cited_by` from response inspection)", "mention_count": <int from pre-computed list>, "cited_by": ["Claude", "ChatGPT", "Gemini"]}}
+  ],
+  "media_targets": [
+    {{
+      "rank": 1,
+      "outlet": "Publication name derived from actual citation domain",
+      "domain": "the actual domain from citation data",
+      "reporter": "Named journalist if identifiable from response content, otherwise null",
+      "citation_frequency": <actual count from citation data>,
+      "sample_urls": ["up to 10 actual specific-article URLs that were cited — see SAMPLE_URLS RULES above; prefer empty over homepage/tag-page filler"],
+      "cited_by_llms": ["which LLMs cited this outlet"],
+      "competitors_citing": ["competitors discussed in responses that cited this outlet"],
+      "rationale": "One sentence on why earned media here would move the needle for {brand}",
+      "gap_insight": "DATA-GROUNDED RULE: This field describes a CONCRETE editorial gap at this outlet. Allowed ONLY when you have evidence from the responses_block to support a specific claim. Otherwise return null (JSON null — NOT an empty string, NOT a generic 'opportunity' filler). Specifically:\n        - If competitors_citing is non-empty AND the responses_block names a specific format/topic where they win: write that gap. Example: 'Spanx dominates this outlet's best-of roundup format while {brand} appears only in standalone reviews.'\n        - If competitors_citing is empty AND you have evidence from the responses_block that {brand} is missing from a specific identifiable section: write that. Example: 'Brand absent from {{outlet}}'s Hotels vertical where competitors haven't established presence either.'\n        - In ALL other cases — INCLUDING outlets where the brand IS cited but you have no evidence of a specific gap — return JSON null.\n        - NEVER invent 'whitespace opportunity', 'untapped potential', 'pure whitespace', or 'open editorial territory' framing. These are filler and embarrass the report. If the data doesn't support a specific gap claim, omit it (return null)."
+    }}
+  ],
+  "institutional_targets": [
+    {{
+      "rank": 1,
+      "institution": "Proper name of the institution",
+      "domain": "the actual domain from citation data",
+      "type": "Government Agency | Destination Marketing Organization (DMO) | Academic / Research Institute | Trade Association | Certification Body | Advocacy Non-profit | Standards Body",
+      "citation_frequency": <actual count from citation data>,
+      "sample_urls": ["up to 10 actual specific-article URLs that were cited — see SAMPLE_URLS RULES above; prefer empty over homepage/tag-page filler"],
+      "cited_by_llms": ["which LLMs cited this institution"],
+      "partnership_play": "One sentence on the specific partnership, certification, sponsorship, research collaboration, or expert engagement that would influence AI citations through this entity"
+    }}
+  ],
+  "analyst_targets": [
+    {{
+      "rank": 1,
+      "firm": "Proper firm name",
+      "domain": "the actual domain from citation data",
+      "type": "Industry Analyst | Management Consultancy | Boutique Research",
+      "citation_frequency": <actual count from citation data>,
+      "sample_urls": ["up to 10 actual specific-article URLs that were cited — see SAMPLE_URLS RULES above; prefer empty over homepage/tag-page filler"],
+      "cited_by_llms": ["which LLMs cited this firm"],
+      "evaluations_referenced": ["Specific reports/evaluations cited if identifiable from response text — e.g. 'Magic Quadrant for APM', 'Forrester Wave: Observability' — otherwise empty array"],
+      "analyst_play": "One sentence on the specific analyst relations move: which evaluation to target, briefing cadence to establish, sponsored research, or client subscription that would shift citations"
+    }}
+  ],
+  "executive_summary": "3-4 sentences. DATA-ANCHORED FRAMING — read the actual numbers before choosing your tone:\n  (1) Compare {brand_mention_count} (the brand's mention count) to the TOP competitor mention count from the 'competitors' array.\n  (2) If {brand} >= top competitor: LEAD with the brand's dominant or competitive AI mindshare in the category. Frame the strategy as 'protect and extend the lead' or 'convert volume into the right kind of authoritative coverage'. NEVER say the brand 'lacks editorial authority' or is 'underrepresented' if its mention count beats competitors — that's empirically wrong.\n  (3) If {brand} is significantly behind top competitor: frame as a visibility gap that earned media can close. Be specific.\n  (4) Per-target observations should focus on the EDITORIAL FORMAT gap (e.g. brand wins product reviews but loses 'best of' roundups) — not blanket 'competitors dominate' claims if data doesn't support it. Look at competitors_citing per outlet: an empty competitors_citing means the outlet is open whitespace for {brand}, not a competitive bloodbath.\n  (5) Discuss analyst relations or authority partnerships ONLY if the corresponding target lists below contain actual entries. For consumer brands or categories where analyst firms are not relevant (hospitality, fashion, food & beverage, consumer products, etc.), do NOT mention analysts or speculate about their absence — silence is fine."
+}}"""
+
+    # Retry once with reduced output budget on APITimeoutError. The most common
+    # cause of timeout is Claude generating until it hits max_tokens; trimming
+    # the budget forces it to ship concise JSON inside the deadline.
+    def _call_analysis(max_tok):
+        return anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=max_tok,
+            timeout=analysis_call_timeout,
+            messages=[{"role": "user", "content": _analysis_prompt_content}],
+        )
+
+    try:
+        analysis_response = _call_analysis(analysis_max_tokens)
+    except Exception as _e:
+        _err_name = type(_e).__name__
+        if 'Timeout' in _err_name or 'Connection' in _err_name:
+            _reduced = max(4000, analysis_max_tokens // 2)
+            print(f"[analysis] {_err_name} at max_tokens={analysis_max_tokens}; retrying with max_tokens={_reduced}")
+            analysis_response = _call_analysis(_reduced)
+        else:
+            raise
+
+    analysis_text = analysis_response.content[0].text
+    # Multi-strategy parse with a Claude self-repair fallback. Raises
+    # AuditAnalysisError (which the SSE worker catches and emails diagnostics
+    # for) if every strategy fails.
+    analysis, _parse_debug = _parse_analysis_json(analysis_text, retry_callback=_retry_analysis_json)
+
+    # Hard-overwrite competitor counts with the deterministic pre-computed values.
+    # Even if Claude drifts on the counts (or invents extra competitors), the
+    # final report can't disagree with what a regex would produce. Preserve
+    # cited_by lists Claude produced, by name, when we have them.
+    cited_by_lookup = {}
+    for c in analysis.get('competitors', []) or []:
+        try:
+            cited_by_lookup[(c.get('name') or '').strip().lower()] = c.get('cited_by') or []
+        except Exception:
+            pass
+    analysis['competitors'] = [
+        {
+            "name": c["name"],
+            "mention_count": c["mention_count"],
+            "cited_by": cited_by_lookup.get(c["name"].lower(), []),
+        }
+        for c in competitor_counts
+    ]
+
+    analysis["prompts_used"] = prompts
+    # Full ranked domains list (no cap). Each dict already carries:
+    # {domain, count, llms, prompts, urls, specific_urls, diversity_score} — preserve all.
+    analysis["raw_citation_domains"] = ranked_domains
+    # Full raw per-response data: {llm, prompt, response, citations}. Lets users
+    # re-analyze, audit, debug, or rerun analysis on a past report.
+    analysis["all_responses"] = all_responses
+    # Surface to the frontend so it can offer a "Download raw data" affordance.
+    analysis["full_responses_available"] = True
+    # Per-provider error counts (consumed by the debug-email summary). Leading
+    # underscore so a future cleanup pass can strip non-public keys easily.
+    analysis["_per_provider_errors"] = dict(per_provider_errors)
+    analysis["_per_provider_done"] = dict(per_provider_done)
+
+    # Audit completion tracking. Surfaces partial-delivery in the UI + saved
+    # payload so users (and the debug email) can see when the wall-clock
+    # deadline cancelled the slow tail. `completion_rate` is a 0.0-1.0 ratio.
+    analysis["responses_completed"] = len(all_responses)
+    analysis["responses_planned"] = total_calls
+    completion_rate = round(len(all_responses) / max(1, total_calls), 3)
+    analysis["completion_rate"] = completion_rate
+
+    # Belt-and-suspenders: set tier here so it's guaranteed-set on the saved
+    # payload even if a caller forgets to mutate the dict before persisting.
+    # (Adobe paid audit saved with tier=None — this prevents recurrence.)
+    analysis["tier"] = tier
+
+    print(f"[audit] tier={tier} completion={completion_rate:.1%} ({len(all_responses)}/{total_calls})")
+    return analysis
+
+
+@app.route('/citation-audit', methods=['GET', 'POST'])
+def citation_audit():
+    user = current_signal_user()
+    credits = current_user_credits(user)
+
+    if request.method == 'GET':
+        return render_template(
+            'citation_audit.html',
+            ga_measurement_id=GA_MEASUREMENT_ID,
+            signal_user=user,
+            signal_credits=credits,
+        )
+
+    problem_statement = request.form.get('problem_statement', '').strip()
+    if not problem_statement:
+        return jsonify({"error": "Please describe the problem you want your brand to own."}), 400
+
+    requested_tier = (request.form.get('tier') or 'free').strip().lower()
+    if requested_tier not in ('free', 'paid'):
+        requested_tier = 'free'
+
+    # Optional curated prompts (paid-tier prompt-editor flow). Form sends them
+    # as a JSON-encoded string under "prompts" — accept missing/empty as the
+    # signal to run the standard auto-generated path.
+    prompts_override = None
+    raw_prompts = request.form.get('prompts', '').strip()
+    if raw_prompts:
+        try:
+            parsed = json.loads(raw_prompts)
+            if isinstance(parsed, list):
+                cleaned = [p.strip() for p in parsed if isinstance(p, str) and p.strip()]
+                if 10 <= len(cleaned) <= 200:
+                    prompts_override = cleaned
+                else:
+                    return jsonify({"error": "Prompt list must contain between 10 and 200 prompts."}), 400
+        except Exception:
+            return jsonify({"error": "Could not parse the provided prompts."}), 400
+
+    tier = 'free'
+    credit_charged = False
+    if requested_tier == 'paid':
+        if not user:
+            return jsonify({"error": "Please sign in to run a paid audit.", "code": "auth_required"}), 401
+        # Atomic conditional UPDATE: only succeeds if credits_remaining > 0.
+        # Replaces a read-modify-write that was racy on Postgres — two
+        # concurrent POSTs could both read the same starting value and each
+        # decrement once, double-spending a credit. With this single SQL
+        # UPDATE, exactly one of two concurrent requests wins; the other gets
+        # rowcount == 0 and is rejected with 402.
+        updated = db.session.execute(
+            db.update(CreditBalance)
+              .where(CreditBalance.user_id == user.id)
+              .where(CreditBalance.credits_remaining > 0)
+              .values(credits_remaining=CreditBalance.credits_remaining - 1)
+        )
+        db.session.commit()
+        if updated.rowcount != 1:
+            return jsonify({"error": "No audit credits remaining. Buy more to continue.", "code": "no_credits"}), 402
+        tier = 'paid'
+        credit_charged = True
+
+    user_id = user.id if user else None
+    cfg = TIER_CONFIG[tier]
+    # Free tier ignores any client-supplied prompts (defensive: don't let a
+    # free-tier caller smuggle in a 200-prompt batch).
+    if tier == 'free':
+        prompts_override = None
+
+    q = queue.Queue()
+
+    def on_progress(step, detail, current, total):
+        q.put(json.dumps({"type": "progress", "step": step, "detail": detail, "current": current, "total": total}))
+
+    def worker():
+        start_dt = datetime.utcnow()
+        try:
+            result = run_citation_audit(
+                problem_statement,
+                on_progress=on_progress,
+                tier=tier,
+                prompts_override=prompts_override,
+            )
+            slug = uuid.uuid4().hex[:10]
+            # Strip the debug-only keys (leading underscore) before the
+            # payload is persisted to SharedResult / sent to the client.
+            per_provider_errors = result.pop("_per_provider_errors", {}) or {}
+            per_provider_done = result.pop("_per_provider_done", {}) or {}
+            # Set slug + tier BEFORE serializing to SharedResult so the saved
+            # payload carries them. (Previously these were assigned after
+            # json.dumps — causing every saved payload to have slug=None and
+            # tier=None when re-loaded for a shared report.)
+            result["slug"] = slug
+            result["tier"] = tier
+            with app.app_context():
+                shared = SharedResult(slug=slug, payload=json.dumps(result))
+                db.session.add(shared)
+                db.session.add(AuditRun(
+                    user_id=user_id,
+                    slug=slug,
+                    tier=tier,
+                    prompt_count=cfg["prompt_count"],
+                    llm_count=len(cfg["llms"]),
+                    credits_consumed=(1 if credit_charged else 0),
+                    problem_statement=problem_statement,
+                ))
+                db.session.commit()
+            q.put(json.dumps({"type": "result", "data": result}))
+            # Fire the owner debug email AFTER the result is pushed to the
+            # queue so the user-visible response never waits on email send.
+            duration_seconds = (datetime.utcnow() - start_dt).total_seconds()
+            try:
+                _send_audit_debug_email(
+                    result,
+                    duration_seconds,
+                    per_provider_done,
+                    per_provider_errors,
+                    tier,
+                    problem_statement=problem_statement,
+                )
+            except Exception as email_err:
+                print("debug-email dispatch error:", email_err)
+        except Exception as e:
+            # Diagnostic email to owner BEFORE the refund, so even if the
+            # refund somehow blows up the owner still hears about the failure.
+            try:
+                _send_audit_failure_email(e, problem_statement, tier)
+            except Exception as email_err:
+                print("Failure-email dispatch error:", email_err)
+            if credit_charged and user_id is not None:
+                try:
+                    with app.app_context():
+                        bal_inner = CreditBalance.query.filter_by(user_id=user_id).first()
+                        if bal_inner:
+                            bal_inner.credits_remaining = (bal_inner.credits_remaining or 0) + 1
+                            db.session.commit()
+                except Exception as refund_err:
+                    print("Credit refund failed:", refund_err)
+            # User-facing message stays generic; technical details go to the
+            # owner via _send_audit_failure_email above. Server log still has
+            # the full exception for grep.
+            print(f"run_citation_audit failed: {type(e).__name__}: {e}")
+            if credit_charged:
+                user_message = "Analysis step failed unexpectedly. Your credit has been refunded. Nathan has been notified to investigate."
+            else:
+                user_message = "Analysis step failed unexpectedly. Nathan has been notified to investigate — please try again in a moment."
+            q.put(json.dumps({"type": "error", "error": user_message}))
+
+    t = threading.Thread(target=worker)
+    t.start()
+
+    def generate():
+        while True:
+            msg = q.get()
+            yield f"data: {msg}\n\n"
+            parsed = json.loads(msg)
+            if parsed["type"] in ("result", "error"):
+                break
+
+    return Response(generate(), mimetype='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/signal/audit/prompts', methods=['POST'])
+def signal_generate_prompts():
+    """Paid-tier two-phase flow: generate prompts for the user to curate,
+    WITHOUT running the LLM batch and WITHOUT decrementing a credit.
+
+    Auth + credit balance are checked (user must have at least one credit so
+    we don't give away free prompt generations to bots), but no credit is
+    consumed at this step. The credit is consumed when the user submits the
+    final POST to /citation-audit with the curated prompts.
+    """
+    user = current_signal_user()
+    if not user:
+        return jsonify({"error": "Please sign in to run a paid audit.", "code": "auth_required"}), 401
+    if current_user_credits(user) < 1:
+        return jsonify({"error": "No audit credits remaining.", "code": "no_credits"}), 402
+
+    body = request.get_json(silent=True) or {}
+    problem_statement = (body.get('problem_statement') or '').strip()
+    if not problem_statement:
+        return jsonify({"error": "Please describe the problem you want your brand to own."}), 400
+    tier = (body.get('tier') or 'paid').strip().lower()
+    if tier not in ('free', 'paid'):
+        tier = 'paid'
+
+    try:
+        gen = _generate_audit_prompts(problem_statement, tier=tier)
+    except Exception as e:
+        print("Prompt generation failed:", e)
+        return jsonify({"error": "Could not generate prompts. Try again."}), 500
+
+    return jsonify({
+        "brand": gen["brand"],
+        "category": gen["category"],
+        "prompts": gen["prompts"],
+    })
+
+
+def _load_signal_report(slug):
+    """Return parsed PR Signal Finder report dict for a slug, or None."""
+    rec = SharedResult.query.filter_by(slug=slug).first()
+    if not rec:
+        return None
+    try:
+        data = json.loads(rec.payload)
+    except Exception:
+        return None
+    if not isinstance(data, dict) or "media_targets" not in data:
+        return None
+    data["slug"] = slug
+    return data
+
+
+@app.route('/signal/<slug>')
+def view_signal_report(slug):
+    """Render a shared PR Signal Finder report."""
+    data = _load_signal_report(slug)
+    if not data:
+        flash("Report not found or expired.")
+        return redirect(url_for('citation_audit'))
+    share_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=slug)
+    pdf_url = request.url_root.rstrip('/') + url_for('signal_report_pdf', slug=slug)
+    csv_url = request.url_root.rstrip('/') + url_for('signal_report_csv', slug=slug)
+    json_url = request.url_root.rstrip('/') + url_for('signal_report_json', slug=slug)
+    user = current_signal_user()
+    return render_template(
+        'citation_audit.html',
+        ga_measurement_id=GA_MEASUREMENT_ID,
+        shared_data=data,
+        share_url=share_url,
+        pdf_url=pdf_url,
+        csv_url=csv_url,
+        json_url=json_url,
+        signal_user=user,
+        signal_credits=current_user_credits(user),
+    )
+
+
+@app.route('/signal/<slug>.pdf')
+def signal_report_pdf(slug):
+    """Render the saved report as a PDF via WeasyPrint."""
+    data = _load_signal_report(slug)
+    if not data:
+        flash("Report not found or expired.")
+        return redirect(url_for('citation_audit'))
+    try:
+        from weasyprint import HTML  # imported lazily — heavy dependency
+    except Exception as e:
+        print("WeasyPrint import failed:", e)
+        return jsonify({"error": "PDF export is not available in this environment."}), 503
+
+    html_str = render_template('citation_audit_print.html', data=data)
+    try:
+        pdf_bytes = HTML(string=html_str, base_url=request.url_root).write_pdf()
+    except Exception as e:
+        print("WeasyPrint render failed:", e)
+        return jsonify({"error": "Failed to render PDF."}), 500
+
+    brand_slug = re.sub(r'[^a-z0-9]+', '-', (data.get('brand') or 'report').lower()).strip('-') or 'report'
+    filename = f"signal-finder-{brand_slug}-{slug}.pdf"
+    return Response(
+        pdf_bytes,
+        mimetype='application/pdf',
+        headers={'Content-Disposition': f'inline; filename="{filename}"'}
+    )
+
+
+@app.route('/signal/<slug>.csv')
+def signal_report_csv(slug):
+    """Return the saved report's target list (editorial + institutional + analyst)
+    as a CSV download. Mirrors the PDF route's behavior (loads SharedResult by
+    slug, flashes + redirects on miss)."""
+    data = _load_signal_report(slug)
+    if not data:
+        flash("Report not found or expired.")
+        return redirect(url_for('citation_audit'))
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "section",
+        "rank",
+        "outlet",
+        "domain",
+        "reporter",
+        "citation_frequency",
+        "cited_by_llms",
+        "competitors_citing",
+        "rationale",
+        "gap_insight",
+        "sample_urls",
+    ])
+
+    def _join(v):
+        if not v:
+            return ""
+        if isinstance(v, (list, tuple)):
+            return "; ".join(str(x) for x in v)
+        return str(v)
+
+    for t in (data.get('media_targets') or []):
+        writer.writerow([
+            "editorial",
+            t.get('rank') or '',
+            t.get('outlet') or '',
+            t.get('domain') or '',
+            t.get('reporter') or '',
+            t.get('citation_frequency') or '',
+            _join(t.get('cited_by_llms')),
+            _join(t.get('competitors_citing')),
+            t.get('rationale') or '',
+            t.get('gap_insight') or '',
+            _join(t.get('sample_urls')),
+        ])
+    for t in (data.get('institutional_targets') or []):
+        writer.writerow([
+            "institutional",
+            t.get('rank') or '',
+            t.get('institution') or '',
+            t.get('domain') or '',
+            "",  # no reporter for institutional
+            t.get('citation_frequency') or '',
+            _join(t.get('cited_by_llms')),
+            "",  # competitors_citing not tracked at this granularity for institutional
+            t.get('partnership_play') or '',
+            "",  # no gap_insight on institutional rows
+            _join(t.get('sample_urls')),
+        ])
+    for t in (data.get('analyst_targets') or []):
+        writer.writerow([
+            "analyst",
+            t.get('rank') or '',
+            t.get('firm') or '',
+            t.get('domain') or '',
+            "",
+            t.get('citation_frequency') or '',
+            _join(t.get('cited_by_llms')),
+            "",
+            t.get('analyst_play') or '',
+            _join(t.get('evaluations_referenced')),
+            _join(t.get('sample_urls')),
+        ])
+
+    csv_bytes = buf.getvalue().encode('utf-8-sig')  # BOM so Excel reads UTF-8 cleanly
+    brand_slug = re.sub(r'[^a-z0-9]+', '-', (data.get('brand') or 'report').lower()).strip('-') or 'report'
+    filename = f"signal-finder-{brand_slug}-{slug}.csv"
+    return Response(
+        csv_bytes,
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+    )
+
+
+@app.route('/signal/<slug>.json')
+def signal_report_json(slug):
+    """Return the full saved payload as a JSON download — includes the analyzed
+    target lists AND the raw per-response data (`all_responses`) and the
+    complete ranked domain list. Lets consultants re-analyze, audit, or
+    feed the data into other tools.
+    """
+    data = _load_signal_report(slug)
+    if not data:
+        flash("Report not found or expired.")
+        return redirect(url_for('citation_audit'))
+
+    brand_slug = re.sub(r'[^a-z0-9]+', '-', (data.get('brand') or 'report').lower()).strip('-') or 'report'
+    filename = f"signal-finder-{brand_slug}-{slug}.json"
+    return Response(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        mimetype='application/json',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+    )
+
+
+@app.route('/citation-audit/request-demo', methods=['POST'])
+def citation_audit_request_demo():
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    title = (data.get('title') or '').strip()
+    org = (data.get('org') or '').strip()
+    email = (data.get('email') or '').strip()
+    slug = (data.get('slug') or '').strip() or None
+    problem_statement = (data.get('problem_statement') or '').strip()
+
+    if not name or not email:
+        return jsonify({"error": "Name and email are required."}), 400
+    if '@' not in email or '.' not in email:
+        return jsonify({"error": "Please enter a valid email address."}), 400
+
+    extra = json.dumps({"name": name, "title": title, "org": org, "problem_statement": problem_statement})
+    lead = LeadCapture(email=email, slug=slug, app_name='signal_finder_demo', extra=extra)
+    db.session.add(lead)
+    db.session.commit()
+
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if sg_key:
+        try:
+            from sendgrid import SendGridAPIClient
+            from sendgrid.helpers.mail import Mail
+            # Use the configured signal base URL (e.g. https://signal.innatec3.com)
+            # so the link points at the actual /signal/<slug> route. The old
+            # https://innatec3.com/results/{slug} URL 404s — that route doesn't
+            # exist on innatec3.com.
+            base = os.environ.get("SIGNAL_BASE_URL") or (request.url_root.rstrip('/'))
+            report_link = f"{base}/signal/{slug}" if slug else "(no audit slug)"
+            text_body = (
+                f"New PR Signal Finder bespoke audit request:\n\n"
+                f"Name: {name}\n"
+                f"Title: {title or '(not provided)'}\n"
+                f"Organization: {org or '(not provided)'}\n"
+                f"Email: {email}\n\n"
+                f"Problem statement they audited:\n{problem_statement or '(not provided)'}\n\n"
+                f"Their light audit report: {report_link}\n"
+            )
+            report_link_html = (
+                f'<a href="{report_link}">{report_link}</a>' if slug else '<em>(no slug captured)</em>'
+            )
+            email_link_html = f'<a href="mailto:{html.escape(email)}">{html.escape(email)}</a>'
+            html_body = (
+                f"<h3>New PR Signal Finder bespoke audit request</h3>"
+                f"<p><strong>Name:</strong> {html.escape(name)}<br>"
+                f"<strong>Title:</strong> {html.escape(title) or '<em>(not provided)</em>'}<br>"
+                f"<strong>Organization:</strong> {html.escape(org) or '<em>(not provided)</em>'}<br>"
+                f"<strong>Email:</strong> {email_link_html}</p>"
+                f"<p><strong>Problem they audited:</strong><br>{html.escape(problem_statement) or '<em>(not provided)</em>'}</p>"
+                f"<p><strong>Their light audit report:</strong> {report_link_html}</p>"
+            )
+            msg = Mail(
+                from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+                to_emails=["nstrauss@innatec3.com"],
+                subject=f"[PR Signal Finder] Bespoke audit request from {name}" + (f" ({org})" if org else ""),
+                plain_text_content=text_body,
+                html_content=html_body,
+            )
+            sg = SendGridAPIClient(sg_key)
+            sg.send(msg)
+        except Exception as e:
+            print("SendGrid lead notification error:", e)
+
+    return jsonify({"ok": True, "dev": not bool(sg_key)})
+
+
+# ---------------------------------------------------------------------------
+# PR Signal Finder — paid-tier auth, billing, dashboard
+# ---------------------------------------------------------------------------
+
+def _hash_token(raw):
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def current_signal_user():
+    uid = session.get('signal_user_id')
+    if not uid:
+        return None
+    return SignalUser.query.get(uid)
+
+
+def current_user_credits(user):
+    if not user:
+        return 0
+    bal = CreditBalance.query.filter_by(user_id=user.id).first()
+    return (bal.credits_remaining if bal else 0)
+
+
+def signal_login_required(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        uid = session.get('signal_user_id')
+        if not uid:
+            return redirect(url_for('signal_login', next=request.path))
+        # Defensive: the session cookie can outlive the underlying user row
+        # (Render Starter's disk can reset across deploys, wiping SQLite). Without
+        # this check, signal_login redirects to signal_dashboard, dashboard finds
+        # no user and redirects back to login → infinite loop. Clear stale sessions.
+        if not SignalUser.query.get(uid):
+            session.pop('signal_user_id', None)
+            session.pop('signal_post_login_next', None)
+            return redirect(url_for('signal_login', next=request.path))
+        return view(*args, **kwargs)
+    return wrapper
+
+
+def _signal_base_url():
+    return (SIGNAL_BASE_URL or request.url_root.rstrip('/'))
+
+
+def _send_magic_link_email(email, raw_token):
+    base = _signal_base_url()
+    link = f"{base}{url_for('signal_auth', token=raw_token)}"
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not sg_key:
+        print(f"[DEV] Magic-link for {email}: {link}")
+        return link
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[email],
+            subject="Your PR Signal Finder sign-in link",
+            plain_text_content=(
+                "Click the link below to sign in to PR Signal Finder. "
+                "Link expires in 20 minutes.\n\n"
+                f"{link}\n\nIf you didn't request this, you can ignore this email."
+            ),
+            html_content=(
+                f'<p>Click below to sign in to PR Signal Finder. Link expires in 20 minutes.</p>'
+                f'<p><a href="{link}">{link}</a></p>'
+                f'<p style="color:#888;font-size:13px">If you didn\'t request this, ignore this email.</p>'
+            ),
+        )
+        SendGridAPIClient(sg_key).send(msg)
+    except Exception as e:
+        print("SendGrid magic-link error:", e)
+        print(f"[FALLBACK] Magic-link for {email}: {link}")
+    return link
+
+
+@app.route('/signal/login', methods=['GET', 'POST'])
+def signal_login():
+    if session.get('signal_user_id'):
+        # Only redirect to dashboard if the session points at an actual user.
+        # Otherwise wipe the stale cookie and fall through to render the login form
+        # — avoids the login↔dashboard redirect loop when the user row has been
+        # deleted/lost (e.g. Render disk reset between deploys).
+        if SignalUser.query.get(session['signal_user_id']):
+            return redirect(url_for('signal_dashboard'))
+        session.pop('signal_user_id', None)
+        session.pop('signal_post_login_next', None)
+    nxt = request.values.get('next') or url_for('signal_dashboard')
+    if request.method == 'GET':
+        return render_template(
+            'signal_login.html',
+            ga_measurement_id=GA_MEASUREMENT_ID,
+            sent=False,
+            email='',
+            next_url=nxt,
+            dev_magic_link=None,
+        )
+
+    email = (request.form.get('email') or '').strip().lower()
+    if not email or '@' not in email or '.' not in email:
+        flash("Please enter a valid email address.")
+        return render_template('signal_login.html', ga_measurement_id=GA_MEASUREMENT_ID, sent=False, email=email, next_url=nxt, dev_magic_link=None)
+
+    # Rate-limit by both email and requester IP. Either being over the limit
+    # blocks the attempt; this stops both single-target spamming (one email
+    # from many IPs) and broad fishing (many emails from one IP).
+    requester_ip = (request.headers.get('X-Forwarded-For', request.remote_addr or '')
+                    .split(',')[0].strip() or 'unknown')
+    if not _check_login_rate(f"email:{email}") or not _check_login_rate(f"ip:{requester_ip}"):
+        flash("Too many sign-in attempts. Try again in 10 minutes.")
+        return render_template(
+            'signal_login.html',
+            ga_measurement_id=GA_MEASUREMENT_ID,
+            sent=False,
+            email=email,
+            next_url=nxt,
+            dev_magic_link=None,
+        )
+
+    # Invalidate any prior unused tokens for this email before issuing a new one.
+    # Without this, a stolen-but-uninstalled-yet old link would still work once
+    # the user requests a fresh link. We also limit blast radius if a previously
+    # sent email was forwarded.
+    LoginToken.query.filter_by(email=email, used_at=None).update(
+        {'used_at': datetime.utcnow()}, synchronize_session=False
+    )
+
+    raw = secrets.token_urlsafe(32)
+    db.session.add(LoginToken(
+        email=email,
+        token_hash=_hash_token(raw),
+        expires_at=datetime.utcnow() + timedelta(minutes=20),
+    ))
+    db.session.commit()
+    session['signal_post_login_next'] = nxt
+    link = _send_magic_link_email(email, raw)
+    # In dev (no SendGrid), expose the link inline so the user can sign in without email delivery.
+    dev_link = link if not os.environ.get("SENDGRID_API_KEY") else None
+    return render_template(
+        'signal_login.html',
+        ga_measurement_id=GA_MEASUREMENT_ID,
+        sent=True,
+        email=email,
+        next_url=nxt,
+        dev_magic_link=dev_link,
+    )
+
+
+@app.route('/signal/auth')
+def signal_auth():
+    raw = request.args.get('token', '')
+    if not raw:
+        flash("Invalid sign-in link.")
+        return redirect(url_for('signal_login'))
+    token_hash = _hash_token(raw)
+    rec = LoginToken.query.filter_by(token_hash=token_hash).first()
+    if not rec or rec.expires_at < datetime.utcnow():
+        flash("Sign-in link expired or already used. Request a new one.")
+        return redirect(url_for('signal_login'))
+
+    # Atomic consume: only flip used_at if it's still NULL. If two requests
+    # race (e.g. browser pre-fetch + user click), only one wins (rowcount==1),
+    # the other is rejected. Without this, a token could be consumed twice
+    # in concert with read-modify-write timing.
+    now = datetime.utcnow()
+    consumed = db.session.execute(
+        db.update(LoginToken)
+          .where(LoginToken.token_hash == token_hash)
+          .where(LoginToken.used_at.is_(None))
+          .values(used_at=now)
+    )
+    db.session.commit()
+    if consumed.rowcount != 1:
+        flash("Sign-in link expired or already used. Request a new one.")
+        return redirect(url_for('signal_login'))
+
+    user = SignalUser.query.filter_by(email=rec.email).first()
+    if not user:
+        user = SignalUser(email=rec.email)
+        db.session.add(user)
+        db.session.flush()
+        db.session.add(CreditBalance(user_id=user.id, credits_remaining=0))
+    user.last_login_at = now
+    db.session.commit()
+    session['signal_user_id'] = user.id
+    nxt = session.pop('signal_post_login_next', None) or url_for('signal_dashboard')
+    return redirect(nxt)
+
+
+@app.route('/signal/logout', methods=['POST'])
+def signal_logout():
+    session.pop('signal_user_id', None)
+    session.pop('signal_post_login_next', None)
+    return redirect(url_for('citation_audit'))
+
+
+@app.route('/signal/dashboard')
+@signal_login_required
+def signal_dashboard():
+    user = current_signal_user()
+    if not user:
+        return redirect(url_for('signal_login'))
+    credits = current_user_credits(user)
+    runs = (AuditRun.query
+            .filter_by(user_id=user.id)
+            .order_by(AuditRun.created_at.desc())
+            .limit(20).all())
+    purchases = (Purchase.query
+                 .filter_by(user_id=user.id)
+                 .order_by(Purchase.created_at.desc())
+                 .limit(10).all())
+    products = []
+    for key, cfg in STRIPE_PRODUCTS.items():
+        products.append({
+            "key": key,
+            "label": cfg["label"],
+            "credits": cfg["credits"],
+            "amount_display": cfg["amount_display"],
+            "description": cfg["description"],
+            "configured": bool(cfg["price_id"]),
+        })
+    return render_template(
+        'signal_dashboard.html',
+        ga_measurement_id=GA_MEASUREMENT_ID,
+        user=user,
+        credits=credits,
+        runs=runs,
+        purchases=purchases,
+        products=products,
+        stripe_configured=bool(stripe_lib and STRIPE_SECRET_KEY),
+    )
+
+
+def _grant_credits_from_stripe_session(sess_obj):
+    """Idempotently grant credits + find-or-create the user from a Stripe Checkout Session.
+
+    Returns (user, purchase) tuple, or (None, None) if the session is not a paid credit purchase.
+    Safe to call multiple times for the same session — dedupes via Purchase.stripe_session_id.
+    """
+    sess_id = sess_obj.get('id')
+    if not sess_id:
+        return None, None
+    payment_status = sess_obj.get('payment_status')
+    if payment_status and payment_status != 'paid':
+        return None, None
+
+    existing = Purchase.query.filter_by(stripe_session_id=sess_id).first()
+    if existing:
+        user = SignalUser.query.get(existing.user_id) if existing.user_id else None
+        return user, existing
+
+    md = sess_obj.get('metadata') or {}
+    try:
+        credits = int(md.get('credits') or 0)
+    except (TypeError, ValueError):
+        credits = 0
+    if credits <= 0:
+        return None, None
+
+    cust_details = sess_obj.get('customer_details') or {}
+    email = (
+        sess_obj.get('customer_email')
+        or cust_details.get('email')
+        or md.get('email')
+        or ''
+    ).strip().lower()
+    if not email:
+        print("Stripe session has no email; cannot grant credits:", sess_id)
+        return None, None
+
+    user = SignalUser.query.filter_by(email=email).first()
+    new_user = False
+    if not user:
+        user = SignalUser(email=email)
+        db.session.add(user)
+        db.session.flush()
+        db.session.add(CreditBalance(user_id=user.id, credits_remaining=0))
+        new_user = True
+
+    bal = CreditBalance.query.filter_by(user_id=user.id).first()
+    if not bal:
+        bal = CreditBalance(user_id=user.id, credits_remaining=0)
+        db.session.add(bal)
+    bal.credits_remaining = (bal.credits_remaining or 0) + credits
+
+    purchase = Purchase(
+        user_id=user.id,
+        stripe_session_id=sess_id,
+        amount_cents=sess_obj.get('amount_total') or 0,
+        credits_granted=credits,
+        product_label=md.get('product') or '',
+    )
+    db.session.add(purchase)
+    db.session.commit()
+
+    # Best-effort: email a magic-link so the buyer has a path back if they lose the tab.
+    if new_user:
+        try:
+            raw = secrets.token_urlsafe(32)
+            db.session.add(LoginToken(
+                email=email,
+                token_hash=_hash_token(raw),
+                expires_at=datetime.utcnow() + timedelta(hours=24),
+            ))
+            db.session.commit()
+            _send_magic_link_email(email, raw)
+        except Exception as e:
+            print("Welcome magic-link send failed:", e)
+
+    return user, purchase
+
+
+@app.route('/signal/checkout/<product>', methods=['POST'])
+def signal_checkout(product):
+    cfg = STRIPE_PRODUCTS.get(product)
+    if not cfg:
+        return jsonify({"error": "Unknown product."}), 400
+    if not stripe_lib or not STRIPE_SECRET_KEY:
+        return jsonify({"error": "Payments are not configured."}), 503
+    if not cfg["price_id"]:
+        return jsonify({"error": f"Price ID for {product} not configured."}), 503
+
+    body = request.get_json(silent=True) or {}
+    problem_statement = (body.get('problem_statement') or '').strip()[:1000]
+
+    user = current_signal_user()
+    base = _signal_base_url()
+    md = {"product": product, "credits": str(cfg["credits"])}
+    if user:
+        md["user_id"] = str(user.id)
+    if problem_statement:
+        md["problem_statement"] = problem_statement
+
+    session_kwargs = {
+        "mode": "payment",
+        "line_items": [{"price": cfg["price_id"], "quantity": 1}],
+        "success_url": f"{base}{url_for('signal_checkout_success')}?session_id={{CHECKOUT_SESSION_ID}}",
+        "cancel_url": f"{base}{url_for('citation_audit')}",
+        "metadata": md,
+        "allow_promotion_codes": True,
+        "billing_address_collection": "auto",
+    }
+    if user:
+        session_kwargs["customer_email"] = user.email
+    # For guests, Stripe Checkout collects the email itself.
+
+    try:
+        sess = stripe_lib.checkout.Session.create(**session_kwargs)
+        return jsonify({"url": sess.url})
+    except Exception as e:
+        print("Stripe checkout error:", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/signal/checkout/success')
+def signal_checkout_success():
+    sid = (request.args.get('session_id') or '').strip()
+    user = current_signal_user()  # truthy ONLY if the buyer was already signed in
+    purchase = None
+    problem_statement = None
+    granted_user = None
+    granted_email = None
+
+    if sid and stripe_lib and STRIPE_SECRET_KEY:
+        try:
+            sess_obj = stripe_lib.checkout.Session.retrieve(sid)
+            try:
+                # stripe-python returns a StripeObject; cast to dict for our helper
+                sess_dict = sess_obj.to_dict() if hasattr(sess_obj, 'to_dict') else dict(sess_obj)
+            except Exception:
+                sess_dict = sess_obj
+            problem_statement = ((sess_dict.get('metadata') or {}).get('problem_statement') or '').strip() or None
+            granted_user, granted_purchase = _grant_credits_from_stripe_session(sess_dict)
+            if granted_purchase:
+                purchase = granted_purchase
+            if granted_user:
+                granted_email = granted_user.email
+        except Exception as e:
+            print("Stripe success-page processing error:", e)
+
+    # SECURITY: do NOT auto-login the request based on possession of session_id.
+    # The Stripe session_id appears in the URL and would leak via Referer,
+    # browser history, sharing, etc. Previously this route did
+    # `session['signal_user_id'] = granted_user.id`, which silently logged in
+    # anyone who held the URL. Now: if the buyer was already signed in, keep
+    # them; otherwise show a "credits granted, sign in via magic-link" message.
+    # The welcome magic-link is already dispatched by
+    # _grant_credits_from_stripe_session for new users (see ~line 4015).
+    credits = current_user_credits(user) if user else (
+        current_user_credits(granted_user) if granted_user else 0
+    )
+    return render_template(
+        'signal_checkout_success.html',
+        ga_measurement_id=GA_MEASUREMENT_ID,
+        user=user,
+        credits=credits,
+        purchase=purchase,
+        problem_statement=problem_statement,
+        granted_email=granted_email,
+    )
+
+
+@app.route('/signal/stripe-webhook', methods=['POST'])
+def signal_stripe_webhook():
+    if not stripe_lib:
+        return jsonify({"error": "Stripe SDK not installed"}), 503
+    if not STRIPE_WEBHOOK_SECRET:
+        return jsonify({"error": "Webhook secret not configured"}), 503
+    payload = request.data
+    sig = request.headers.get('Stripe-Signature', '')
+    try:
+        event = stripe_lib.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except Exception as e:
+        print("Stripe webhook verification failed:", e)
+        return jsonify({"error": "Invalid signature"}), 400
+
+    if event.get('type') == 'checkout.session.completed':
+        sess = event['data']['object']
+        try:
+            sess_dict = sess.to_dict() if hasattr(sess, 'to_dict') else dict(sess)
+        except Exception:
+            sess_dict = sess
+        try:
+            _grant_credits_from_stripe_session(sess_dict)
+        except Exception as e:
+            print("Stripe webhook credit-grant failed:", e)
+            return jsonify({"error": "processing failed"}), 500
+    return jsonify({"ok": True})
+
 
 if __name__ == "__main__":
     # Get port from environment variable or default to 5009
