@@ -3821,108 +3821,46 @@ TIER_CONFIG = {
 def _call_llm(provider, enriched_prompt):
     """Send one citation-forcing prompt to one provider; return response text or raise.
 
-    Where possible, each provider call taps the platform's NATIVE web-search /
-    grounding tool so the URLs we extract come from STRUCTURED citation objects
-    (actual search results the LLM read), not from a regex pass over text the
-    LLM generated freehand. Native-citation paths:
-      - Claude: `web_search_20250305` tool — citations attached to text blocks.
-      - ChatGPT: Responses API with `web_search` tool — `url_citation` annotations.
-      - Gemini: `google_search` grounding (already implemented below).
-      - Perplexity: `citations` array on the response object (no tool call needed).
-      - Grok: no native search tool; pure regex on text.
-    Each native call falls back to text-only generation if the tool isn't
-    available for the account/model, so the audit always returns something.
-    Structured URLs are appended to the returned text as a `Sources:` block so
-    the downstream `extract_urls` pass picks them up alongside any inline URLs
-    the LLM wrote into prose.
+    Citation-extraction strategy by provider:
+      - Claude:     plain messages.create — URLs extracted from response text via regex.
+      - ChatGPT:    plain chat.completions — same.
+      - Gemini:     native `google_search` grounding (real, current URLs).
+      - Perplexity: native `citations` array on the response object (real URLs;
+                    lightweight, doesn't add latency).
+      - Grok:       plain chat.completions via OpenRouter — regex only.
+
+    HISTORICAL NOTE (2026-05-30): an earlier version tried Claude's
+    `web_search_20250305` and ChatGPT's Responses-API `web_search` tools to
+    get structured citation objects (less hallucination by construction). Both
+    paths were reverted because: (a) the tool calls either errored on this
+    account → fell through to a second non-tool call, doubling per-call
+    latency, or (b) actually ran multiple web searches per call, blowing the
+    free-tier 180s LLM-batch deadline AND triggering Render Starter OOMs from
+    the larger structured payloads buffered by the SDKs. See the
+    f543473→7f360e3→hotfix sequence of commits. Re-introduce the tool path
+    only after profiling on a larger instance with a guard against double-call
+    fallback.
     """
     if provider == "Claude":
-        # Try Claude with the native web_search tool first. Falls back to plain
-        # generation if the tool isn't enabled on the account.
-        try:
-            resp = anthropic.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2000,
-                system=CITATION_SYSTEM_PROMPT,
-                tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
-                messages=[{"role": "user", "content": enriched_prompt}],
-            )
-            text_parts = []
-            structured_urls = []
-            for block in (resp.content or []):
-                btype = getattr(block, 'type', None)
-                if btype == 'text':
-                    text_parts.append(getattr(block, 'text', '') or '')
-                    # Anthropic attaches `citations` to text blocks when the
-                    # model quotes search results — each citation has a `url`.
-                    for c in (getattr(block, 'citations', None) or []):
-                        u = getattr(c, 'url', None)
-                        if u:
-                            structured_urls.append(u)
-                elif btype == 'web_search_tool_result':
-                    # The tool result block contains the raw search hits the
-                    # model saw. Each item has `.url` + `.title` + snippet.
-                    for item in (getattr(block, 'content', None) or []):
-                        u = getattr(item, 'url', None)
-                        if u:
-                            structured_urls.append(u)
-            full = "".join(text_parts).strip()
-            # Dedupe URLs while preserving order so the most-relevant (first-
-            # surfaced) sources appear first.
-            unique_urls = list(dict.fromkeys(structured_urls))
-            if unique_urls:
-                full += "\n\nSources:\n" + "\n".join(f"- {u}" for u in unique_urls)
-            return full
-        except Exception as e:
-            print(f"Claude web_search fallback: {type(e).__name__}: {str(e)[:200]}")
-            resp = anthropic.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2000,
-                system=CITATION_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": enriched_prompt}],
-            )
-            return resp.content[0].text
+        resp = anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            system=CITATION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": enriched_prompt}],
+        )
+        return resp.content[0].text
     if provider == "ChatGPT":
         if not openai_client:
             raise RuntimeError("OPENAI_API_KEY not configured")
-        # Try the Responses API + web_search tool first (returns structured
-        # url_citation annotations). Falls back to chat.completions if the
-        # account / SDK version doesn't support it.
-        try:
-            resp = openai_client.responses.create(
-                model="gpt-4o",
-                tools=[{"type": "web_search"}],
-                input=[
-                    {"role": "system", "content": CITATION_SYSTEM_PROMPT},
-                    {"role": "user", "content": enriched_prompt},
-                ],
-            )
-            text = getattr(resp, 'output_text', '') or ''
-            structured_urls = []
-            for item in (getattr(resp, 'output', None) or []):
-                # message items contain content blocks; each block can carry
-                # `annotations` of type `url_citation`.
-                for content in (getattr(item, 'content', None) or []):
-                    for ann in (getattr(content, 'annotations', None) or []):
-                        if getattr(ann, 'type', None) == 'url_citation':
-                            u = getattr(ann, 'url', None)
-                            if u:
-                                structured_urls.append(u)
-            unique_urls = list(dict.fromkeys(structured_urls))
-            if unique_urls:
-                text = (text or '').rstrip() + "\n\nSources:\n" + "\n".join(f"- {u}" for u in unique_urls)
-            return text
-        except Exception as e:
-            print(f"ChatGPT web_search fallback: {type(e).__name__}: {str(e)[:200]}")
-            resp = openai_client.chat.completions.create(
-                model="gpt-4o",
-                max_tokens=2000,
-                messages=[
-                    {"role": "system", "content": CITATION_SYSTEM_PROMPT},
-                    {"role": "user", "content": enriched_prompt},
-                ],
-            )
-            return resp.choices[0].message.content
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=2000,
+            messages=[
+                {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+                {"role": "user", "content": enriched_prompt},
+            ],
+        )
+        return resp.choices[0].message.content
     if provider == "Gemini":
         if not gemini_client:
             raise RuntimeError("GEMINI_API_KEY not configured")
@@ -4771,16 +4709,37 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     candidate_urls = list(set(candidate_urls))  # dedup
 
     url_topic_status = {}  # url -> 'verified' | 'off_topic' | 'inaccessible'
+    # Hard-cap candidates AND bound the overall pass — otherwise a single slow
+    # URL whose connection stalls past the 4s requests timeout (DNS, SSL, etc.)
+    # blocks the as_completed loop. Anything not finished inside the deadline
+    # is marked 'inaccessible' (transitive-trust rules then apply).
+    candidate_urls = candidate_urls[:60]
+    topic_deadline_seconds = 45
     if candidate_urls:
-        with ThreadPoolExecutor(max_workers=20) as ex:
-            futures = {ex.submit(_check_url_topic, u, brand_lower, category_kw): u
+        topic_executor = ThreadPoolExecutor(max_workers=20)
+        try:
+            futures = {topic_executor.submit(_check_url_topic, u, brand_lower, category_kw): u
                        for u in candidate_urls}
-            for fut in as_completed(futures):
-                try:
-                    status = fut.result()
-                except Exception:
-                    status = 'inaccessible'
-                url_topic_status[futures[fut]] = status
+            try:
+                for fut in as_completed(futures, timeout=topic_deadline_seconds):
+                    try:
+                        status = fut.result()
+                    except Exception:
+                        status = 'inaccessible'
+                    url_topic_status[futures[fut]] = status
+            except FuturesTimeoutError:
+                # Deadline fired. Mark any unfinished futures inaccessible so
+                # the downstream filter still sees them, then cancel + bail.
+                unfinished = 0
+                for f, u in futures.items():
+                    if not f.done():
+                        url_topic_status[u] = 'inaccessible'
+                        unfinished += 1
+                        f.cancel()
+                print(f"[audit] topic-verify deadline hit ({topic_deadline_seconds}s); "
+                      f"{unfinished} URLs marked inaccessible")
+        finally:
+            topic_executor.shutdown(wait=False, cancel_futures=True)
 
     # Domains earn transitive trust if AT LEAST ONE of their URLs verified —
     # the LLM probably wasn't fabricating that domain wholesale.
