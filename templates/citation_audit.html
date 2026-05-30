@@ -354,6 +354,72 @@
             color: #888;
             margin-top: 4px;
         }
+        /* Share of voice strength / opportunity per outlet */
+        .sov-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 12px;
+            margin-bottom: 40px;
+        }
+        .sov-card {
+            background: #111;
+            border: 1px solid #1e1e1e;
+            border-left-width: 4px;
+            border-radius: 10px;
+            padding: 16px 20px;
+        }
+        .sov-card.strength { border-left-color: #5a9a5a; }
+        .sov-card.opportunity { border-left-color: #e8a04c; }
+        .sov-card.neutral { border-left-color: #4a4a5a; }
+        .sov-tag {
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            padding: 3px 9px;
+            border-radius: 5px;
+            margin-bottom: 8px;
+        }
+        .sov-tag.strength { background: #0d1a0d; color: #7acc7a; }
+        .sov-tag.opportunity { background: #1a1510; color: #ffb860; }
+        .sov-tag.neutral { background: #1a1a22; color: #888; }
+        .sov-domain {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+            font-family: monospace;
+            margin-bottom: 4px;
+        }
+        .sov-meta {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 6px;
+        }
+        .sov-label {
+            font-size: 13px;
+            color: #cfd2ff;
+            line-height: 1.5;
+        }
+        .sov-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
+            font-size: 12px;
+            color: #aaa;
+        }
+        .sov-bar-track {
+            flex: 1;
+            height: 8px;
+            background: #1a1a22;
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+        }
+        .sov-bar-brand { background: #4a9eff; }
+        .sov-bar-rest { background: #3a2a1a; }
+        .sov-bar-num { color: #cfd2ff; font-weight: 600; min-width: 64px; text-align: right; }
         .action-bar {
             display: flex;
             gap: 10px;
@@ -1483,6 +1549,45 @@
                 html += `<div class="section-title">Top competitors in AI responses</div><div class="competitors">`;
                 for (const c of competitors) {
                     html += `<span class="competitor-chip">${esc(c.name)}<span class="count">${c.mention_count}x</span></span>`;
+                }
+                html += `</div>`;
+            }
+
+            // Share-of-voice strength / opportunity per outlet. Surfaces
+            // outlets where the brand over-indexes (defend & amplify) vs
+            // where competitors over-index (pitch to close the gap).
+            const sovRows = (data.outlet_sov || []);
+            const sovStrengths = sovRows.filter(r => r.verdict === 'strength');
+            const sovOpportunities = sovRows.filter(r => r.verdict === 'opportunity');
+            if (sovStrengths.length || sovOpportunities.length) {
+                html += `<div class="section-title" style="margin-top:32px">Share of voice by outlet — strengths to defend, opportunities to pitch</div>`;
+                html += `<div class="section-note">For each outlet that surfaced in AI responses, we compare ${esc(data.brand || 'your brand')}'s mention rate inside responses citing that outlet against its overall mention rate. Strengths = where the brand over-indexes (keep momentum). Opportunities = where competitors dominate (where earned media will move the needle most).</div>`;
+                html += `<div class="sov-grid">`;
+                const sovOrdered = [...sovStrengths, ...sovOpportunities];
+                for (const row of sovOrdered) {
+                    const tag = row.verdict;
+                    const brandPct = Math.round((row.brand_sov_at_outlet || 0) * 100);
+                    const overallPct = Math.round((row.brand_overall_sov || 0) * 100);
+                    const topComp = row.top_competitor_at_outlet;
+                    const compName = topComp ? topComp.name : null;
+                    const compPct = topComp ? Math.round((topComp.sov_at_outlet || 0) * 100) : 0;
+                    const restPct = Math.max(0, 100 - brandPct);
+                    html += `
+                        <div class="sov-card ${tag}">
+                            <span class="sov-tag ${tag}">${tag === 'strength' ? 'Strength · defend' : 'Opportunity · pitch'}</span>
+                            <div class="sov-domain">${esc(row.domain)}</div>
+                            <div class="sov-meta">Cited in ${row.responses_citing} AI responses${compName ? ` · top competitor here: ${esc(compName)} (${compPct}%)` : ''}</div>
+                            <div class="sov-label">${esc(row.verdict_label || '')}</div>
+                            <div class="sov-bar">
+                                <span>${esc(data.brand || 'Brand')}</span>
+                                <div class="sov-bar-track">
+                                    <div class="sov-bar-brand" style="width:${brandPct}%"></div>
+                                    <div class="sov-bar-rest" style="width:${restPct}%"></div>
+                                </div>
+                                <span class="sov-bar-num">${brandPct}% here / ${overallPct}% overall</span>
+                            </div>
+                        </div>
+                    `;
                 }
                 html += `</div>`;
             }

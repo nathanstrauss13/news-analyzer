@@ -3316,6 +3316,198 @@ RESPONSES:
         return []
 
 
+def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, ranked_domains, max_outlets=20):
+    """For each top outlet (cited domain), compute the brand's and each
+    competitor's mention rate WITHIN the subset of responses that cite that
+    outlet, and compare to each brand's overall mention rate across all
+    responses. Identifies outlets where the brand over-indexes (STRENGTH —
+    defend/amplify) vs where competitors over-index (OPPORTUNITY — pitch).
+
+    Returns a list of dicts, one per outlet (capped at `max_outlets`), each:
+      {
+        domain: 'forbes.com',
+        responses_citing: 7,         # number of responses that cited this outlet
+        brand_mention_count: 12,     # brand mentioned in N responses overall
+        brand_overall_sov: 0.40,     # 12 of 30 overall responses mention brand
+        brand_mentions_at_outlet: 5, # brand mentioned in 5 of the 7 outlet-citing responses
+        brand_sov_at_outlet: 0.71,   # 5 / 7
+        brand_sov_differential: 0.31,# at_outlet - overall (positive = over-indexes)
+        verdict: 'strength' | 'opportunity' | 'neutral',
+        verdict_label: 'Strength — brand over-indexes...',
+        top_competitor_at_outlet: {
+            name, mentions_at_outlet, sov_at_outlet, overall_sov, differential
+        } | None,
+      }
+
+    Sorted: strengths first (highest differential), then opportunities (most
+    negative differential / strongest competitor lead), then neutrals.
+    Strength threshold: brand SoV at outlet exceeds overall by >= 0.15 AND
+      brand mention rate at outlet >= top competitor rate at outlet.
+    Opportunity threshold: top competitor SoV at outlet exceeds brand SoV at
+      outlet by >= 0.15, OR (brand absent at outlet AND competitor present
+      with >= 2 responses).
+    """
+    total_responses = len(all_responses)
+    if total_responses == 0 or not ranked_domains:
+        return []
+
+    # Pre-build mention-detection patterns for brand + each competitor.
+    # Match the same multi-form heuristic as _count_brand_mentions.
+    def _patterns_for(name):
+        if not name:
+            return []
+        pats = [re.compile(r'\b' + re.escape(name) + r'\b', re.IGNORECASE)]
+        parts = name.split()
+        if len(parts) > 1 and len(parts[0]) > 5:
+            pats.append(re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE))
+        return pats
+
+    brand_patterns = _patterns_for(brand or '')
+    competitor_pat_map = {
+        c['name']: _patterns_for(c['name'])
+        for c in (competitor_counts or [])
+    }
+    competitor_overall_sov = {
+        c['name']: (c['mention_count'] / total_responses) if total_responses else 0.0
+        for c in (competitor_counts or [])
+    }
+
+    brand_overall_count = sum(
+        1 for r in all_responses
+        if any(p.search(r.get('response', '') or '') for p in brand_patterns)
+    ) if brand_patterns else 0
+    brand_overall_sov = (brand_overall_count / total_responses) if total_responses else 0.0
+
+    # Pre-compute competitor-owned domain stems so we can skip outlets that
+    # are a competitor's own .com. There's no meaningful "opportunity" to pitch
+    # IBM's coverage to ibm.com or Microsoft's coverage to azure.microsoft.com
+    # — the LLM is just citing the competitor's own product page when asked
+    # about them. Surfacing those outlets as opportunities is technically true
+    # but operationally useless.
+    competitor_domain_stems = set()
+    for c in (competitor_counts or []):
+        name = (c.get('name') or '').lower().strip()
+        if not name:
+            continue
+        # Take the first word as a stem (Microsoft → 'microsoft' matches
+        # 'azure.microsoft.com'; IBM → 'ibm' matches 'ibm.com').
+        first_word = re.sub(r'[^a-z0-9]', '', name.split()[0])
+        if first_word and len(first_word) >= 3:
+            competitor_domain_stems.add(first_word)
+
+    def _domain_owned_by_competitor(domain):
+        parts = domain.lower().split('.')
+        for p in parts:
+            cleaned = re.sub(r'[^a-z0-9]', '', p)
+            if cleaned in competitor_domain_stems:
+                return True
+        return False
+
+    # For each cited domain, find the responses that mentioned it (any URL on
+    # that domain in `r['citations']`), then count brand + competitor hits in
+    # that subset.
+    out = []
+    for d in ranked_domains[:max_outlets * 2]:  # pull 2x then filter
+        domain = d.get('domain')
+        if not domain:
+            continue
+        if _domain_owned_by_competitor(domain):
+            continue  # see comment above; not a pitchable outlet
+        citing_responses = [
+            r for r in all_responses
+            if any((c.get('domain') == domain) for c in (r.get('citations') or []))
+        ]
+        n_at_outlet = len(citing_responses)
+        if n_at_outlet < 2:
+            # Too thin to draw a SoV signal — would be 0/1 or 1/1 noise.
+            continue
+
+        brand_at = sum(
+            1 for r in citing_responses
+            if any(p.search(r.get('response', '') or '') for p in brand_patterns)
+        ) if brand_patterns else 0
+        brand_sov_at = brand_at / n_at_outlet
+        brand_diff = brand_sov_at - brand_overall_sov
+
+        # Top competitor at this outlet — by raw mention count among citing responses.
+        comp_rows = []
+        for cname, pats in competitor_pat_map.items():
+            if not pats:
+                continue
+            cnt = sum(
+                1 for r in citing_responses
+                if any(p.search(r.get('response', '') or '') for p in pats)
+            )
+            if cnt > 0:
+                comp_rows.append({
+                    "name": cname,
+                    "mentions_at_outlet": cnt,
+                    "sov_at_outlet": round(cnt / n_at_outlet, 3),
+                    "overall_sov": round(competitor_overall_sov.get(cname, 0.0), 3),
+                    "differential": round((cnt / n_at_outlet) - competitor_overall_sov.get(cname, 0.0), 3),
+                })
+        comp_rows.sort(key=lambda x: x["mentions_at_outlet"], reverse=True)
+        top_comp = comp_rows[0] if comp_rows else None
+
+        # Verdict logic.
+        STRENGTH_PP = 0.15
+        OPPORTUNITY_PP = 0.15
+        verdict = "neutral"
+        verdict_label = "Neutral — brand performs in line with its overall share of voice here."
+        if brand_patterns and brand_diff >= STRENGTH_PP and (not top_comp or brand_sov_at >= top_comp["sov_at_outlet"]):
+            verdict = "strength"
+            verdict_label = (
+                f"Strength — {brand} appears in {brand_at}/{n_at_outlet} responses citing this outlet "
+                f"({int(brand_sov_at * 100)}%), vs {int(brand_overall_sov * 100)}% across all responses. "
+                f"Defend the relationship; pitch follow-up coverage."
+            )
+        elif top_comp:
+            comp_lead = top_comp["sov_at_outlet"] - brand_sov_at
+            if comp_lead >= OPPORTUNITY_PP or (brand_at == 0 and top_comp["mentions_at_outlet"] >= 2):
+                verdict = "opportunity"
+                if brand_at == 0:
+                    verdict_label = (
+                        f"Opportunity — {top_comp['name']} owns this outlet "
+                        f"({top_comp['mentions_at_outlet']}/{n_at_outlet} responses, "
+                        f"{int(top_comp['sov_at_outlet'] * 100)}%), {brand} is absent. "
+                        f"Pitch a story angle that displaces them."
+                    )
+                else:
+                    verdict_label = (
+                        f"Opportunity — {top_comp['name']} appears in "
+                        f"{top_comp['mentions_at_outlet']}/{n_at_outlet} responses "
+                        f"({int(top_comp['sov_at_outlet'] * 100)}%) vs {brand} at "
+                        f"{int(brand_sov_at * 100)}%. Close the gap with earned coverage."
+                    )
+
+        out.append({
+            "domain": domain,
+            "responses_citing": n_at_outlet,
+            "brand_overall_sov": round(brand_overall_sov, 3),
+            "brand_mentions_at_outlet": brand_at,
+            "brand_sov_at_outlet": round(brand_sov_at, 3),
+            "brand_sov_differential": round(brand_diff, 3),
+            "verdict": verdict,
+            "verdict_label": verdict_label,
+            "top_competitor_at_outlet": top_comp,
+            "all_competitors_at_outlet": comp_rows[:5],
+        })
+
+    # Sort: strengths (largest positive differential first), opportunities
+    # (largest competitor lead first — i.e. most-negative brand differential),
+    # neutrals last.
+    def _sort_key(row):
+        v = row["verdict"]
+        if v == "strength":
+            return (0, -row["brand_sov_differential"])
+        if v == "opportunity":
+            return (1, row["brand_sov_differential"])
+        return (2, -row["responses_citing"])
+    out.sort(key=_sort_key)
+    # Cap at the originally-requested max_outlets after filtering.
+    return out[:max_outlets]
+
+
 _URL_VALIDATION_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
                   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -3627,27 +3819,110 @@ TIER_CONFIG = {
 
 
 def _call_llm(provider, enriched_prompt):
-    """Send one citation-forcing prompt to one provider; return response text or raise."""
+    """Send one citation-forcing prompt to one provider; return response text or raise.
+
+    Where possible, each provider call taps the platform's NATIVE web-search /
+    grounding tool so the URLs we extract come from STRUCTURED citation objects
+    (actual search results the LLM read), not from a regex pass over text the
+    LLM generated freehand. Native-citation paths:
+      - Claude: `web_search_20250305` tool — citations attached to text blocks.
+      - ChatGPT: Responses API with `web_search` tool — `url_citation` annotations.
+      - Gemini: `google_search` grounding (already implemented below).
+      - Perplexity: `citations` array on the response object (no tool call needed).
+      - Grok: no native search tool; pure regex on text.
+    Each native call falls back to text-only generation if the tool isn't
+    available for the account/model, so the audit always returns something.
+    Structured URLs are appended to the returned text as a `Sources:` block so
+    the downstream `extract_urls` pass picks them up alongside any inline URLs
+    the LLM wrote into prose.
+    """
     if provider == "Claude":
-        resp = anthropic.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=2000,
-            system=CITATION_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": enriched_prompt}],
-        )
-        return resp.content[0].text
+        # Try Claude with the native web_search tool first. Falls back to plain
+        # generation if the tool isn't enabled on the account.
+        try:
+            resp = anthropic.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2000,
+                system=CITATION_SYSTEM_PROMPT,
+                tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+                messages=[{"role": "user", "content": enriched_prompt}],
+            )
+            text_parts = []
+            structured_urls = []
+            for block in (resp.content or []):
+                btype = getattr(block, 'type', None)
+                if btype == 'text':
+                    text_parts.append(getattr(block, 'text', '') or '')
+                    # Anthropic attaches `citations` to text blocks when the
+                    # model quotes search results — each citation has a `url`.
+                    for c in (getattr(block, 'citations', None) or []):
+                        u = getattr(c, 'url', None)
+                        if u:
+                            structured_urls.append(u)
+                elif btype == 'web_search_tool_result':
+                    # The tool result block contains the raw search hits the
+                    # model saw. Each item has `.url` + `.title` + snippet.
+                    for item in (getattr(block, 'content', None) or []):
+                        u = getattr(item, 'url', None)
+                        if u:
+                            structured_urls.append(u)
+            full = "".join(text_parts).strip()
+            # Dedupe URLs while preserving order so the most-relevant (first-
+            # surfaced) sources appear first.
+            unique_urls = list(dict.fromkeys(structured_urls))
+            if unique_urls:
+                full += "\n\nSources:\n" + "\n".join(f"- {u}" for u in unique_urls)
+            return full
+        except Exception as e:
+            print(f"Claude web_search fallback: {type(e).__name__}: {str(e)[:200]}")
+            resp = anthropic.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2000,
+                system=CITATION_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": enriched_prompt}],
+            )
+            return resp.content[0].text
     if provider == "ChatGPT":
         if not openai_client:
             raise RuntimeError("OPENAI_API_KEY not configured")
-        resp = openai_client.chat.completions.create(
-            model="gpt-4o",
-            max_tokens=2000,
-            messages=[
-                {"role": "system", "content": CITATION_SYSTEM_PROMPT},
-                {"role": "user", "content": enriched_prompt},
-            ],
-        )
-        return resp.choices[0].message.content
+        # Try the Responses API + web_search tool first (returns structured
+        # url_citation annotations). Falls back to chat.completions if the
+        # account / SDK version doesn't support it.
+        try:
+            resp = openai_client.responses.create(
+                model="gpt-4o",
+                tools=[{"type": "web_search"}],
+                input=[
+                    {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+                    {"role": "user", "content": enriched_prompt},
+                ],
+            )
+            text = getattr(resp, 'output_text', '') or ''
+            structured_urls = []
+            for item in (getattr(resp, 'output', None) or []):
+                # message items contain content blocks; each block can carry
+                # `annotations` of type `url_citation`.
+                for content in (getattr(item, 'content', None) or []):
+                    for ann in (getattr(content, 'annotations', None) or []):
+                        if getattr(ann, 'type', None) == 'url_citation':
+                            u = getattr(ann, 'url', None)
+                            if u:
+                                structured_urls.append(u)
+            unique_urls = list(dict.fromkeys(structured_urls))
+            if unique_urls:
+                text = (text or '').rstrip() + "\n\nSources:\n" + "\n".join(f"- {u}" for u in unique_urls)
+            return text
+        except Exception as e:
+            print(f"ChatGPT web_search fallback: {type(e).__name__}: {str(e)[:200]}")
+            resp = openai_client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=2000,
+                messages=[
+                    {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+                    {"role": "user", "content": enriched_prompt},
+                ],
+            )
+            return resp.choices[0].message.content
     if provider == "Gemini":
         if not gemini_client:
             raise RuntimeError("GEMINI_API_KEY not configured")
@@ -3726,7 +4001,32 @@ def _call_llm(provider, enriched_prompt):
                 {"role": "user", "content": enriched_prompt},
             ],
         )
-        return resp.choices[0].message.content
+        text = resp.choices[0].message.content or ''
+        # Perplexity returns a `citations` array on the top-level response
+        # object (NOT on the message). These are the actual sources Perplexity
+        # retrieved, so they're structurally non-hallucinated. Append as a
+        # Sources block so extract_urls picks them up.
+        structured_urls = []
+        for attr in ('citations', 'search_results'):
+            raw = getattr(resp, attr, None)
+            if raw:
+                for c in raw:
+                    if isinstance(c, str):
+                        structured_urls.append(c)
+                    elif isinstance(c, dict):
+                        u = c.get('url')
+                        if u:
+                            structured_urls.append(u)
+                    else:
+                        u = getattr(c, 'url', None)
+                        if u:
+                            structured_urls.append(u)
+                if structured_urls:
+                    break
+        unique_urls = list(dict.fromkeys(structured_urls))
+        if unique_urls:
+            text = (text or '').rstrip() + "\n\nSources:\n" + "\n".join(f"- {u}" for u in unique_urls)
+        return text
     if provider == "Grok":
         if not openrouter_client:
             raise RuntimeError("OPENROUTER_API_KEY not configured")
@@ -4733,6 +5033,18 @@ Respond with ONLY valid JSON:
     # Full raw per-response data: {llm, prompt, response, citations}. Lets users
     # re-analyze, audit, debug, or rerun analysis on a past report.
     analysis["all_responses"] = all_responses
+    # Outlet share-of-voice analysis. For each top-cited domain, computes the
+    # brand's mention rate WITHIN responses citing that outlet vs overall, and
+    # the same for each competitor. Labels each outlet as 'strength' (defend),
+    # 'opportunity' (pitch — competitor over-indexes), or 'neutral'. The UI +
+    # CSV surface this as a separate section.
+    try:
+        analysis["outlet_sov"] = _compute_outlet_share_of_voice(
+            brand, competitor_counts, all_responses, ranked_domains
+        )
+    except Exception as _sov_e:
+        print("outlet share-of-voice computation failed (continuing without):", _sov_e)
+        analysis["outlet_sov"] = []
     # Surface to the frontend so it can offer a "Download raw data" affordance.
     analysis["full_responses_available"] = True
     # Per-provider error counts (consumed by the debug-email summary). Leading
@@ -5017,9 +5329,28 @@ def signal_report_pdf(slug):
 
 @app.route('/signal/<slug>.csv')
 def signal_report_csv(slug):
-    """Return the saved report's target list (editorial + institutional + analyst)
-    as a CSV download. Mirrors the PDF route's behavior (loads SharedResult by
-    slug, flashes + redirects on miss)."""
+    """Return the saved report as a multi-section CSV download.
+
+    Sections (each preceded by a `==== SECTION NAME ====` header row so Excel
+    users can navigate):
+      1. METADATA — brand, category, totals
+      2. PROMPTS — the full prompt list sent to the LLMs
+      3. LLM RESPONSES — one row per (prompt × LLM) with the full response
+         text + per-response citation URLs (pipe-joined)
+      4. ALL CITATION URLS — one row per extracted URL with domain + which
+         LLM/prompt surfaced it (verified post-resolution)
+      5. SHARE OF VOICE BY OUTLET — strength / opportunity verdicts per outlet
+      6. EDITORIAL MEDIA TARGETS
+      7. INSTITUTIONAL TARGETS
+      8. ANALYST TARGETS
+
+    The 5-column "raw" schema for sections 2–5 is intentionally wider than
+    the analyzed-targets schema so each section reads cleanly in Excel even
+    with mixed column counts. Excel treats blank-line + bold-text-row pairs
+    as informal section dividers — there's no native CSV mechanism for this,
+    so this is the most-portable approach. Mirrors the PDF route's behavior
+    (loads SharedResult by slug, flashes + redirects on miss).
+    """
     data = _load_signal_report(slug)
     if not data:
         flash("Report not found or expired.")
@@ -5027,8 +5358,134 @@ def signal_report_csv(slug):
 
     buf = io.StringIO()
     writer = csv.writer(buf)
+
+    def _join(v):
+        if not v:
+            return ""
+        if isinstance(v, (list, tuple)):
+            return "; ".join(str(x) for x in v)
+        return str(v)
+
+    def _join_urls(v):
+        # Pipe-join URLs so they don't collide with the semicolon used for
+        # lists elsewhere — easier to split downstream.
+        if not v:
+            return ""
+        if isinstance(v, (list, tuple)):
+            return " | ".join(str(x) for x in v)
+        return str(v)
+
+    def _section(label):
+        writer.writerow([])
+        writer.writerow([f"==== {label} ===="])
+
+    # --- 1. METADATA ---
+    _section("METADATA")
+    writer.writerow(["field", "value"])
+    writer.writerow(["brand", data.get("brand") or ""])
+    writer.writerow(["category", data.get("category") or ""])
+    writer.writerow(["brand_mention_count", data.get("brand_mention_count") or 0])
+    writer.writerow(["total_responses", data.get("total_responses") or 0])
+    writer.writerow(["total_citations_extracted", data.get("total_citations_extracted") or 0])
+    writer.writerow(["responses_completed", data.get("responses_completed") or 0])
+    writer.writerow(["responses_planned", data.get("responses_planned") or 0])
+    writer.writerow(["completion_rate", data.get("completion_rate") or ""])
+    writer.writerow(["tier", data.get("tier") or ""])
+    writer.writerow(["slug", data.get("slug") or slug])
+
+    # --- 2. PROMPTS ---
+    _section("PROMPTS")
+    writer.writerow(["prompt_id", "prompt_text"])
+    for i, p in enumerate(data.get("prompts_used") or [], 1):
+        writer.writerow([i, p])
+
+    # Build a prompt→id lookup so LLM RESPONSES + ALL CITATION URLS can
+    # cross-reference the prompt by its index in the PROMPTS section.
+    prompt_id_lookup = {p: i for i, p in enumerate(data.get("prompts_used") or [], 1)}
+
+    # --- 3. LLM RESPONSES ---
+    _section("LLM RESPONSES (one row per prompt × LLM call)")
     writer.writerow([
-        "section",
+        "prompt_id",
+        "llm",
+        "prompt_text",
+        "response_text",
+        "citation_count",
+        "citation_urls",
+        "error",
+    ])
+    for r in (data.get("all_responses") or []):
+        prompt_text = r.get("prompt") or ""
+        cits = r.get("citations") or []
+        urls = [c.get("url") for c in cits if isinstance(c, dict) and c.get("url")]
+        writer.writerow([
+            prompt_id_lookup.get(prompt_text, ""),
+            r.get("llm") or "",
+            prompt_text,
+            r.get("response") or "",
+            len(urls),
+            _join_urls(urls),
+            r.get("error") or "",
+        ])
+
+    # --- 4. ALL CITATION URLS (every URL extracted, verified) ---
+    _section("ALL CITATION URLS (post-verification)")
+    writer.writerow([
+        "domain",
+        "url",
+        "llm",
+        "prompt_id",
+        "prompt_text",
+    ])
+    for r in (data.get("all_responses") or []):
+        ptext = r.get("prompt") or ""
+        pid = prompt_id_lookup.get(ptext, "")
+        llm = r.get("llm") or ""
+        for c in (r.get("citations") or []):
+            if not isinstance(c, dict):
+                continue
+            writer.writerow([
+                c.get("domain") or "",
+                c.get("url") or "",
+                llm,
+                pid,
+                ptext,
+            ])
+
+    # --- 5. SHARE OF VOICE BY OUTLET ---
+    sov_rows = data.get("outlet_sov") or []
+    if sov_rows:
+        _section("SHARE OF VOICE BY OUTLET (strengths to defend, opportunities to pitch)")
+        writer.writerow([
+            "verdict",
+            "domain",
+            "responses_citing_outlet",
+            "brand_mentions_at_outlet",
+            "brand_sov_at_outlet_pct",
+            "brand_overall_sov_pct",
+            "brand_sov_differential_pct",
+            "top_competitor_at_outlet",
+            "top_competitor_sov_at_outlet_pct",
+            "verdict_label",
+        ])
+        for row in sov_rows:
+            tc = row.get("top_competitor_at_outlet") or {}
+            writer.writerow([
+                row.get("verdict") or "",
+                row.get("domain") or "",
+                row.get("responses_citing") or 0,
+                row.get("brand_mentions_at_outlet") or 0,
+                round((row.get("brand_sov_at_outlet") or 0) * 100, 1),
+                round((row.get("brand_overall_sov") or 0) * 100, 1),
+                round((row.get("brand_sov_differential") or 0) * 100, 1),
+                tc.get("name") or "",
+                round((tc.get("sov_at_outlet") or 0) * 100, 1) if tc else "",
+                row.get("verdict_label") or "",
+            ])
+
+    # --- 6. EDITORIAL MEDIA TARGETS ---
+    _section("EDITORIAL MEDIA TARGETS")
+    writer.writerow([
         "rank",
         "outlet",
         "domain",
@@ -5040,56 +5497,73 @@ def signal_report_csv(slug):
         "gap_insight",
         "sample_urls",
     ])
+    for t in (data.get("media_targets") or []):
+        writer.writerow([
+            t.get("rank") or "",
+            t.get("outlet") or "",
+            t.get("domain") or "",
+            t.get("reporter") or "",
+            t.get("citation_frequency") or "",
+            _join(t.get("cited_by_llms")),
+            _join(t.get("competitors_citing")),
+            t.get("rationale") or "",
+            t.get("gap_insight") or "",
+            _join_urls(t.get("sample_urls")),
+        ])
 
-    def _join(v):
-        if not v:
-            return ""
-        if isinstance(v, (list, tuple)):
-            return "; ".join(str(x) for x in v)
-        return str(v)
+    # --- 7. INSTITUTIONAL TARGETS ---
+    institutional_targets = data.get("institutional_targets") or []
+    if institutional_targets:
+        _section("INSTITUTIONAL / PARTNERSHIP TARGETS")
+        writer.writerow([
+            "rank",
+            "institution",
+            "domain",
+            "type",
+            "citation_frequency",
+            "cited_by_llms",
+            "partnership_play",
+            "sample_urls",
+        ])
+        for t in institutional_targets:
+            writer.writerow([
+                t.get("rank") or "",
+                t.get("institution") or "",
+                t.get("domain") or "",
+                t.get("type") or "",
+                t.get("citation_frequency") or "",
+                _join(t.get("cited_by_llms")),
+                t.get("partnership_play") or "",
+                _join_urls(t.get("sample_urls")),
+            ])
 
-    for t in (data.get('media_targets') or []):
+    # --- 8. ANALYST TARGETS ---
+    analyst_targets = data.get("analyst_targets") or []
+    if analyst_targets:
+        _section("ANALYST TARGETS")
         writer.writerow([
-            "editorial",
-            t.get('rank') or '',
-            t.get('outlet') or '',
-            t.get('domain') or '',
-            t.get('reporter') or '',
-            t.get('citation_frequency') or '',
-            _join(t.get('cited_by_llms')),
-            _join(t.get('competitors_citing')),
-            t.get('rationale') or '',
-            t.get('gap_insight') or '',
-            _join(t.get('sample_urls')),
+            "rank",
+            "firm",
+            "domain",
+            "type",
+            "citation_frequency",
+            "cited_by_llms",
+            "evaluations_referenced",
+            "analyst_play",
+            "sample_urls",
         ])
-    for t in (data.get('institutional_targets') or []):
-        writer.writerow([
-            "institutional",
-            t.get('rank') or '',
-            t.get('institution') or '',
-            t.get('domain') or '',
-            "",  # no reporter for institutional
-            t.get('citation_frequency') or '',
-            _join(t.get('cited_by_llms')),
-            "",  # competitors_citing not tracked at this granularity for institutional
-            t.get('partnership_play') or '',
-            "",  # no gap_insight on institutional rows
-            _join(t.get('sample_urls')),
-        ])
-    for t in (data.get('analyst_targets') or []):
-        writer.writerow([
-            "analyst",
-            t.get('rank') or '',
-            t.get('firm') or '',
-            t.get('domain') or '',
-            "",
-            t.get('citation_frequency') or '',
-            _join(t.get('cited_by_llms')),
-            "",
-            t.get('analyst_play') or '',
-            _join(t.get('evaluations_referenced')),
-            _join(t.get('sample_urls')),
-        ])
+        for t in analyst_targets:
+            writer.writerow([
+                t.get("rank") or "",
+                t.get("firm") or "",
+                t.get("domain") or "",
+                t.get("type") or "",
+                t.get("citation_frequency") or "",
+                _join(t.get("cited_by_llms")),
+                _join(t.get("evaluations_referenced")),
+                t.get("analyst_play") or "",
+                _join_urls(t.get("sample_urls")),
+            ])
 
     csv_bytes = buf.getvalue().encode('utf-8-sig')  # BOM so Excel reads UTF-8 cleanly
     brand_slug = re.sub(r'[^a-z0-9]+', '-', (data.get('brand') or 'report').lower()).strip('-') or 'report'
