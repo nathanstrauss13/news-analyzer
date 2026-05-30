@@ -5031,6 +5031,16 @@ Respond with ONLY valid JSON:
 # MVP branch: free-tier rate limit + client-IP helper.
 FREE_DAILY_CAP = 3
 
+# Comma-separated list of client IPs exempt from the per-day cap. Set on Render
+# (Environment tab) when you want unlimited audits from a specific IP — your own
+# residential / office IP, a co-worker, a demo machine. Look up the IP from any
+# previous request in Render Logs (clientIP="..."). Whitespace + empty entries
+# are ignored, so e.g. " 1.2.3.4 , 5.6.7.8" parses cleanly.
+_FREE_AUDIT_BYPASS_IPS = set(
+    ip.strip() for ip in (os.environ.get("FREE_AUDIT_BYPASS_IPS", "") or "").split(",")
+    if ip.strip()
+)
+
 
 def _client_ip():
     """Return the best-effort client IP. Respects Render's X-Forwarded-For."""
@@ -5038,6 +5048,12 @@ def _client_ip():
     if fwd:
         return fwd.split(',')[0].strip()
     return request.remote_addr or 'unknown'
+
+
+def _ip_is_exempt_from_cap(ip):
+    """True if this IP should bypass FREE_DAILY_CAP enforcement (allowlisted
+    via FREE_AUDIT_BYPASS_IPS env var)."""
+    return bool(ip) and ip in _FREE_AUDIT_BYPASS_IPS
 
 
 @app.route('/citation-audit', methods=['GET', 'POST'])
@@ -5069,20 +5085,26 @@ def citation_audit():
     # Per-IP per-day cap. Pre-decrement before kicking off the audit so a
     # buggy/abusive client can't burst-spawn 30 audits in parallel. We do not
     # refund on failure: the cap is abuse protection, not a credit ledger.
+    # IPs listed in FREE_AUDIT_BYPASS_IPS env var skip BOTH the cap check AND
+    # the recording — they get unlimited audits and don't pollute the
+    # free_audit_use table. Used for the operator's own IP + trusted demos.
     today = date.today()
     ip = _client_ip()
-    use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
-    if use and use.count >= FREE_DAILY_CAP:
-        return jsonify({
-            "error": f"You've used your {FREE_DAILY_CAP} free audits for today. Talk to Nathan about a bespoke audit for unlimited access.",
-            "code": "rate_limited",
-        }), 429
-    if use:
-        use.count += 1
+    if _ip_is_exempt_from_cap(ip):
+        print(f"[audit] FREE_AUDIT_BYPASS_IPS hit: {ip} (unlimited)")
     else:
-        use = FreeAuditUse(ip=ip, day=today, count=1)
-        db.session.add(use)
-    db.session.commit()
+        use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
+        if use and use.count >= FREE_DAILY_CAP:
+            return jsonify({
+                "error": f"You've used your {FREE_DAILY_CAP} free audits for today. Talk to Nathan about a bespoke audit for unlimited access.",
+                "code": "rate_limited",
+            }), 429
+        if use:
+            use.count += 1
+        else:
+            use = FreeAuditUse(ip=ip, day=today, count=1)
+            db.session.add(use)
+        db.session.commit()
 
     user_id = user.id if user else None
     cfg = TIER_CONFIG[tier]
