@@ -3508,6 +3508,76 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
     return out
 
 
+_TOPIC_CHECK_HEADERS = dict(_URL_VALIDATION_HEADERS)  # reuse browser UA
+
+
+def _check_url_topic(url, brand_lower, category_keywords, timeout=4):
+    """Fetch a URL and check whether its title or first ~1500 chars of body text
+    actually mentions the brand or any category keyword. Catches the failure
+    mode where a URL passes _is_specific_article (looks article-shaped) but
+    the article is wholly off-topic — e.g. an LLM citing a Verge article about
+    an electric golf cart as "evidence" for an AI creative platforms audit.
+
+    Returns one of:
+      'verified'     — page fetched 200, title or body sample contains the brand
+                       (word-boundary, case-insensitive) OR any category_keyword
+                       (case-insensitive substring).
+      'off_topic'    — page fetched fine with parseable body, but no match. Drop.
+      'inaccessible' — non-200, GET error, timeout, or empty body. Can't tell —
+                       caller applies transitive-trust rules.
+    """
+    try:
+        if not _is_safe_url(url):
+            return 'inaccessible'
+        r = requests.get(url, timeout=timeout, allow_redirects=True,
+                         headers=_TOPIC_CHECK_HEADERS, stream=False)
+        if r.status_code >= 400:
+            return 'inaccessible'
+        body = (r.text or '')[:8000]  # generous slice for title-then-body extraction
+        if not body.strip():
+            return 'inaccessible'
+        title_match = re.search(r'<title[^>]*>([^<]+)</title>', body, re.IGNORECASE)
+        title = (title_match.group(1) if title_match else '').strip()
+        # Strip HTML tags from body sample for keyword check.
+        text_sample = re.sub(r'<[^>]+>', ' ', body[:4000])
+        combined = (title + ' ' + text_sample).lower()
+        # Brand check (word boundary).
+        if brand_lower and re.search(r'\b' + re.escape(brand_lower) + r'\b', combined):
+            return 'verified'
+        # Category keyword check (any substring match).
+        for kw in category_keywords:
+            if kw and kw in combined:
+                return 'verified'
+        return 'off_topic'
+    except Exception:
+        return 'inaccessible'
+
+
+def _category_keywords(category):
+    """Pull noun-ish tokens from the category string for substring matching in
+    _check_url_topic. Drops common stopwords; lowercases; caps at 10 keywords.
+
+    Example: "AI creative platforms with transparency and commercial safety"
+    -> ['creative', 'platforms', 'transparency', 'commercial', 'safety']
+    ('ai' is too short and dropped by the 3-char minimum — 'creative' alone
+    catches Adobe articles.)
+    """
+    if not category:
+        return []
+    STOPWORDS = {'and', 'or', 'the', 'for', 'with', 'a', 'an', 'in', 'of', 'on', 'to',
+                 'is', 'are', 'as', 'at', 'by', 'be', 'this', 'that', 'these', 'those',
+                 'best', 'top', 'leading'}
+    toks = re.findall(r'[A-Za-z][A-Za-z\-]{2,}', category.lower())
+    seen = set()
+    result = []
+    for t in toks:
+        if t in STOPWORDS or t in seen:
+            continue
+        seen.add(t)
+        result.append(t)
+    return result[:10]
+
+
 def _apply_url_resolution(all_responses, url_map):
     """Rewrite each citation in-place: drop unverified, re-key valid ones under
     their final (post-redirect) URL + domain. Returns count of dropped URLs."""
@@ -4374,6 +4444,89 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     if rejected_editorial:
         print(f"verify_editorial_domains: filtered out {len(rejected_editorial)} non-media domains: " +
               ", ".join(d['domain'] for d in rejected_editorial[:10]))
+
+    # Topic-verify each candidate sample URL. _is_specific_article only checks
+    # URL shape — it can't tell a real-but-off-topic article (Verge piece on a
+    # golf cart) from an LLM hallucination (creativebloq.com/news/adobe-ai-...
+    # that 403s us). Topic verification GETs the page, parses title + first
+    # ~1500 chars of body, and confirms the brand or a category keyword
+    # actually appears. Off-topic URLs get dropped; inaccessible URLs (403,
+    # 5xx, timeouts) get transitive trust if the same domain has at least one
+    # other verified URL.
+    #
+    # We only touch the surfaced `sample_urls` (via `dom['specific_urls']`).
+    # Raw evidence (`all_responses[*].citations`, `raw_citation_domains[*].urls`)
+    # stays intact for the JSON download.
+    emit("analysis", "Topic-verifying displayed sample URLs...", 0, 1)
+    brand_lower = (brand or '').lower().strip()
+    category_kw = _category_keywords(category)
+
+    # Collect candidate URLs to verify: top 10 specific_urls per surviving
+    # domain across all three classifications. Capped per-domain so a single
+    # ranking-heavy outlet can't blow the GET budget.
+    candidate_urls = []
+    for dom in (editorial_domains + institutional_domains + analyst_domains_found):
+        for u in (dom.get('specific_urls') or [])[:10]:
+            candidate_urls.append(u)
+    candidate_urls = list(set(candidate_urls))  # dedup
+
+    url_topic_status = {}  # url -> 'verified' | 'off_topic' | 'inaccessible'
+    if candidate_urls:
+        with ThreadPoolExecutor(max_workers=20) as ex:
+            futures = {ex.submit(_check_url_topic, u, brand_lower, category_kw): u
+                       for u in candidate_urls}
+            for fut in as_completed(futures):
+                try:
+                    status = fut.result()
+                except Exception:
+                    status = 'inaccessible'
+                url_topic_status[futures[fut]] = status
+
+    # Domains earn transitive trust if AT LEAST ONE of their URLs verified —
+    # the LLM probably wasn't fabricating that domain wholesale.
+    def _domain_of(u):
+        try:
+            from urllib.parse import urlparse
+            h = (urlparse(u).netloc or '').lower()
+            return h[4:] if h.startswith('www.') else h
+        except Exception:
+            return ''
+
+    verified_domains = set()
+    for u, status in url_topic_status.items():
+        if status == 'verified':
+            host = _domain_of(u)
+            if host:
+                verified_domains.add(host)
+
+    # Rebuild each domain's specific_urls. A URL survives iff:
+    #   - it's 'verified' itself, OR
+    #   - it's 'inaccessible' AND its host is in verified_domains, OR
+    #   - it wasn't a candidate (beyond top-10 per domain — leave untouched).
+    # 'off_topic' is always dropped.
+    for dom in ranked_domains:
+        new_specific = []
+        for u in (dom.get('specific_urls') or []):
+            status = url_topic_status.get(u)
+            if status == 'verified':
+                new_specific.append(u)
+            elif status == 'off_topic':
+                continue  # drop
+            elif status == 'inaccessible':
+                host = _domain_of(u)
+                if host and host in verified_domains:
+                    new_specific.append(u)
+                # else drop — no transitive trust for this domain.
+            else:
+                # Not in the candidate set (beyond top-10 per domain). Leave alone.
+                new_specific.append(u)
+        dom['specific_urls'] = new_specific
+
+    v_count = sum(1 for s in url_topic_status.values() if s == 'verified')
+    o_count = sum(1 for s in url_topic_status.values() if s == 'off_topic')
+    i_count = sum(1 for s in url_topic_status.values() if s == 'inaccessible')
+    print(f"[audit] topic-verify: {v_count} verified / {o_count} off-topic (dropped) "
+          f"/ {i_count} inaccessible (transitive-trust) of {len(candidate_urls)} candidates")
 
     emit("analysis", "Building your signal report...", 0, 1)
 
