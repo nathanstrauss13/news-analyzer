@@ -3223,26 +3223,51 @@ def _count_brand_mentions(brand, all_responses):
     biased low because the analysis prompt only saw 500-char excerpts of each
     response (so mentions past char 500 were silently dropped).
 
-    Multi-form heuristic: for multi-word brand names where the first word is
-    >= 5 chars (avoids false-positives on short common words like "The" / "New"),
-    we also count responses that mention just the first word. Same response
-    counts as one regardless of which form matched. Examples:
-      - "Patagonia"           → matches "Patagonia"
-      - "ACME Corporation"    → matches "ACME Corporation" OR just "ACME"
-      - "The Honest Company"  → only matches the full phrase (first word too short)
+    Multi-form heuristic WITH FALSE-POSITIVE GUARDRAIL:
+    For multi-word brand names where the first word is >= 5 chars, we want to
+    ALSO count responses that mention just the first word (e.g. "ACME Corp"
+    being shortened to "ACME"). But this breaks badly when the first word is
+    a common category word — "Beauty Blender" → matching standalone "Beauty"
+    finds 29/29 in a beauty audit, not 1.
+
+    Guardrail: only OR-combine the first-word matches when the first-word
+    count is at most 2× the full-form count (or both counts are very small).
+    If the first word matches far more often than the full brand name, it's
+    almost certainly the category noun and we should ignore the fallback.
+
+    Examples (full / first / final):
+      - "Patagonia"            → 5 / —  / 5      (single-word; no fallback)
+      - "ACME Corporation"     → 5 / 8  / OR=8   (8 ≤ 2×5=10 → use fallback)
+      - "Beauty Blender"       → 1 / 29 / 1      (29 > 2×1=2 → drop fallback)
+      - "The Honest Company"   → 4 / —  / 4      ('The' too short; no fallback)
+      - "Iron Mountain"        → 2 / 0  / 2      ('Iron' alone never appears)
     """
     if not brand:
         return 0
-    patterns = [re.compile(r'\b' + re.escape(brand) + r'\b', re.IGNORECASE)]
+    full_pat = re.compile(r'\b' + re.escape(brand) + r'\b', re.IGNORECASE)
+    full_count = sum(
+        1 for r in all_responses
+        if full_pat.search(r.get('response', '') or '')
+    )
     parts = brand.split()
     if len(parts) > 1 and len(parts[0]) > 5:
-        patterns.append(re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE))
-    count = 0
-    for r in all_responses:
-        text = r.get('response', '') or ''
-        if any(p.search(text) for p in patterns):
-            count += 1
-    return count
+        first_pat = re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE)
+        first_count = sum(
+            1 for r in all_responses
+            if first_pat.search(r.get('response', '') or '')
+        )
+        # Guardrail: accept the fallback only when the first word doesn't
+        # dominate. Compare to max(2×full, 3) so very small full-counts still
+        # leave room for legitimate fallback (e.g. full=0 but first=2 is OK;
+        # full=0 but first=29 is the Beauty bug).
+        if first_count <= max(full_count * 2, 3):
+            combined = sum(
+                1 for r in all_responses
+                if full_pat.search(r.get('response', '') or '') or
+                   first_pat.search(r.get('response', '') or '')
+            )
+            return combined
+    return full_count
 
 
 def _extract_competitor_candidates(brand, category, all_responses, max_candidates=15):
@@ -3352,15 +3377,32 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, rank
         return []
 
     # Pre-build mention-detection patterns for brand + each competitor.
-    # Match the same multi-form heuristic as _count_brand_mentions.
+    # Match the same multi-form heuristic + first-word-dominance guardrail
+    # as _count_brand_mentions (see that function for examples). For each
+    # name we return EITHER [full_pat] only, or [full_pat, first_pat]
+    # depending on whether the first-word fallback survives the guardrail
+    # against the response corpus. This is computed once per name so SoV
+    # per-outlet counts don't keep re-evaluating the guardrail.
     def _patterns_for(name):
         if not name:
             return []
-        pats = [re.compile(r'\b' + re.escape(name) + r'\b', re.IGNORECASE)]
+        full_pat = re.compile(r'\b' + re.escape(name) + r'\b', re.IGNORECASE)
         parts = name.split()
-        if len(parts) > 1 and len(parts[0]) > 5:
-            pats.append(re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE))
-        return pats
+        if not (len(parts) > 1 and len(parts[0]) > 5):
+            return [full_pat]
+        first_pat = re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE)
+        # Reject fallback if first word dominates (category-word false positive).
+        full_count = sum(
+            1 for r in all_responses
+            if full_pat.search(r.get('response', '') or '')
+        )
+        first_count = sum(
+            1 for r in all_responses
+            if first_pat.search(r.get('response', '') or '')
+        )
+        if first_count > max(full_count * 2, 3):
+            return [full_pat]
+        return [full_pat, first_pat]
 
     brand_patterns = _patterns_for(brand or '')
     competitor_pat_map = {
@@ -3715,14 +3757,25 @@ def _check_url_topic(url, brand_lower, category_keywords, timeout=4):
                        (word-boundary, case-insensitive) OR any category_keyword
                        (case-insensitive substring).
       'off_topic'    — page fetched fine with parseable body, but no match. Drop.
-      'inaccessible' — non-200, GET error, timeout, or empty body. Can't tell —
-                       caller applies transitive-trust rules.
+      'confabulated' — definitive negative (404 or 410). Always drop, never
+                       eligible for transitive trust — the URL truly does not
+                       exist at the publisher. Distinct from 'inaccessible' so
+                       the caller can apply the right policy.
+      'inaccessible' — non-200 we can't be sure about (403, 5xx, timeout, GET
+                       error, empty body). Could be bot-blocked legitimate
+                       content. Caller applies transitive-trust rules.
     """
     try:
         if not _is_safe_url(url):
             return 'inaccessible'
         r = requests.get(url, timeout=timeout, allow_redirects=True,
                          headers=_TOPIC_CHECK_HEADERS, stream=False)
+        # 404/410 = definitive negative. The publisher's webserver explicitly
+        # says this URL is not (and never was, in the case of 410) here. This
+        # is exactly the LLM-hallucination fingerprint — a plausibly-shaped URL
+        # that doesn't exist. Never give these transitive trust.
+        if r.status_code in (404, 410):
+            return 'confabulated'
         if r.status_code >= 400:
             return 'inaccessible'
         body = (r.text or '')[:8000]  # generous slice for title-then-body extraction
@@ -4762,15 +4815,17 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     #   - it's 'verified' itself, OR
     #   - it's 'inaccessible' AND its host is in verified_domains, OR
     #   - it wasn't a candidate (beyond top-10 per domain — leave untouched).
-    # 'off_topic' is always dropped.
+    # 'off_topic' and 'confabulated' are always dropped — the latter is a
+    # definitive 404/410 from the publisher (LLM hallucination fingerprint)
+    # and must not earn transitive trust.
     for dom in ranked_domains:
         new_specific = []
         for u in (dom.get('specific_urls') or []):
             status = url_topic_status.get(u)
             if status == 'verified':
                 new_specific.append(u)
-            elif status == 'off_topic':
-                continue  # drop
+            elif status in ('off_topic', 'confabulated'):
+                continue  # always drop
             elif status == 'inaccessible':
                 host = _domain_of(u)
                 if host and host in verified_domains:
@@ -4783,9 +4838,11 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
 
     v_count = sum(1 for s in url_topic_status.values() if s == 'verified')
     o_count = sum(1 for s in url_topic_status.values() if s == 'off_topic')
+    c_count = sum(1 for s in url_topic_status.values() if s == 'confabulated')
     i_count = sum(1 for s in url_topic_status.values() if s == 'inaccessible')
-    print(f"[audit] topic-verify: {v_count} verified / {o_count} off-topic (dropped) "
-          f"/ {i_count} inaccessible (transitive-trust) of {len(candidate_urls)} candidates")
+    print(f"[audit] topic-verify: {v_count} verified / {o_count} off-topic / "
+          f"{c_count} confabulated (404/410) / {i_count} inaccessible "
+          f"(transitive-trust eligible) of {len(candidate_urls)} candidates")
 
     emit("analysis", "Building your signal report...", 0, 1)
 
