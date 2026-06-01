@@ -74,12 +74,21 @@
             background: #fbeded;
             color: #842020;
         }
+        .briefing-label {
+            text-transform: uppercase;
+            letter-spacing: 1.5pt;
+            font-size: 8pt;
+            font-weight: 700;
+            color: #5c6cff;
+            margin: 14pt 0 4pt;
+        }
         .exec-summary {
             background: #f7f7fa;
             border-left: 3pt solid #5c6cff;
             padding: 10pt 14pt;
-            font-size: 11pt;
-            margin: 12pt 0 18pt;
+            font-size: 11.5pt;
+            line-height: 1.5;
+            margin: 0 0 18pt;
         }
         .competitors {
             margin: 6pt 0 14pt;
@@ -274,12 +283,13 @@
     </style>
 </head>
 <body>
-    <div class="eyebrow">innate insights — AI Citation Audit</div>
-    <h1>{{ data.brand }} signal report</h1>
+    <div class="eyebrow">innate insights — AI Mindshare Briefing</div>
+    <h1>{{ data.brand }}</h1>
+    {% set overall_pct = ((data.brand_mention_count or 0) / (data.total_responses or 1) * 100) | round | int %}
     <div class="meta">
         <span class="pill">{{ data.category }}</span>
-        Brand cited in <strong>{{ data.brand_mention_count or 0 }} of {{ data.total_responses or 30 }}</strong> AI responses
-        · {{ data.total_citations_extracted or 0 }} citation URLs extracted
+        <strong>{{ overall_pct }}% AI mindshare</strong> — cited in {{ data.brand_mention_count or 0 }} of {{ data.total_responses or 30 }} responses
+        · {{ data.total_citations_extracted or 0 }} citations
     </div>
     {% if data.responses_planned %}
         {% set _rate = data.completion_rate if data.completion_rate is not none else (data.responses_completed / data.responses_planned if data.responses_planned else 0) %}
@@ -294,11 +304,12 @@
     {% endif %}
 
     {% if data.executive_summary %}
+    <div class="briefing-label">What we found</div>
     <div class="exec-summary">{{ data.executive_summary }}</div>
     {% endif %}
 
     {% if data.competitors %}
-    <h2>Top competitors in AI responses</h2>
+    <h2>The competitive landscape</h2>
     <div class="competitors">
         {% for c in data.competitors[:10] %}
             <span class="competitor-chip">{{ c.name }} · {{ c.mention_count }}x</span>
@@ -315,24 +326,37 @@
         {% set _ = sov_lookup.update({row.domain | lower: row}) %}
     {% endfor %}
 
-    <h2>Your top 10 media targets — based on actual AI citations</h2>
-    <div class="section-note">These are the editorial outlets where {{ data.brand }} should focus PR efforts. Each surfaced most often in AI responses about {{ data.category or 'this category' }}. Each card explains why the outlet matters and shows how {{ data.brand }} currently performs in the AI conversation there.</div>
     {% set badge_labels = {'strength': 'Strength · defend', 'opportunity': 'Opportunity · pitch', 'neutral': 'Aligned · steady', 'emerging': 'Emerging mention'} %}
-    {% set overall_pct = ((data.brand_mention_count or 0) / (data.total_responses or 1) * 100) | round | int %}
+    {# Bucket targets by verdict so the PDF leads with insight, matching the
+       web report. Null verdicts fall into 'emerging'. #}
+    {% set buckets = {'strength': [], 'opportunity': [], 'neutral': [], 'emerging': []} %}
+    {% for t in (data.media_targets or []) %}
+        {% set sov = sov_lookup.get((t.domain or '') | lower) %}
+        {% set v = sov.verdict if (sov and sov.verdict in buckets) else 'emerging' %}
+        {% set _ = buckets[v].append(t) %}
+    {% endfor %}
+    {% set group_meta = [
+        ('strength', 'Strengths to defend', 'Outlets where ' ~ data.brand ~ ' already over-indexes — protect these relationships and pitch follow-up coverage.'),
+        ('opportunity', 'Opportunities to pitch', 'Outlets where competitors out-cite ' ~ data.brand ~ ' — where earned media will move AI mindshare most.'),
+        ('neutral', 'Holding steady', data.brand ~ ' performs in line with its overall mindshare here. Maintain presence.'),
+        ('emerging', 'Emerging signals to watch', 'Outlets cited once or twice — too thin to score yet, but worth cultivating early.')
+    ] %}
     {% if data.media_targets %}
-        {% for t in data.media_targets %}
+        {% for gkey, gtitle, gintro in group_meta %}
+        {% if buckets[gkey] %}
+        <h2>{{ gtitle }} · {{ buckets[gkey] | length }}</h2>
+        <div class="section-note">{{ gintro }}</div>
+        {% for t in buckets[gkey] %}
         {% set sov = sov_lookup.get((t.domain or '') | lower) %}
         <div class="target-card {{ sov.verdict if sov else '' }}">
             {% if sov and badge_labels.get(sov.verdict) %}
                 <span class="card-badge {{ sov.verdict }}">{{ badge_labels[sov.verdict] }}</span>
             {% endif %}
-            <div class="target-rank">#{{ t.rank }} target</div>
             <div class="target-name">{{ t.outlet }}</div>
             {% if t.domain %}<div class="target-domain">{{ t.domain }}</div>{% endif %}
             {% if t.reporter %}<div class="target-domain">Reporter: {{ t.reporter }}</div>{% endif %}
             <span class="target-stat">Cited {{ t.citation_frequency }}x</span>
             {% for l in (t.cited_by_llms or []) %}<span class="target-stat">{{ l }}</span>{% endfor %}
-            {% for c in (t.competitors_citing or []) %}<span class="competitor-chip">{{ c }}</span>{% endfor %}
             {% if t.rationale %}<div class="target-rationale">{{ t.rationale }}</div>{% endif %}
             {% if sov %}
                 {% set brand_pct = (sov.brand_sov_at_outlet * 100) | round | int %}
@@ -355,6 +379,8 @@
                 </div>
             {% endif %}
         </div>
+        {% endfor %}
+        {% endif %}
         {% endfor %}
     {% else %}
         <div class="empty">No editorial media targets found.</div>
