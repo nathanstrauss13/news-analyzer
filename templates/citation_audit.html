@@ -295,20 +295,54 @@
         .card-badge.opportunity { background: #1a1510; color: #ffb860; border: 1px solid #3a2a1a; }
         .card-badge.neutral { background: #0d141a; color: #7aa3cc; border: 1px solid #1a2a3a; }
         .card-badge.emerging { background: #14141a; color: #9a9acc; border: 1px solid #2a2a3a; }
-        /* In-card SoV: structured numbers line + caption */
-        .media-sov-numbers {
-            font-size: 13px;
+        /* In-card SoV: stacked brand + top-competitor bars + context line */
+        .media-sov-row {
+            display: grid;
+            grid-template-columns: 140px 1fr 140px;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+        .media-sov-row + .media-sov-row { margin-top: 4px; }
+        .media-sov-row-label {
             color: #cfd2ff;
-            line-height: 1.6;
-            margin-top: 4px;
+            font-weight: 500;
+            font-size: 12px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
-        .media-sov-numbers strong { color: #fff; }
-        .media-sov-context {
-            margin-top: 4px;
+        .media-sov-row-label.brand strong { color: #fff; }
+        .media-sov-row-bar {
+            height: 8px;
+            background: #1a1a22;
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+        }
+        .media-sov-row-bar .fill { height: 100%; }
+        .media-sov-row-bar .fill.brand { background: #4a9eff; }
+        .media-sov-row-bar .fill.comp { background: #e8a04c; }
+        .media-sov-row-num {
+            color: #cfd2ff;
+            font-weight: 600;
             font-size: 11px;
-            color: #777;
-            line-height: 1.4;
+            text-align: right;
+            white-space: nowrap;
         }
+        .media-sov-context {
+            margin-top: 10px;
+            font-size: 11px;
+            color: #888;
+            line-height: 1.5;
+        }
+        .media-sov-emerging {
+            font-size: 12px;
+            color: #cfd2ff;
+            margin-top: 4px;
+        }
+        .media-sov-emerging strong { color: #fff; }
         /* In-card SoV bar */
         .media-sov {
             margin-top: 14px;
@@ -1762,31 +1796,46 @@
                     ? `<span class="card-badge ${verdict}">${badgeText}</span>`
                     : '';
 
-                // SoV numbers block — simplified two-line format:
-                //   {brand}: x/n (y%) · {top_comp}: a/n (b%)
-                //   {brand} overall: NN% across N responses
+                // SoV visualization — stacked horizontal bars for the brand
+                // and the top competitor at this outlet, each with its label
+                // and "x/n (y%)" annotation. Below the bars: context line
+                // with overall mindshare + short prescription. Emerging
+                // outlets (n=1) skip the bars and show the caveat only.
                 let sovBlock = '';
                 if (sov && verdict !== 'emerging') {
                     const brandAt = sov.brand_mentions_at_outlet ?? 0;
                     const n = sov.responses_citing ?? 0;
                     const brandPct = Math.round((sov.brand_sov_at_outlet || 0) * 100);
                     const tc = sov.top_competitor_at_outlet;
-                    let compChunk = '';
+                    const brandRow = `
+                        <div class="media-sov-row">
+                            <span class="media-sov-row-label brand"><strong>${esc(brandLabel)}</strong></span>
+                            <div class="media-sov-row-bar"><div class="fill brand" style="width:${brandPct}%"></div></div>
+                            <span class="media-sov-row-num">${brandAt}/${n} (${brandPct}%)</span>
+                        </div>
+                    `;
+                    let compRow = '';
                     if (tc) {
                         const compPct = Math.round((tc.sov_at_outlet || 0) * 100);
-                        compChunk = ` &middot; <strong>${esc(tc.name)}</strong>: ${tc.mentions_at_outlet}/${n} (${compPct}%)`;
+                        compRow = `
+                            <div class="media-sov-row">
+                                <span class="media-sov-row-label">${esc(tc.name)}</span>
+                                <div class="media-sov-row-bar"><div class="fill comp" style="width:${compPct}%"></div></div>
+                                <span class="media-sov-row-num">${tc.mentions_at_outlet}/${n} (${compPct}%)</span>
+                            </div>
+                        `;
                     }
                     sovBlock = `
                         <div class="media-sov">
-                            <div class="media-sov-numbers"><strong>${esc(brandLabel)}</strong>: ${brandAt}/${n} (${brandPct}%)${compChunk}</div>
-                            <div class="media-sov-context">${esc(brandLabel)} overall: ${overallPctTop}% across ${data.total_responses || 0} responses · ${esc(sov.verdict_label || '')}</div>
+                            ${brandRow}
+                            ${compRow}
+                            <div class="media-sov-context">${esc(brandLabel)} overall: ${overallPctTop}% across ${data.total_responses || 0} responses${sov.verdict_label ? ` &middot; ${esc(sov.verdict_label)}` : ''}</div>
                         </div>
                     `;
                 } else if (sov && verdict === 'emerging') {
-                    // n=1 emerging mention — no math, just the caveat.
                     sovBlock = `
                         <div class="media-sov">
-                            <div class="media-sov-numbers"><strong>${esc(brandLabel)}</strong>: ${sov.brand_mentions_at_outlet ?? 0}/1 mention at this outlet</div>
+                            <div class="media-sov-emerging"><strong>${esc(brandLabel)}</strong>: ${sov.brand_mentions_at_outlet ?? 0}/1 mention at this outlet</div>
                             <div class="media-sov-context">${esc(sov.verdict_label || '')}</div>
                         </div>
                     `;

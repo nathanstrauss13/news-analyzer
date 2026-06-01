@@ -127,9 +127,32 @@
             border-top: 0.5pt solid #e0e0e0;
             font-size: 9pt;
         }
-        .target-sov-line { color: #1a1a1a; margin-bottom: 2pt; }
-        .target-sov-line strong { color: #1a1a1a; }
-        .target-sov-context { color: #555; font-size: 8.5pt; line-height: 1.4; }
+        .target-sov-row {
+            display: table;
+            table-layout: fixed;
+            width: 100%;
+            margin-bottom: 3pt;
+            font-size: 9pt;
+            color: #1a1a1a;
+        }
+        .target-sov-row > * { display: table-cell; vertical-align: middle; }
+        .target-sov-label { width: 90pt; padding-right: 6pt; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .target-sov-label.brand strong { color: #111; }
+        .target-sov-bar-wrap { padding: 0 6pt; }
+        .target-sov-bar {
+            display: block;
+            width: 100%;
+            height: 6pt;
+            background: #ececec;
+            border-radius: 3pt;
+            overflow: hidden;
+        }
+        .target-sov-bar .fill { display: block; height: 100%; }
+        .target-sov-bar .fill.brand { background: #2a7ac0; }
+        .target-sov-bar .fill.comp { background: #c08040; }
+        .target-sov-num { width: 70pt; text-align: right; font-weight: 600; font-size: 8.5pt; white-space: nowrap; }
+        .target-sov-context { color: #555; font-size: 8.5pt; line-height: 1.4; margin-top: 4pt; }
+        .target-sov-emerging { color: #1a1a1a; font-size: 9pt; }
         .target-rank {
             font-size: 9pt;
             text-transform: uppercase;
@@ -316,14 +339,24 @@
                 {% set n = sov.responses_citing %}
                 {% set tc = sov.top_competitor_at_outlet %}
                 <div class="target-sov">
-                    <div class="target-sov-line">
-                        <strong>{{ data.brand }}</strong>: {{ sov.brand_mentions_at_outlet }}/{{ n }} ({{ brand_pct }}%){% if tc %} &middot; <strong>{{ tc.name }}</strong>: {{ tc.mentions_at_outlet }}/{{ n }} ({{ (tc.sov_at_outlet * 100) | round | int }}%){% endif %}
+                    <div class="target-sov-row">
+                        <span class="target-sov-label brand"><strong>{{ data.brand }}</strong></span>
+                        <span class="target-sov-bar-wrap"><span class="target-sov-bar"><span class="fill brand" style="width:{{ brand_pct }}%"></span></span></span>
+                        <span class="target-sov-num">{{ sov.brand_mentions_at_outlet }}/{{ n }} ({{ brand_pct }}%)</span>
                     </div>
+                    {% if tc %}
+                    {% set comp_pct = (tc.sov_at_outlet * 100) | round | int %}
+                    <div class="target-sov-row">
+                        <span class="target-sov-label">{{ tc.name }}</span>
+                        <span class="target-sov-bar-wrap"><span class="target-sov-bar"><span class="fill comp" style="width:{{ comp_pct }}%"></span></span></span>
+                        <span class="target-sov-num">{{ tc.mentions_at_outlet }}/{{ n }} ({{ comp_pct }}%)</span>
+                    </div>
+                    {% endif %}
                     <div class="target-sov-context">{{ data.brand }} overall: {{ overall_pct }}% across {{ data.total_responses or 0 }} responses{% if sov.verdict_label %} &middot; {{ sov.verdict_label }}{% endif %}</div>
                 </div>
             {% elif sov and sov.verdict == 'emerging' %}
                 <div class="target-sov">
-                    <div class="target-sov-line"><strong>{{ data.brand }}</strong>: {{ sov.brand_mentions_at_outlet }}/1 mention at this outlet</div>
+                    <div class="target-sov-emerging"><strong>{{ data.brand }}</strong>: {{ sov.brand_mentions_at_outlet }}/1 mention at this outlet</div>
                     <div class="target-sov-context">{{ sov.verdict_label }}</div>
                 </div>
             {% endif %}

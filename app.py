@@ -5148,7 +5148,7 @@ RESPONSE SUMMARIES (with extracted citations):
 
 Produce THREE target lists:
 
-1. TOP {media_limit} MEDIA TARGETS — drawn ONLY from the EDITORIAL DOMAINS above. These are pitch-able publications.
+1. EXACTLY {media_limit} MEDIA TARGETS — drawn ONLY from the EDITORIAL DOMAINS above. These are pitch-able publications. RETURN {media_limit} TARGETS unless the editorial-domains list above has fewer than {media_limit} entries (in which case return all of them). Do NOT artificially trim to "high-confidence" picks; even 1x-cited outlets are legitimate targets if they're real editorial publications. The reader needs to see the full pitch landscape, not just the obvious wins.
 2. AUTHORITY & PARTNERSHIP TARGETS — drawn ONLY from the INSTITUTIONAL / ASSOCIATION DOMAINS above. Up to {institutional_limit}, only if meaningfully present. Universities, agencies, certification bodies, trade associations, advocacy non-profits, or government bodies.
 3. ANALYST TARGETS — drawn ONLY from the ANALYST FIRMS above. Up to {analyst_limit}. ABSOLUTE RULE: if fewer than 2 distinct analyst firms appear in the ANALYST FIRMS list above (or none of them have 2+ citations), return an EMPTY array — `[]`. Do NOT invent analyst recommendations for categories that don't have analyst coverage (e.g. hospitality, fashion, consumer products, food & beverage, design, lifestyle). Influence is via analyst relations, not pitching or partnership.
 
