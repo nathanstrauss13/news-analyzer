@@ -128,3 +128,47 @@ per-target rationales too).
   current logic from app.py and runs it over every cached dataset. Re-runnable
   any time to re-measure quality.
 - `/tmp/audit_datasets/*.json` — the 13 fetched datasets.
+
+---
+
+## Cycle 4 — de-noise the cards (from VISUAL review)  ✅ committed 152bf633a
+
+Rendered a cleaned dataset to HTML and actually looked at it in a browser —
+caught two clarity problems invisible from the data:
+
+1. **Repetitive caption.** Every strength card repeated the identical generic
+   sentence ("{brand} over-indexes here. Defend…"). The section header already
+   says it → dropped from the card; kept the baseline "{brand} overall: NN%".
+2. **Wall of identical bars.** An outlet cited 2× rendered 6 competitor bars
+   all at exactly 50% (at n=2 everything is 50%/100%) — overwhelming noise.
+   Now: n≤2 → one honest line ("{brand} in 1/2 responses · also mentioned: A,
+   B, C +N more"); n>2 → bars capped at top 3 + "+N more". Well-cited outlets
+   now show a clear, scannable gap (Harper's Bazaar: Glossier 20% vs ILIA /
+   RMS 80%) instead of a pileup.
+
+---
+
+## Session summary (autonomous run)
+
+Goal: simple, intuitive, self-explanatory insights — the antithesis of
+overwhelming GEO dashboards. Net result across 13 datasets / 5 brands:
+
+**Before:** top "media targets" were polluted with competitor brand sites
+(guidebeauty.com, fjallraven.com), retailers (sephora.com, credobeauty.com
+17×), and SaaS tools (zapier.com 6×); some dashboards were all-green with no
+clear action; cards repeated boilerplate and stacked 6 meaningless bars.
+
+**After:** every dashboard shows real editorial press only, opens with a
+single concrete "Your #1 move," groups outlets into defend / pitch / watch,
+and renders clean low-n one-liners + scannable high-n gap bars.
+
+Commits (all on `news-analyzer/mvp`, each verified healthy on prod):
+- bae700f0f  cycle 1 — competitor + retailer + analyst-subdomain filters
+- 63b569703  cycle 2 — SaaS/AI vendor product sites (productish TLDs + list)
+- 893a47fd1  cycle 3 — single "Your #1 move" headline callout
+- 152bf633a  cycle 4 — de-noise cards (visual-review fixes)
+- 695a2bb6f  this log
+
+Rollback: REVERT.md (Render one-click or `./revert_reposition.sh`); checkpoint
+tags v0.2-pre-reposition, v0.3-reposition-verified. The data-quality cycles
+are low-risk (filter/classify only) and independently revertable via git.
