@@ -172,3 +172,48 @@ Commits (all on `news-analyzer/mvp`, each verified healthy on prod):
 Rollback: REVERT.md (Render one-click or `./revert_reposition.sh`); checkpoint
 tags v0.2-pre-reposition, v0.3-reposition-verified. The data-quality cycles
 are low-risk (filter/classify only) and independently revertable via git.
+
+---
+
+## Cycle 5 — B2B visual review + certification-body routing  ✅ committed 65a66b46f
+
+- **B2B visual review (Notion/Adobe):** rendered + screenshotted. Clean —
+  clear mindshare stat, sharp #1 move, scannable gap bars (thedigitalproject-
+  manager: Asana 100% vs Notion 75%), tidy low-n one-liners. No B2B-specific
+  clarity issues; cycles 1-4 hold up across consumer AND B2B.
+- **Certification bodies → institutional.** bcorporation.net, bluesign.com,
+  oeko-tex.com were classed as editorial media targets for Patagonia. You
+  earn a certification / partner with these — you don't pitch them. Added
+  `CERTIFICATION_DOMAINS` (B Corp, bluesign, OEKO-TEX, Fair Trade, FSC,
+  Rainforest Alliance, …) → institutional. Patagonia's editorial list is now
+  pure outdoor/sustainability press.
+
+**Final sweep:** 0 obvious junk remaining in any top-10 across all 13
+datasets. Stopping here — further filtering is diminishing returns (the only
+residue is a handful of brand sites not in the competitor list + `.us`
+vendors, both edge cases the live Claude verify pass handles on fresh audits).
+
+---
+
+## FINAL STATUS — autonomous run complete (5 cycles)
+
+Dashboards went from "polluted + overwhelming" to **clean editorial press
+only, one clear #1 move, scannable insight** — the simple/intuitive/
+self-explanatory goal. Verified visually on both a consumer (Glossier) and a
+B2B (Notion) dashboard.
+
+Commits on `news-analyzer/mvp` (all deployed + verified healthy):
+- bae700f0f  C1 — competitor + retailer + analyst-subdomain filters
+- 63b569703  C2 — SaaS/AI vendor product sites (productish TLDs + list)
+- 893a47fd1  C3 — single "Your #1 move" headline callout
+- 152bf633a  C4 — de-noise cards (visual-review fixes)
+- 65a66b46f  C5 — certification bodies → institutional
+
+**Note on existing saved audits:** the rerender (`?refresh=1`) applies all
+cycles' filtering/SoV/headline logic to cached data, but can only PRUNE the
+saved media_targets — a few old audits still show 5-6 targets because they
+were generated before media_target_count=10. A FRESH audit gets the full 10
+clean targets + new per-target rationales. The improvements are fully live
+for all new audits.
+
+No further autonomous cycles scheduled — quality work has converged.
