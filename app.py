@@ -3870,7 +3870,13 @@ TIER_CONFIG = {
         "media_target_count": 10,
         "institutional_target_count": 5,
         "analyst_target_count": 5,
-        "max_workers": 10,
+        # max_workers = 30 means all 10 prompts × 3 LLMs run truly concurrently
+        # in a single batch round. With the bigger Standard instance (2 GB RAM,
+        # 1 CPU) we have headroom for this. Was 10 workers × 3 batch rounds =
+        # ~30s wall time; now 30 workers × 1 round = ~10-15s wall time on the
+        # LLM batch step. Free-tier audits end-to-end should drop from ~75-120s
+        # to ~45-75s.
+        "max_workers": 30,
     },
     "paid": {
         "prompt_count": 100,

@@ -8,7 +8,7 @@
        Keep them out of search indexes so a casually-shared link doesn't get scraped. #}
     <meta name="robots" content="noindex,nofollow">
     {% endif %}
-    <title>AI Citation Audit | PR Signal Finder — Innate c3 insights</title>
+    <title>AI Citation Audit | PR Signal Finder — innate insights</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -419,7 +419,7 @@
         }
         .sov-bar-brand { background: #4a9eff; }
         .sov-bar-rest { background: #3a2a1a; }
-        .sov-bar-num { color: #cfd2ff; font-weight: 600; min-width: 64px; text-align: right; }
+        .sov-bar-num { color: #cfd2ff; font-weight: 600; min-width: 220px; text-align: right; font-size: 11px; line-height: 1.3; }
         .action-bar {
             display: flex;
             gap: 10px;
@@ -1193,9 +1193,9 @@
 <body>
     <div class="container">
         <div class="signal-header">
-            <span style="font-size:13px;font-weight:500;color:#555;text-transform:uppercase;letter-spacing:2px">Innate c3 insights</span>
+            <span style="font-size:13px;font-weight:500;color:#555;text-transform:uppercase;letter-spacing:2px">innate insights</span>
             <div class="auth-cluster">
-                <a href="#" onclick="openDemoModal(); return false;">Talk to Nathan</a>
+                <a href="#" onclick="openDemoModal(); return false;">Talk to us</a>
             </div>
         </div>
         <h1>AI Citation Audit | PR Signal Finder</h1>
@@ -1248,8 +1248,8 @@
             <button class="modal-close" onclick="closeDemoModal()">&times;</button>
             <div id="demoForm">
                 <h3>Request a call</h3>
-                <p>For a bespoke AI citation analysis — $5K+ engagement delivered personally by Nathan. Includes custom prompts you co-author (so the audit reflects how your real customers actually ask), up to 10 LLMs (Claude · ChatGPT · Gemini · Perplexity · Grok · plus regional and reasoning models), top 50+ media targets, executive briefing, and a strategic memo tailored to your category, competitors, and earned-media goals.</p>
-                <p style="font-size:13px;color:#888;margin-bottom:14px">Drop your details and Nathan will reach out within 24 hours to scope the engagement.</p>
+                <p>This free audit runs 10 prompts &times; 3 LLMs. A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
+                <p style="font-size:13px;color:#888;margin-bottom:14px">Drop your details and we'll reach out within 24 hours to scope the engagement.</p>
                 <div class="modal-field">
                     <label>Name *</label>
                     <input type="text" id="demoName" autocomplete="name">
@@ -1271,7 +1271,7 @@
             </div>
             <div class="modal-success" id="demoSuccess" style="display:none">
                 <h3>Thanks — we'll be in touch.</h3>
-                <p>Your request is in. Nathan will reach out within 24 hours to scope your bespoke analysis.</p>
+                <p>Your request is in. We'll reach out within 24 hours to scope your bespoke analysis.</p>
                 <p id="demoDevNote" style="display:none;margin-top:12px;font-size:12px;color:#5aff8a;border:1px solid #1c4d2e;background:#0e1a14;padding:8px 12px;border-radius:6px">
                     Dev mode — your request is saved locally. In production this would email <strong>nstrauss@innatec3.com</strong> via SendGrid.
                 </p>
@@ -1533,12 +1533,11 @@
                     <div class="citation-total">
                         ${data.total_citations_extracted || 0} citation URLs extracted across ${data.total_responses || 30} responses
                     </div>
-                    ${(shareUrl || pdfUrl || csvUrl || jsonUrl) ? `
+                    ${(shareUrl || pdfUrl || csvUrl) ? `
                         <div class="action-bar">
                             ${shareUrl ? `<button class="action-btn" id="shareBtn" onclick="copyShareLink('${esc(shareUrl)}')">Share report</button>` : ''}
                             ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
                             ${csvUrl ? `<a class="action-btn" href="${esc(csvUrl)}" rel="noopener">Download CSV</a>` : ''}
-                            ${jsonUrl ? `<a class="action-btn" href="${esc(jsonUrl)}" rel="noopener" title="Full raw audit data including every LLM response and citation">Download raw data (JSON)</a>` : ''}
                         </div>
                     ` : ''}
                 </div>
@@ -1587,7 +1586,7 @@
                                     <div class="sov-bar-brand" style="width:${brandPct}%"></div>
                                     <div class="sov-bar-rest" style="width:${restPct}%"></div>
                                 </div>
-                                <span class="sov-bar-num">${brandPct}% here / ${overallPct}% overall</span>
+                                <span class="sov-bar-num" title="${brandPct}% of responses citing ${esc(row.domain)} mention ${esc(data.brand || 'the brand')}; ${overallPct}% of all responses do">${brandPct}% at this outlet &middot; ${overallPct}% across all responses</span>
                             </div>
                         </div>
                     `;
@@ -1676,17 +1675,16 @@
                 }
             }
 
-            if (shareUrl || pdfUrl || csvUrl || jsonUrl) {
+            if (shareUrl || pdfUrl || csvUrl) {
                 html += `
                     <div class="save-panel">
                         <div class="save-panel-label">Save & share</div>
                         <h4>Hold onto this report</h4>
-                        <div class="save-panel-desc">Anyone with the link can view this report. The PDF includes the full target list with cited URLs; the CSV lets you sort/filter the target list in Excel or Google Sheets; the JSON contains every LLM response and citation for re-analysis.</div>
+                        <div class="save-panel-desc">Anyone with the link can view this report. The PDF includes the full target list with cited URLs; the CSV lets you sort/filter the target list in Excel or Google Sheets.</div>
                         <div class="save-panel-actions">
                             ${shareUrl ? `<button class="action-btn primary-action" onclick="copyShareLink('${esc(shareUrl)}')">Copy share link</button>` : ''}
                             ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
                             ${csvUrl ? `<a class="action-btn" href="${esc(csvUrl)}" rel="noopener">Download CSV</a>` : ''}
-                            ${jsonUrl ? `<a class="action-btn" href="${esc(jsonUrl)}" rel="noopener">Download raw data (JSON)</a>` : ''}
                         </div>
                         ${shareUrl ? `<input type="text" class="share-url-display" value="${esc(shareUrl)}" readonly onclick="this.select()">` : ''}
                     </div>
@@ -1699,18 +1697,17 @@
                     <div class="feedback-actions">
                         <button class="feedback-btn" data-rating="up" onclick="submitFeedback('up', this)">&#128077; Yes</button>
                         <button class="feedback-btn" data-rating="down" onclick="submitFeedback('down', this)">&#128078; Not really</button>
-                        <button class="feedback-btn" onclick="openDemoModal()">&#9993;&#65039; Tell Nathan more</button>
+                        <button class="feedback-btn" onclick="openDemoModal()">&#9993;&#65039; Tell us more</button>
                     </div>
                     <div class="feedback-thanks" style="display:none">Thanks &mdash; your feedback was recorded.</div>
                 </div>
                 <div class="bespoke-cta">
                     <div class="bespoke-cta-label">Want deeper insight?</div>
                     <h3>Get a bespoke AI citation analysis</h3>
-                    <p>This free audit runs 10 prompts &times; 3 LLMs. A bespoke engagement with Nathan covers 100+ prompts across 10 LLMs, custom-curated for your category &mdash; plus a strategic memo, executive briefing, and ongoing analyst-relations support. Typically a $5K+ engagement.</p>
+                    <p>This free audit runs 10 prompts &times; 3 LLMs. A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
                     <button class="cta-buy-btn" onclick="openDemoModal()">
-                        Talk to Nathan about a bespoke audit &rarr;
+                        Talk to us about a bespoke audit &rarr;
                     </button>
-                    <div class="cta-payment-note">No payment required to start the conversation.</div>
                 </div>
             `;
 
