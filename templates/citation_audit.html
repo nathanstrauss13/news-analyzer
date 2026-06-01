@@ -277,6 +277,8 @@
         .media-card:hover { border-color: #333; }
         .media-card.strength { border-left-color: #5a9a5a; }
         .media-card.opportunity { border-left-color: #e8a04c; }
+        .media-card.neutral { border-left-color: #4a6a8a; }
+        .media-card.emerging { border-left-color: #5a5a8a; }
         /* Verdict badge in top-right of card */
         .card-badge {
             position: absolute;
@@ -291,6 +293,22 @@
         }
         .card-badge.strength { background: #0d1a0d; color: #7acc7a; border: 1px solid #1a3a1a; }
         .card-badge.opportunity { background: #1a1510; color: #ffb860; border: 1px solid #3a2a1a; }
+        .card-badge.neutral { background: #0d141a; color: #7aa3cc; border: 1px solid #1a2a3a; }
+        .card-badge.emerging { background: #14141a; color: #9a9acc; border: 1px solid #2a2a3a; }
+        /* In-card SoV: structured numbers line + caption */
+        .media-sov-numbers {
+            font-size: 13px;
+            color: #cfd2ff;
+            line-height: 1.6;
+            margin-top: 4px;
+        }
+        .media-sov-numbers strong { color: #fff; }
+        .media-sov-context {
+            margin-top: 4px;
+            font-size: 11px;
+            color: #777;
+            line-height: 1.4;
+        }
         /* In-card SoV bar */
         .media-sov {
             margin-top: 14px;
@@ -1566,20 +1584,53 @@
 
             html += `<div class="section-title">Your top 10 media targets — based on actual AI citations</div>`;
             html += `<div class="section-note">These are the editorial outlets where ${esc(data.brand || 'your brand')} should focus PR efforts. Each surfaced most often in AI responses about ${esc(data.category || 'this category')}. Each card explains why the outlet matters and shows how ${esc(data.brand || 'the brand')} currently performs in the AI conversation there.</div>`;
+            const brandLabel = data.brand || 'Brand';
+            const overallPctTop = Math.round((data.brand_mention_count || 0) / (data.total_responses || 1) * 100);
             for (const t of targets) {
-                const sampleUrls = (t.sample_urls || []).slice(0, 10);
                 const llms = (t.cited_by_llms || []);
                 const sov = sovByDomain[(t.domain || '').toLowerCase()];
                 const verdict = sov ? sov.verdict : null;
-                const brandPct = sov ? Math.round((sov.brand_sov_at_outlet || 0) * 100) : null;
-                const overallPct = sov ? Math.round((sov.brand_overall_sov || 0) * 100) : null;
-                const restPct = (brandPct !== null) ? Math.max(0, 100 - brandPct) : 0;
 
-                let badge = '';
-                if (verdict === 'strength') {
-                    badge = `<span class="card-badge strength">Strength &middot; defend</span>`;
-                } else if (verdict === 'opportunity') {
-                    badge = `<span class="card-badge opportunity">Opportunity &middot; pitch</span>`;
+                // Verdict-badge label map. All four cases get a visible badge
+                // so the reader doesn't have to guess at unbadged cards.
+                const badgeText = {
+                    strength: 'Strength · defend',
+                    opportunity: 'Opportunity · pitch',
+                    neutral: 'Aligned · steady',
+                    emerging: 'Emerging mention',
+                }[verdict];
+                const badge = badgeText
+                    ? `<span class="card-badge ${verdict}">${badgeText}</span>`
+                    : '';
+
+                // SoV numbers block — simplified two-line format:
+                //   {brand}: x/n (y%) · {top_comp}: a/n (b%)
+                //   {brand} overall: NN% across N responses
+                let sovBlock = '';
+                if (sov && verdict !== 'emerging') {
+                    const brandAt = sov.brand_mentions_at_outlet ?? 0;
+                    const n = sov.responses_citing ?? 0;
+                    const brandPct = Math.round((sov.brand_sov_at_outlet || 0) * 100);
+                    const tc = sov.top_competitor_at_outlet;
+                    let compChunk = '';
+                    if (tc) {
+                        const compPct = Math.round((tc.sov_at_outlet || 0) * 100);
+                        compChunk = ` &middot; <strong>${esc(tc.name)}</strong>: ${tc.mentions_at_outlet}/${n} (${compPct}%)`;
+                    }
+                    sovBlock = `
+                        <div class="media-sov">
+                            <div class="media-sov-numbers"><strong>${esc(brandLabel)}</strong>: ${brandAt}/${n} (${brandPct}%)${compChunk}</div>
+                            <div class="media-sov-context">${esc(brandLabel)} overall: ${overallPctTop}% across ${data.total_responses || 0} responses · ${esc(sov.verdict_label || '')}</div>
+                        </div>
+                    `;
+                } else if (sov && verdict === 'emerging') {
+                    // n=1 emerging mention — no math, just the caveat.
+                    sovBlock = `
+                        <div class="media-sov">
+                            <div class="media-sov-numbers"><strong>${esc(brandLabel)}</strong>: ${sov.brand_mentions_at_outlet ?? 0}/1 mention at this outlet</div>
+                            <div class="media-sov-context">${esc(sov.verdict_label || '')}</div>
+                        </div>
+                    `;
                 }
 
                 html += `
@@ -1593,25 +1644,7 @@
                         ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
                         ${(t.competitors_citing || []).map(c => `<span class="competitor-chip" style="font-size:12px;padding:3px 8px">${esc(c)}</span>`).join('')}
                         <div class="media-rationale">${esc(t.rationale)}</div>
-                        ${sov ? `
-                            <div class="media-sov">
-                                <div class="media-sov-bar">
-                                    <span class="media-sov-label">${esc(data.brand || 'Brand')} visibility</span>
-                                    <div class="media-sov-track">
-                                        <div class="sov-bar-brand" style="width:${brandPct}%"></div>
-                                        <div class="sov-bar-rest" style="width:${restPct}%"></div>
-                                    </div>
-                                    <span class="media-sov-num">${brandPct}% at this outlet &middot; ${overallPct}% across all responses</span>
-                                </div>
-                                ${sov.verdict_label ? `<div class="media-sov-caption">${esc(sov.verdict_label)}</div>` : ''}
-                            </div>
-                        ` : ''}
-                        ${sampleUrls.length ? `
-                            <div class="media-urls">
-                                <div class="media-urls-label">Cited URLs</div>
-                                ${sampleUrls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join('')}
-                            </div>
-                        ` : ''}
+                        ${sovBlock}
                     </div>
                 `;
             }

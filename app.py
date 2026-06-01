@@ -3524,18 +3524,43 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
             if any((c.get('domain') == domain) for c in (r.get('citations') or []))
         ]
         n_at_outlet = len(citing_responses)
-        if n_at_outlet < 2:
-            # Too thin to draw a SoV signal — would be 0/1 or 1/1 noise.
-            continue
+        if n_at_outlet < 1:
+            continue  # outlet appears in no responses (shouldn't happen given upstream filter)
 
         brand_at = sum(
             1 for r in citing_responses
             if any(p.search(r.get('response', '') or '') for p in brand_patterns)
         ) if brand_patterns else 0
+
+        # n=1 case: emit an 'emerging' row but skip the verdict math entirely.
+        # A single-citation outlet has degenerate share-of-voice (0% or 100%)
+        # and produces noise if you try to verdict it. Surface to the user as
+        # "cited only once — relationship worth developing" instead.
+        if n_at_outlet == 1:
+            label = (
+                f"Emerging mention — this outlet was cited just once in the audit. "
+                f"{brand} {'appeared in that response' if brand_at else 'did not appear in that response'}. "
+                f"Too thin for share-of-voice analysis; worth investigating as a relationship to develop."
+            )
+            out.append({
+                "domain": domain,
+                "responses_citing": n_at_outlet,
+                "brand_overall_sov": round(brand_overall_sov, 3),
+                "brand_mentions_at_outlet": brand_at,
+                "brand_sov_at_outlet": float(brand_at),  # 0.0 or 1.0
+                "brand_sov_differential": 0.0,
+                "verdict": "emerging",
+                "verdict_label": label,
+                "top_competitor_at_outlet": None,
+                "all_competitors_at_outlet": [],
+            })
+            continue
+
         brand_sov_at = brand_at / n_at_outlet
         brand_diff = brand_sov_at - brand_overall_sov
 
-        # Top competitor at this outlet — by raw mention count among citing responses.
+        # Build per-competitor SoV at this outlet. comp_rows ends up sorted
+        # by SoV desc (== mentions desc, since n_at_outlet is constant).
         comp_rows = []
         for cname, pats in competitor_pat_map.items():
             if not pats:
@@ -3552,8 +3577,27 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
                     "overall_sov": round(competitor_overall_sov.get(cname, 0.0), 3),
                     "differential": round((cnt / n_at_outlet) - competitor_overall_sov.get(cname, 0.0), 3),
                 })
-        comp_rows.sort(key=lambda x: x["mentions_at_outlet"], reverse=True)
-        top_comp = comp_rows[0] if comp_rows else None
+        comp_rows.sort(key=lambda x: x["sov_at_outlet"], reverse=True)
+
+        # Verdict detection uses the HIGHEST-SoV competitor (the leader/threat)
+        # to decide whether brand is being out-cited at this outlet. Display
+        # uses the CLOSEST-SoV competitor (smallest absolute distance from
+        # brand's own SoV at this outlet) which produces the most actionable
+        # head-to-head readout:
+        #   - opportunity card → the leader you need to displace usually IS
+        #     also the closest by SoV (since they're winning by definition)
+        #   - strength card → the nearest challenger from below
+        #   - tied / neutral case → whoever is at the same level
+        # When two competitors are equidistant, prefer the one with higher SoV
+        # (the more present competitor).
+        leader_comp = comp_rows[0] if comp_rows else None  # used for verdict math
+        if comp_rows:
+            top_comp = min(
+                comp_rows,
+                key=lambda c: (abs(c["sov_at_outlet"] - brand_sov_at), -c["sov_at_outlet"]),
+            )
+        else:
+            top_comp = None
 
         # Verdict logic — switches between two modes based on brand's overall
         # share of voice across the response set. The relative-delta thresholds
@@ -3573,7 +3617,10 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
         # ubiquitous everywhere except a few specific places, and those places
         # are where targeted earned media moves the needle the most.
         verdict = "neutral"
-        verdict_label = "Neutral — brand performs in line with its overall share of voice here."
+        verdict_label = (
+            f"Aligned — {brand} performs in line with its overall AI mindshare here. "
+            f"Steady coverage; no urgent action needed."
+        )
 
         is_dominant_brand = brand_patterns and brand_overall_sov >= DOMINANT_BRAND_THRESHOLD
 
@@ -3586,47 +3633,44 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
             if brand_sov_at >= DOMINANT_STRENGTH_FLOOR:
                 verdict = "strength"
                 verdict_label = (
-                    f"Strength — {brand} appears in {brand_at}/{n_at_outlet} responses citing this outlet "
-                    f"({int(brand_sov_at * 100)}%). {brand} dominates the AI conversation here — "
-                    f"defend the relationship and pitch follow-up coverage to extend the lead."
+                    f"{brand} dominates this outlet — defend the relationship and pitch "
+                    f"follow-up coverage to extend the lead."
                 )
             elif (brand_overall_sov - brand_sov_at) >= DOMINANT_OPPORTUNITY_DELTA:
                 verdict = "opportunity"
-                tc_phrase = (
-                    f" Top competitor here: {top_comp['name']} at {int(top_comp['sov_at_outlet'] * 100)}%."
-                    if top_comp else ""
-                )
+                # For opportunity show the leader (whom to displace), not
+                # the closest-distance competitor.
+                if leader_comp:
+                    top_comp = leader_comp
                 verdict_label = (
-                    f"Opportunity — {brand} appears in only {int(brand_sov_at * 100)}% of responses citing this "
-                    f"outlet, vs {int(brand_overall_sov * 100)}% across all responses. This outlet under-cites "
-                    f"{brand} relative to its overall AI mindshare.{tc_phrase} Pitch to close the gap."
+                    f"{brand} under-cited here vs overall mindshare. Pitch to close the gap."
                 )
         else:
-            # Standard mode: relative-delta verdicts.
-            if brand_patterns and brand_diff >= STRENGTH_PP and (not top_comp or brand_sov_at >= top_comp["sov_at_outlet"]):
+            # Standard mode: relative-delta verdicts. Use leader_comp (highest
+            # SoV) for the math so opportunity-detection responds to the actual
+            # leader, not whichever competitor happens to be closest by SoV.
+            if brand_patterns and brand_diff >= STRENGTH_PP and (not leader_comp or brand_sov_at >= leader_comp["sov_at_outlet"]):
                 verdict = "strength"
                 verdict_label = (
-                    f"Strength — {brand} appears in {brand_at}/{n_at_outlet} responses citing this outlet "
-                    f"({int(brand_sov_at * 100)}%), vs {int(brand_overall_sov * 100)}% across all responses. "
-                    f"Defend the relationship; pitch follow-up coverage."
+                    f"{brand} over-indexes here. Defend the relationship; "
+                    f"pitch follow-up coverage."
                 )
-            elif top_comp:
-                comp_lead = top_comp["sov_at_outlet"] - brand_sov_at
-                if comp_lead >= OPPORTUNITY_PP or (brand_at == 0 and top_comp["mentions_at_outlet"] >= 2):
+            elif leader_comp:
+                comp_lead = leader_comp["sov_at_outlet"] - brand_sov_at
+                if comp_lead >= OPPORTUNITY_PP or (brand_at == 0 and leader_comp["mentions_at_outlet"] >= 2):
                     verdict = "opportunity"
+                    # For opportunity display the LEADER (the one to displace),
+                    # not the closest-distance competitor.
+                    top_comp = leader_comp
                     if brand_at == 0:
                         verdict_label = (
-                            f"Opportunity — {top_comp['name']} owns this outlet "
-                            f"({top_comp['mentions_at_outlet']}/{n_at_outlet} responses, "
-                            f"{int(top_comp['sov_at_outlet'] * 100)}%), {brand} is absent. "
+                            f"{leader_comp['name']} owns this outlet; {brand} is absent. "
                             f"Pitch a story angle that displaces them."
                         )
                     else:
                         verdict_label = (
-                            f"Opportunity — {top_comp['name']} appears in "
-                            f"{top_comp['mentions_at_outlet']}/{n_at_outlet} responses "
-                            f"({int(top_comp['sov_at_outlet'] * 100)}%) vs {brand} at "
-                            f"{int(brand_sov_at * 100)}%. Close the gap with earned coverage."
+                            f"{leader_comp['name']} out-cites {brand} here. "
+                            f"Close the gap with earned coverage."
                         )
 
         out.append({

@@ -104,6 +104,8 @@
         }
         .target-card.strength { border-left-color: #4a8a4a; }
         .target-card.opportunity { border-left-color: #c08040; }
+        .target-card.neutral { border-left-color: #4a7a9a; }
+        .target-card.emerging { border-left-color: #6a6a9a; }
         .card-badge {
             position: absolute;
             top: 8pt;
@@ -117,14 +119,17 @@
         }
         .card-badge.strength { background: #d8efd8; color: #1f5a1f; }
         .card-badge.opportunity { background: #f1e2c1; color: #7a5a10; }
+        .card-badge.neutral { background: #d8e8f4; color: #1f3a5a; }
+        .card-badge.emerging { background: #e2e2f0; color: #3a3a6a; }
         .target-sov {
             margin-top: 8pt;
             padding-top: 6pt;
             border-top: 0.5pt solid #e0e0e0;
             font-size: 9pt;
         }
-        .target-sov-line { color: #333; margin-bottom: 3pt; }
-        .target-sov-caption { color: #555; font-size: 8.5pt; line-height: 1.4; }
+        .target-sov-line { color: #1a1a1a; margin-bottom: 2pt; }
+        .target-sov-line strong { color: #1a1a1a; }
+        .target-sov-context { color: #555; font-size: 8.5pt; line-height: 1.4; }
         .target-rank {
             font-size: 9pt;
             text-transform: uppercase;
@@ -289,12 +294,14 @@
 
     <h2>Your top 10 media targets — based on actual AI citations</h2>
     <div class="section-note">These are the editorial outlets where {{ data.brand }} should focus PR efforts. Each surfaced most often in AI responses about {{ data.category or 'this category' }}. Each card explains why the outlet matters and shows how {{ data.brand }} currently performs in the AI conversation there.</div>
+    {% set badge_labels = {'strength': 'Strength · defend', 'opportunity': 'Opportunity · pitch', 'neutral': 'Aligned · steady', 'emerging': 'Emerging mention'} %}
+    {% set overall_pct = ((data.brand_mention_count or 0) / (data.total_responses or 1) * 100) | round | int %}
     {% if data.media_targets %}
         {% for t in data.media_targets %}
         {% set sov = sov_lookup.get((t.domain or '') | lower) %}
         <div class="target-card {{ sov.verdict if sov else '' }}">
-            {% if sov and sov.verdict in ('strength','opportunity') %}
-                <span class="card-badge {{ sov.verdict }}">{% if sov.verdict == 'strength' %}Strength · defend{% else %}Opportunity · pitch{% endif %}</span>
+            {% if sov and badge_labels.get(sov.verdict) %}
+                <span class="card-badge {{ sov.verdict }}">{{ badge_labels[sov.verdict] }}</span>
             {% endif %}
             <div class="target-rank">#{{ t.rank }} target</div>
             <div class="target-name">{{ t.outlet }}</div>
@@ -304,18 +311,20 @@
             {% for l in (t.cited_by_llms or []) %}<span class="target-stat">{{ l }}</span>{% endfor %}
             {% for c in (t.competitors_citing or []) %}<span class="competitor-chip">{{ c }}</span>{% endfor %}
             {% if t.rationale %}<div class="target-rationale">{{ t.rationale }}</div>{% endif %}
-            {% if sov %}
+            {% if sov and sov.verdict != 'emerging' %}
                 {% set brand_pct = (sov.brand_sov_at_outlet * 100) | round | int %}
-                {% set overall_pct = (sov.brand_overall_sov * 100) | round | int %}
+                {% set n = sov.responses_citing %}
+                {% set tc = sov.top_competitor_at_outlet %}
                 <div class="target-sov">
-                    <div class="target-sov-line"><strong>{{ data.brand }} visibility:</strong> {{ brand_pct }}% at this outlet &middot; {{ overall_pct }}% across all responses</div>
-                    {% if sov.verdict_label %}<div class="target-sov-caption">{{ sov.verdict_label }}</div>{% endif %}
+                    <div class="target-sov-line">
+                        <strong>{{ data.brand }}</strong>: {{ sov.brand_mentions_at_outlet }}/{{ n }} ({{ brand_pct }}%){% if tc %} &middot; <strong>{{ tc.name }}</strong>: {{ tc.mentions_at_outlet }}/{{ n }} ({{ (tc.sov_at_outlet * 100) | round | int }}%){% endif %}
+                    </div>
+                    <div class="target-sov-context">{{ data.brand }} overall: {{ overall_pct }}% across {{ data.total_responses or 0 }} responses{% if sov.verdict_label %} &middot; {{ sov.verdict_label }}{% endif %}</div>
                 </div>
-            {% endif %}
-            {% if t.sample_urls %}
-                <div class="target-urls">
-                    <span class="label">Cited URLs</span>
-                    {% for u in t.sample_urls[:10] %}<a href="{{ u }}">{{ u }}</a><br>{% endfor %}
+            {% elif sov and sov.verdict == 'emerging' %}
+                <div class="target-sov">
+                    <div class="target-sov-line"><strong>{{ data.brand }}</strong>: {{ sov.brand_mentions_at_outlet }}/1 mention at this outlet</div>
+                    <div class="target-sov-context">{{ sov.verdict_label }}</div>
                 </div>
             {% endif %}
         </div>
