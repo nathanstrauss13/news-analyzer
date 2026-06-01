@@ -3011,7 +3011,29 @@ NON_EDITORIAL_VENDORS = {
     # E-commerce / OTA aggregators
     'expedia.com', 'booking.com', 'kayak.com', 'tripadvisor.com', 'yelp.com',
     'glassdoor.com', 'indeed.com',
+    # SaaS / MarTech / productivity tool product sites that LLMs recommend as
+    # "tools" — they get cited heavily in B2B audits but aren't pitchable media.
+    # (Observed polluting Notion + Adobe dashboards as top "media targets".)
+    'zapier.com', 'twilio.com', 'tealium.com', 'appsflyer.com', 'teamwork.com',
+    'taskade.com', 'smartsuite.com', 'aprimo.com', 'coda.io', 'airtable.com',
+    'clickup.com', 'trello.com', 'obsidian.md', 'taskade.io',
+    'miro.com', 'evernote.com', 'roamresearch.com', 'github.com', 'getguru.com',
+    'slab.com', 'roam.com', 'workspace.google.com', 'docs.google.com',
+    # Software-comparison / lead-gen / B2B-events sites (not editorial)
+    'saascompared.com', 'unboundb2b.com', 'thesmarketers.com', 'marcusevans.com',
 }
+
+# Top-level domains that, in the PR/marketing/consumer space, are ~entirely
+# SaaS / AI vendor product sites — NOT editorial publications. Verified across
+# all saved datasets: every .ai/.io/.so/.md/.cx/.dev/.app domain that surfaced
+# was a product/tool site, zero were real publications. Domains on these TLDs
+# are classified 'non_editorial' unless explicitly allowlisted
+# (EDITORIAL_ORG_ALLOWLIST). NOTE: .co and .us are deliberately EXCLUDED — they
+# carry legit publishers (thetrek.co, etc.) so a blanket rule would over-drop.
+PRODUCTISH_TLDS = (
+    '.ai', '.io', '.so', '.md', '.cx', '.dev', '.app',
+    '.xyz', '.tech', '.live', '.build', '.sh',
+)
 
 
 # Retailers, marketplaces, product databases, and shopping apps. LLMs cite
@@ -3071,6 +3093,11 @@ def classify_citation_domain(domain):
         return 'institutional'
     if d.endswith('.org'):
         return 'institutional'
+    # Productish-TLD vendor sites (.ai/.io/.so/.md/.cx/.dev/.app...) — not
+    # pitchable media. Checked AFTER the editorial allowlist so a deliberately
+    # allowlisted exception still wins.
+    if any(d.endswith(tld) for tld in PRODUCTISH_TLDS):
+        return 'non_editorial'
     return 'editorial'
 
 
@@ -3303,6 +3330,18 @@ def verify_editorial_domains(editorial_domains, brand, category):
                     "    towardsdatascience.com, hackernoon.com, dev.to, medium.com\n"
                     "- SaaS vendor sites (e.g. salesforce.com, atlassian.com, engine.com, fcmtravel.com, "
                     "sap.com, hubspot.com)\n"
+                    "- SOFTWARE / APP / TOOL PRODUCT SITES that an AI recommends as a 'tool' or "
+                    "'alternative'. This is the most common false positive in B2B and consumer-tech "
+                    "audits: the LLM lists competing or adjacent products and cites their homepages. "
+                    "These are product marketing sites, NOT pitchable media — there is no newsroom. "
+                    "Examples: zapier.com, miro.com, evernote.com, obsidian.md, rock.so, taskade.com, "
+                    "eesel.ai, lindy.ai, twilio.com, tealium.com, customer.io, heygen.com, stockimg.ai. "
+                    "RULE OF THUMB: if the domain's primary business is selling/offering a software "
+                    "product, app, or platform — even a well-known one — REJECT it. A real media outlet "
+                    "publishes journalism about the category; a tool site sells the tool.\n"
+                    "- RETAILERS / MARKETPLACES / SHOPPING or product-database sites (sephora.com, "
+                    "ulta.com, nordstrom.com, credobeauty.com, incidecoder.com, skinsort.com, "
+                    "thingtesting.com). You pitch journalists, not stores.\n"
                     "- Corporate-booking platforms or travel-tech consortia (e.g. ccra.com, gbta.org for "
                     "SaaS purposes, sabre.com, amadeus.com)\n"
                     "- Hotel-marketing collectives or member-curated listings (e.g. designhotels.com, "
