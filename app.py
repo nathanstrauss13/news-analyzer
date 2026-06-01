@@ -5406,7 +5406,7 @@ def citation_audit():
         use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
         if use and use.count >= FREE_DAILY_CAP:
             return jsonify({
-                "error": f"You've used your {FREE_DAILY_CAP} free audits for today. Talk to Nathan about a bespoke audit for unlimited access.",
+                "error": f"You've used your {FREE_DAILY_CAP} free audits for today. Talk to us about a bespoke audit for unlimited access.",
                 "code": "rate_limited",
             }), 429
         if use:
