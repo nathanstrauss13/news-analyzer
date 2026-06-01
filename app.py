@@ -5611,22 +5611,99 @@ def _load_signal_report(slug):
     return data
 
 
-def _rerender_from_cached_responses(data):
+def _regenerate_executive_summary(data):
+    """Re-run ONLY the executive-summary Claude call against the re-analyzed
+    cached data. ONE Claude call (~$0.01, ~10s) — lets the operator refresh
+    the 'What we found' summary on an existing audit with the CURRENT
+    summary-prompt wording, without a fresh 50-LLM batch.
+
+    Returns the new summary string, or the existing one on any failure.
+    """
+    try:
+        brand = data.get('brand') or 'the brand'
+        category = data.get('category') or 'this category'
+        total = data.get('total_responses') or 0
+        brand_mentions = data.get('brand_mention_count') or 0
+        mindshare = round(brand_mentions / total * 100) if total else 0
+        competitors = data.get('competitors') or []
+        comp_block = "\n".join(
+            f"  - {c.get('name')}: cited in {c.get('mention_count')} of {total} responses"
+            for c in competitors[:8]
+        ) or "  (none surfaced)"
+
+        sov = data.get('outlet_sov') or []
+
+        def _sov_line(r):
+            tc = r.get('top_competitor_at_outlet')
+            tcs = (f"; top competitor here {tc['name']} at {int((tc.get('sov_at_outlet') or 0)*100)}%"
+                   if tc else "")
+            n = r.get('responses_citing') or 0
+            return (f"  - {r.get('domain')}: {brand} in {r.get('brand_mentions_at_outlet')}/{n} "
+                    f"responses citing it ({int((r.get('brand_sov_at_outlet') or 0)*100)}%){tcs}")
+
+        strengths = [r for r in sov if r.get('verdict') == 'strength']
+        opps = [r for r in sov if r.get('verdict') == 'opportunity']
+        strengths_block = "\n".join(_sov_line(r) for r in strengths[:6]) or "  (none)"
+        opps_block = "\n".join(_sov_line(r) for r in opps[:6]) or "  (none)"
+
+        raw = data.get('raw_citation_domains') or []
+        raw_block = "\n".join(f"  - {d.get('domain')}: {d.get('count')}x" for d in raw[:12]) or "  (none)"
+
+        prompt = f"""You are an AI citation intelligence analyst writing the headline finding of a brand's AI Mindshare Briefing. The reader is a comms director who will paste your 3 sentences into a CMO briefing.
+
+Brand: {brand}
+Category: {category}
+{brand}'s AI mindshare: {mindshare}% (cited in {brand_mentions} of {total} AI responses)
+
+TOP COMPETITORS (by mentions across all responses):
+{comp_block}
+
+STRENGTHS — outlets where {brand} over-indexes:
+{strengths_block}
+
+OPPORTUNITIES — outlets where a competitor out-cites {brand}:
+{opps_block}
+
+MOST-CITED SOURCE DOMAINS (all types — note if analyst firms like Gartner/Forrester/McKinsey/IDC dominate over editorial press):
+{raw_block}
+
+Write EXACTLY 3 sentences. Lead with the single most important insight, no preamble.
+  Sentence 1 — THE POSITION: {brand}'s mindshare framed against the top competitor's count. If {brand} >= top competitor, lead with strength; if behind, lead with the gap. NEVER say 'lacks authority' if {brand} out-mentions competitors.
+  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data (an outlet a competitor owns where {brand} is absent; analyst-firm dominance over editorial press; an unexpected competitor leader). Name the specific entity + number.
+  Sentence 3 — THE MOVE: the one highest-leverage action, tied to a named outlet or competitive dynamic. Use action verbs: defend, displace, cultivate, pitch.
+BANNED: filler like 'this audit reveals', 'in today's landscape'. Discuss analysts only if they actually dominate the source domains above. Respond with ONLY the 3 sentences — no preamble, no JSON, no labels."""
+
+        resp = anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=400,
+            timeout=60.0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = (resp.content[0].text or "").strip()
+        return text or data.get('executive_summary')
+    except Exception as e:
+        print(f"[rerender] exec-summary regen failed (keeping original): {e}")
+        return data.get('executive_summary')
+
+
+def _rerender_from_cached_responses(data, regenerate_summary=False):
     """Re-run the post-LLM analysis pipeline on a saved audit's cached
     all_responses, applying the CURRENT codebase logic for editorial
     classification, brand/competitor-domain filtering, and share-of-voice
     computation. Returns a NEW dict — does not mutate or persist.
 
     Use case: iterate on filter / SoV / UI changes without re-running the
-    full 30-LLM batch (which is the slow + expensive part of an audit).
-    Costs: zero API calls — all pure-Python operations on cached data.
+    full 50-LLM batch (which is the slow + expensive part of an audit).
+    Costs: zero API calls for the pure-Python pass. If regenerate_summary
+    is True, ONE additional Claude call refreshes the 'What we found'
+    executive summary with the current prompt wording (~$0.01, ~10s).
 
     Limitation: cannot regenerate per-target rationale or gap_insight
-    (those come from the Claude analysis call). So the rerender can only
-    PRUNE saved media_targets — drop any whose domain is no longer
+    (those come from the full Claude analysis call). So the rerender can
+    only PRUNE saved media_targets — drop any whose domain is no longer
     classified as editorial — not ADD newly-surfaced editorial domains
-    that didn't make the original cut. For changes to the analysis prompt
-    itself (rationale wording, etc.), run a fresh audit.
+    that didn't make the original cut. For changes to the per-target
+    rationale wording, run a fresh audit.
     """
     all_responses = data.get('all_responses') or []
     brand = data.get('brand') or ''
@@ -5662,6 +5739,12 @@ def _rerender_from_cached_responses(data):
         t['rank'] = i + 1
     out['media_targets'] = new_media
 
+    # Optionally refresh the 'What we found' executive summary with the
+    # current prompt wording — the one piece the pure-Python pass can't
+    # regenerate. One Claude call.
+    if regenerate_summary:
+        out['executive_summary'] = _regenerate_executive_summary(out)
+
     # Mark this view so the UI / operator knows it's a rerender, not the
     # original saved analysis.
     out['_rerendered'] = True
@@ -5672,21 +5755,28 @@ def _rerender_from_cached_responses(data):
 def view_signal_report(slug):
     """Render a shared PR Signal Finder report.
 
-    Operator-only ?fresh=1 flag: re-runs the post-LLM analysis pipeline on
-    the cached all_responses, applying current codebase logic. Lets the
-    operator test filter/SoV/UI changes against existing audit data
-    without burning new API calls. Gated to FREE_AUDIT_BYPASS_IPS so
-    public viewers always see the original saved report.
+    Operator-only refresh flags (both gated to FREE_AUDIT_BYPASS_IPS so
+    public viewers always see the original saved report):
+      ?fresh=1     — re-run the pure-Python pipeline (editorial filtering +
+                     SoV) on cached responses. Zero API calls, instant.
+      ?refresh=1   — same, PLUS regenerate the 'What we found' executive
+                     summary with the current prompt wording. One Claude
+                     call (~$0.01, ~10s). Use this to see the full current
+                     report — summary included — on an existing audit
+                     without a fresh 50-LLM batch.
     """
     data = _load_signal_report(slug)
     if not data:
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
 
-    if request.args.get('fresh') == '1' and _ip_is_exempt_from_cap(_client_ip()):
+    want_fresh = request.args.get('fresh') == '1'
+    want_refresh = request.args.get('refresh') == '1'
+    if (want_fresh or want_refresh) and _ip_is_exempt_from_cap(_client_ip()):
         try:
-            data = _rerender_from_cached_responses(data)
-            print(f"[rerender] applied current logic to slug={slug} (operator)")
+            data = _rerender_from_cached_responses(data, regenerate_summary=want_refresh)
+            print(f"[rerender] applied current logic to slug={slug} "
+                  f"(operator, summary_regen={want_refresh})")
         except Exception as e:
             print(f"[rerender] failed for slug={slug}: {e}")
 
