@@ -5574,13 +5574,85 @@ def _load_signal_report(slug):
     return data
 
 
+def _rerender_from_cached_responses(data):
+    """Re-run the post-LLM analysis pipeline on a saved audit's cached
+    all_responses, applying the CURRENT codebase logic for editorial
+    classification, brand/competitor-domain filtering, and share-of-voice
+    computation. Returns a NEW dict — does not mutate or persist.
+
+    Use case: iterate on filter / SoV / UI changes without re-running the
+    full 30-LLM batch (which is the slow + expensive part of an audit).
+    Costs: zero API calls — all pure-Python operations on cached data.
+
+    Limitation: cannot regenerate per-target rationale or gap_insight
+    (those come from the Claude analysis call). So the rerender can only
+    PRUNE saved media_targets — drop any whose domain is no longer
+    classified as editorial — not ADD newly-surfaced editorial domains
+    that didn't make the original cut. For changes to the analysis prompt
+    itself (rationale wording, etc.), run a fresh audit.
+    """
+    all_responses = data.get('all_responses') or []
+    brand = data.get('brand') or ''
+    if not all_responses or not brand:
+        return data
+
+    out = dict(data)
+    ranked_domains = aggregate_citations(all_responses)
+
+    editorial_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'editorial']
+    editorial_domains = [d for d in editorial_domains if not _is_brand_own_domain(d['domain'], brand)]
+
+    competitor_counts = data.get('competitors') or []
+    competitor_stems = _competitor_domain_stems(competitor_counts)
+    if competitor_stems:
+        editorial_domains = [d for d in editorial_domains if not _is_competitor_owned_domain(d['domain'], competitor_stems)]
+
+    try:
+        new_sov = _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, editorial_domains)
+    except Exception as e:
+        print(f"[rerender] SoV failed: {e}")
+        new_sov = data.get('outlet_sov') or []
+
+    out['raw_citation_domains'] = ranked_domains
+    out['outlet_sov'] = new_sov
+
+    # Prune saved media_targets to drop anything no longer classified as
+    # editorial under the current rules. Re-rank survivors.
+    editorial_set = {d['domain'].lower() for d in editorial_domains}
+    saved_media = data.get('media_targets') or []
+    new_media = [dict(t) for t in saved_media if (t.get('domain') or '').lower() in editorial_set]
+    for i, t in enumerate(new_media):
+        t['rank'] = i + 1
+    out['media_targets'] = new_media
+
+    # Mark this view so the UI / operator knows it's a rerender, not the
+    # original saved analysis.
+    out['_rerendered'] = True
+    return out
+
+
 @app.route('/signal/<slug>')
 def view_signal_report(slug):
-    """Render a shared PR Signal Finder report."""
+    """Render a shared PR Signal Finder report.
+
+    Operator-only ?fresh=1 flag: re-runs the post-LLM analysis pipeline on
+    the cached all_responses, applying current codebase logic. Lets the
+    operator test filter/SoV/UI changes against existing audit data
+    without burning new API calls. Gated to FREE_AUDIT_BYPASS_IPS so
+    public viewers always see the original saved report.
+    """
     data = _load_signal_report(slug)
     if not data:
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
+
+    if request.args.get('fresh') == '1' and _ip_is_exempt_from_cap(_client_ip()):
+        try:
+            data = _rerender_from_cached_responses(data)
+            print(f"[rerender] applied current logic to slug={slug} (operator)")
+        except Exception as e:
+            print(f"[rerender] failed for slug={slug}: {e}")
+
     share_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=slug)
     pdf_url = request.url_root.rstrip('/') + url_for('signal_report_pdf', slug=slug)
     csv_url = request.url_root.rstrip('/') + url_for('signal_report_csv', slug=slug)
