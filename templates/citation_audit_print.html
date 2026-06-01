@@ -88,8 +88,32 @@
             padding: 10pt 14pt;
             font-size: 11.5pt;
             line-height: 1.5;
+            margin: 0 0 14pt;
+        }
+        .headline-move {
+            background: #f0faf2;
+            border: 0.75pt solid #b7d8b7;
+            border-left: 3pt solid #2f8f4f;
+            border-radius: 5pt;
+            padding: 9pt 13pt;
+            font-size: 10.5pt;
+            line-height: 1.5;
+            color: #1a3a1a;
             margin: 0 0 18pt;
         }
+        .headline-move-verb {
+            display: inline-block;
+            font-size: 8pt;
+            font-weight: 800;
+            letter-spacing: 1pt;
+            text-transform: uppercase;
+            color: #fff;
+            background: #2f8f4f;
+            padding: 1pt 6pt;
+            border-radius: 3pt;
+            margin-right: 5pt;
+        }
+        .headline-move-label { font-weight: 700; color: #1f5a1f; }
         .competitors {
             margin: 6pt 0 14pt;
         }
@@ -306,6 +330,14 @@
     {% if data.executive_summary %}
     <div class="briefing-label">What we found</div>
     <div class="exec-summary">{{ data.executive_summary }}</div>
+    {% endif %}
+
+    {% if data.headline_move %}
+    <div class="headline-move">
+        <span class="headline-move-verb">{{ data.headline_move.verb or 'Do' }}</span>
+        <span class="headline-move-label">Your #1 move:</span>
+        {{ data.headline_move.text }}
+    </div>
     {% endif %}
 
     {% if data.competitors %}

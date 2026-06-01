@@ -3890,6 +3890,90 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
     return out[:max_outlets]
 
 
+def _compute_headline_move(brand, outlet_sov):
+    """Pick THE single highest-priority action from the outlet share-of-voice
+    data and return a {verb, outlet, text} dict (or None).
+
+    Every dashboard — even an all-strength 'you dominate everywhere' one —
+    needs ONE unmistakable next step so the reader isn't left asking 'so what
+    do I do?'. Priority order:
+      1. OPPORTUNITY with the biggest competitor lead → pitch to close the gap.
+      2. (no opportunities) the most-CONTESTED strength — your strongest
+         position where a competitor is closest → defend this first.
+      3. (uncontested strengths only) your single strongest outlet → lock it in.
+      4. (all emerging / thin) the most-cited outlet you're not established at
+         → cultivate it early.
+    Deterministic, no API call — works on the rerender path too.
+    """
+    sov = outlet_sov or []
+    if not sov:
+        return None
+    b = brand or "Your brand"
+
+    def _n(r):
+        return r.get('responses_citing') or 0
+
+    def _brand_at(r):
+        return r.get('brand_mentions_at_outlet') or 0
+
+    opportunities = [r for r in sov if r.get('verdict') == 'opportunity']
+    strengths = [r for r in sov if r.get('verdict') == 'strength']
+    emerging = [r for r in sov if r.get('verdict') == 'emerging']
+
+    # 1. Best opportunity. Rank by CITATION VOLUME first (a gap at a 6×-cited
+    # outlet is a far stronger signal than a 100%-vs-0% at a 2×-cited one),
+    # then by the raw mention gap. Phrase with concrete counts, not just %, so
+    # the claim is honest at small sample sizes.
+    if opportunities:
+        def _opp_key(r):
+            tc = r.get('top_competitor_at_outlet') or {}
+            gap = (tc.get('mentions_at_outlet') or 0) - _brand_at(r)
+            # Prefer a genuine competitor lead (gap > 0), then citation volume,
+            # then gap size — so the headline isn't a zero-gap "opportunity".
+            return (1 if gap > 0 else 0, _n(r), gap)
+        r = max(opportunities, key=_opp_key)
+        tc = r.get('top_competitor_at_outlet') or {}
+        dom, n, ba = r.get('domain'), _n(r), _brand_at(r)
+        cm = tc.get('mentions_at_outlet') or 0
+        if tc.get('name') and cm > ba:
+            text = (f"Pitch {dom}. {tc['name']} shows up in {cm} of the {n} AI responses "
+                    f"citing it, {b} in {ba} — closing this gap is your highest-leverage "
+                    f"earned-media move.")
+        else:
+            text = (f"Pitch {dom}. {b} appears in only {ba} of the {n} AI responses citing it, "
+                    f"below its overall visibility — the clearest place to grow.")
+        return {"verb": "Pitch", "outlet": dom, "text": text}
+
+    # 2/3. No opportunities — defend. Prefer the most-CITED strength where a
+    # competitor also appears (most contested + most important), else the
+    # most-cited uncontested strength.
+    if strengths:
+        contested = [r for r in strengths if (r.get('top_competitor_at_outlet') or {}).get('name')]
+        if contested:
+            r = max(contested, key=lambda x: (_n(x), (x.get('top_competitor_at_outlet') or {}).get('mentions_at_outlet') or 0))
+            tc = r.get('top_competitor_at_outlet') or {}
+            dom, n, ba = r.get('domain'), _n(r), _brand_at(r)
+            cm = tc.get('mentions_at_outlet') or 0
+            text = (f"Defend {dom}. {b} leads there ({ba} of {n} responses), but {tc['name']} "
+                    f"is also present ({cm}) — protect this relationship first so the lead holds.")
+            return {"verb": "Defend", "outlet": dom, "text": text}
+        r = max(strengths, key=lambda x: (_n(x), _brand_at(x)))
+        dom, n, ba = r.get('domain'), _n(r), _brand_at(r)
+        text = (f"Defend {dom}. {b} owns the AI conversation there ({ba} of {n} responses) "
+                f"with no competitor present — lock it in with a follow-up story.")
+        return {"verb": "Defend", "outlet": dom, "text": text}
+
+    # 4. Thin / all-emerging — cultivate the most-cited outlet.
+    if emerging:
+        r = max(emerging, key=_n)
+        dom = r.get('domain')
+        text = (f"Cultivate {dom}. It's among the most-cited outlets in your category "
+                f"where {b} isn't yet established — build the relationship early, before "
+                f"competitors lock it in.")
+        return {"verb": "Cultivate", "outlet": dom, "text": text}
+    return None
+
+
 _URL_VALIDATION_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
                   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -5450,6 +5534,13 @@ Respond with ONLY valid JSON:
     except Exception as _sov_e:
         print("outlet share-of-voice computation failed (continuing without):", _sov_e)
         analysis["outlet_sov"] = []
+    # Single highest-priority action — gives every dashboard one unmistakable
+    # next step even when it's all-strength or all-emerging.
+    try:
+        analysis["headline_move"] = _compute_headline_move(brand, analysis.get("outlet_sov"))
+    except Exception as _hm_e:
+        print("headline-move computation failed (continuing without):", _hm_e)
+        analysis["headline_move"] = None
     # Surface to the frontend so it can offer a "Download raw data" affordance.
     analysis["full_responses_available"] = True
     # Per-provider error counts (consumed by the debug-email summary). Leading
@@ -5846,6 +5937,10 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
 
     out['raw_citation_domains'] = ranked_domains
     out['outlet_sov'] = new_sov
+    try:
+        out['headline_move'] = _compute_headline_move(brand, new_sov)
+    except Exception:
+        out['headline_move'] = None
 
     # Prune saved media_targets to drop anything no longer classified as
     # editorial under the current rules. Re-rank survivors.

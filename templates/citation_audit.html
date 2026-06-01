@@ -263,6 +263,44 @@
             line-height: 1.65;
             color: #e8e8f0;
         }
+        /* Single highest-priority action */
+        .headline-move {
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+            margin: 0 0 36px;
+            padding: 18px 22px;
+            background: #0f1a12;
+            border: 1px solid #1f4a2a;
+            border-left: 4px solid #5aff8a;
+            border-radius: 12px;
+        }
+        .headline-move-verb {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: #0f1a12;
+            background: #5aff8a;
+            padding: 5px 11px;
+            border-radius: 6px;
+            margin-top: 1px;
+        }
+        .headline-move-body { flex: 1; }
+        .headline-move-label {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #5aff8a;
+            margin-bottom: 4px;
+        }
+        .headline-move-text {
+            font-size: 15px;
+            line-height: 1.55;
+            color: #e8f0e8;
+        }
         /* Verdict-grouped sections */
         .verdict-group { margin-bottom: 36px; }
         .verdict-group-header {
@@ -1838,6 +1876,15 @@
                     <div class="briefing-summary">
                         <div class="briefing-summary-label">What we found</div>
                         <div class="briefing-summary-text">${esc(data.executive_summary)}</div>
+                    </div>
+                ` : ''}
+                ${data.headline_move ? `
+                    <div class="headline-move">
+                        <span class="headline-move-verb">${esc(data.headline_move.verb || 'Do')}</span>
+                        <div class="headline-move-body">
+                            <div class="headline-move-label">Your #1 move</div>
+                            <div class="headline-move-text">${esc(data.headline_move.text || '')}</div>
+                        </div>
                     </div>
                 ` : ''}
             `;
