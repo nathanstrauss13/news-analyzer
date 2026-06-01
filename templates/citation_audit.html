@@ -456,6 +456,16 @@
             color: #888;
             line-height: 1.5;
         }
+        .media-sov-thin {
+            font-size: 13px;
+            color: #cfd2ff;
+            line-height: 1.5;
+        }
+        .media-sov-more {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #888;
+        }
         .media-sov-emerging {
             font-size: 12px;
             color: #cfd2ff;
@@ -1926,38 +1936,67 @@
                 }[verdict];
                 const badge = badgeText ? `<span class="card-badge ${verdict}">${badgeText}</span>` : '';
 
-                // SoV bars: brand + each competitor at this outlet. Independent
-                // scaling (mentions co-occur, so they don't sum to 100%).
+                // SoV bars: brand + the most-present competitors at this outlet.
+                // Capped at top 3 (a wall of 6 identical bars at low citation
+                // counts is noise, not insight). Extra competitors collapse to
+                // a "+N more mentioned" text line. At n<=2 the percentages are
+                // too coarse to bar-chart meaningfully, so we show a single
+                // compact line instead. The repetitive per-card verdict
+                // sentence is dropped — the section header already states the
+                // action, so repeating it on every card is just noise.
                 let sovBlock = '';
                 if (sov) {
                     const brandAt = sov.brand_mentions_at_outlet ?? 0;
                     const n = sov.responses_citing ?? 0;
                     const brandPct = n ? Math.round((sov.brand_sov_at_outlet || 0) * 100) : 0;
-                    const comps = (sov.all_competitors_at_outlet || []).slice(0, 5);
-                    let rows = `
-                        <div class="media-sov-row">
-                            <span class="media-sov-row-label brand"><strong>${esc(brandLabel)}</strong></span>
-                            <div class="media-sov-row-bar"><div class="fill brand" style="width:${brandPct}%"></div></div>
-                            <span class="media-sov-row-num">${brandAt}/${n} (${brandPct}%)</span>
-                        </div>
-                    `;
-                    for (const c of comps) {
-                        const cAt = c.mentions_at_outlet || 0;
-                        const cPct = Math.round((c.sov_at_outlet || 0) * 100);
-                        rows += `
+                    const allComps = (sov.all_competitors_at_outlet || []);
+                    const contextLine = `<div class="media-sov-context">${esc(brandLabel)} overall: ${overallPctTop}% across ${data.total_responses || 0} responses</div>`;
+
+                    if (n <= 2) {
+                        // Coarse sample — one honest line, no bar wall.
+                        const compNames = allComps.slice(0, 4).map(c => esc(c.name));
+                        const alsoExtra = allComps.length > 4 ? ` +${allComps.length - 4} more` : '';
+                        const alongside = compNames.length
+                            ? ` &middot; also mentioned: ${compNames.join(', ')}${alsoExtra}`
+                            : '';
+                        sovBlock = `
+                            <div class="media-sov">
+                                <div class="media-sov-thin">${esc(brandLabel)} in ${brandAt}/${n} responses citing this outlet${alongside}</div>
+                                ${contextLine}
+                            </div>
+                        `;
+                    } else {
+                        const comps = allComps.slice(0, 3);
+                        const extra = allComps.length - comps.length;
+                        let rows = `
                             <div class="media-sov-row">
-                                <span class="media-sov-row-label">${esc(c.name)}</span>
-                                <div class="media-sov-row-bar"><div class="fill comp" style="width:${cPct}%"></div></div>
-                                <span class="media-sov-row-num">${cAt}/${n} (${cPct}%)</span>
+                                <span class="media-sov-row-label brand"><strong>${esc(brandLabel)}</strong></span>
+                                <div class="media-sov-row-bar"><div class="fill brand" style="width:${brandPct}%"></div></div>
+                                <span class="media-sov-row-num">${brandAt}/${n} (${brandPct}%)</span>
+                            </div>
+                        `;
+                        for (const c of comps) {
+                            const cAt = c.mentions_at_outlet || 0;
+                            const cPct = Math.round((c.sov_at_outlet || 0) * 100);
+                            rows += `
+                                <div class="media-sov-row">
+                                    <span class="media-sov-row-label">${esc(c.name)}</span>
+                                    <div class="media-sov-row-bar"><div class="fill comp" style="width:${cPct}%"></div></div>
+                                    <span class="media-sov-row-num">${cAt}/${n} (${cPct}%)</span>
+                                </div>
+                            `;
+                        }
+                        const moreLine = extra > 0
+                            ? `<div class="media-sov-more">+${extra} more competitor${extra > 1 ? 's' : ''} mentioned at this outlet</div>`
+                            : '';
+                        sovBlock = `
+                            <div class="media-sov">
+                                ${rows}
+                                ${moreLine}
+                                ${contextLine}
                             </div>
                         `;
                     }
-                    sovBlock = `
-                        <div class="media-sov">
-                            ${rows}
-                            <div class="media-sov-context">${esc(brandLabel)} overall: ${overallPctTop}% across ${data.total_responses || 0} responses${sov.verdict_label ? ` &middot; ${esc(sov.verdict_label)}` : ''}</div>
-                        </div>
-                    `;
                 }
 
                 return `
