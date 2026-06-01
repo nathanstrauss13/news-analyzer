@@ -2976,6 +2976,24 @@ NON_EDITORIAL_DOMAINS = {
     'designhotels.com',                 # hotel marketing collective (curated listings, not editorial)
     'boutiquehotelsofcalifornia.com',   # regional hotel promo
     'travelplusstyle.com',              # hotel listings/affiliate, not editorial
+    # MarTech / AdTech vendor blogs (publish content marketing on their own
+    # domain — NOT pitchable as earned editorial media). LLMs cite their blog
+    # posts because the content ranks well in search, but pitching them is
+    # ineffective: there's no editor, no contributor program, and writing for
+    # them is sales-aligned, not journalism.
+    'wordstream.com',                   # paid-search SaaS owned by LOCALiQ/Gannett
+    'improvado.io',                     # marketing data platform vendor
+    'marketinginsidergroup.com',        # Michael Brenner's content-marketing agency
+    'impactplus.com',                   # IMPACT content-marketing agency
+    'cs-cart.com',                      # e-commerce platform vendor blog
+    'canto.com',                        # DAM platform vendor blog
+    'thecreativestable.com',            # personal blog / not editorial
+    'generation.digital',               # boutique agency content
+    'digitallinkage.com',               # agency content
+    # User-generated tech publication (anyone can submit; not earned media)
+    'towardsdatascience.com',           # Medium-hosted UGC publication
+    'hackernoon.com',                   # Same model — UGC tech blog
+    'dev.to',                           # UGC developer community
 }
 
 # B2B vendors, software marketplaces, and review platforms that LLMs sometimes cite
@@ -3166,6 +3184,30 @@ def verify_editorial_domains(editorial_domains, brand, category):
                     "lumen5.com, datarobot.com, h2o.ai, anthropic.com, openai.com, runway.com). These are "
                     "product/marketing sites for vendors — sometimes they have blogs, but they're not "
                     "pitchable editorial.\n"
+                    "- SaaS / MarTech / AdTech VENDOR BLOGS publishing content marketing on their own "
+                    "domain. They rank well in search so LLMs cite them, but there is no editorial team, "
+                    "no journalists, and pitching them as media doesn't work. Examples:\n"
+                    "    wordstream.com (paid-search SaaS, owned by LOCALiQ/Gannett)\n"
+                    "    improvado.io (marketing-data platform)\n"
+                    "    canto.com (DAM platform)\n"
+                    "    cs-cart.com (e-commerce platform)\n"
+                    "    blog.hubspot.com (HubSpot's own content marketing)\n"
+                    "    salesforce.com/blog (Salesforce's own content marketing)\n"
+                    "  If a domain's primary business is selling SaaS / MarTech / AdTech software AND it "
+                    "publishes a 'blog' / 'resources' / 'guides' section, it is a VENDOR BLOG, not editorial.\n"
+                    "- CONTENT-MARKETING AGENCIES / personal thought-leadership sites masquerading as "
+                    "media. Owned by individuals or small agencies who write self-promotional content. "
+                    "There is no editor, no pitch process — they only publish their own work. Examples:\n"
+                    "    marketinginsidergroup.com (Michael Brenner's agency)\n"
+                    "    impactplus.com (IMPACT content marketing)\n"
+                    "    thecreativestable.com\n"
+                    "    digitallinkage.com\n"
+                    "    generation.digital\n"
+                    "  Red flag: site copy says 'we' / 'our agency' / 'work with us' on the homepage.\n"
+                    "- USER-GENERATED PUBLICATION platforms where anyone can submit (Medium pubs, "
+                    "Hacker Noon, Dev.to). Editorial structure is absent — there's no journalist to "
+                    "pitch, just an open submission queue. Examples:\n"
+                    "    towardsdatascience.com, hackernoon.com, dev.to, medium.com\n"
                     "- SaaS vendor sites (e.g. salesforce.com, atlassian.com, engine.com, fcmtravel.com, "
                     "sap.com, hubspot.com)\n"
                     "- Corporate-booking platforms or travel-tech consortia (e.g. ccra.com, gbta.org for "
@@ -5327,10 +5369,28 @@ def citation_audit():
         return jsonify({"error": "Please describe the problem you want your brand to own."}), 400
 
     # MVP branch: paid tier disabled — see feat/pr-signal-finder for full paid flow.
-    # Force-coerce any incoming tier to "free" and ignore any client-supplied prompts.
+    # Force-coerce any incoming tier to "free".
     tier = 'free'
     credit_charged = False
+
+    # Accept optional user-curated prompts from the review/revise step. The
+    # frontend posts a JSON-encoded list of 10 strings in the 'prompts' form
+    # field. Defensive parse: must be list of 5-20 non-empty strings; bad
+    # input falls back to auto-generation so a buggy client never breaks the
+    # audit, only loses the editor benefit.
     prompts_override = None
+    raw_prompts = (request.form.get('prompts') or '').strip()
+    if raw_prompts:
+        try:
+            parsed = json.loads(raw_prompts)
+            if isinstance(parsed, list):
+                cleaned = [p.strip() for p in parsed if isinstance(p, str) and p.strip()]
+                if 5 <= len(cleaned) <= 20:
+                    # Trim per-prompt length to a sane ceiling so a malicious
+                    # client can't blow Claude's input budget.
+                    prompts_override = [p[:500] for p in cleaned]
+        except Exception:
+            prompts_override = None
 
     # Per-IP per-day cap. Pre-decrement before kicking off the audit so a
     # buggy/abusive client can't burst-spawn 30 audits in parallel. We do not
@@ -5454,27 +5514,37 @@ def citation_audit():
 
 @app.route('/signal/audit/prompts', methods=['POST'])
 def signal_generate_prompts():
-    """Paid-tier two-phase flow: generate prompts for the user to curate,
-    WITHOUT running the LLM batch and WITHOUT decrementing a credit.
+    """Generate the 10 prompts that the audit would run, without actually
+    running the LLM batch. The frontend uses this to offer a "review &
+    revise prompts" step before the user commits to the (slow + rate-limited)
+    full audit.
 
-    Auth + credit balance are checked (user must have at least one credit so
-    we don't give away free prompt generations to bots), but no credit is
-    consumed at this step. The credit is consumed when the user submits the
-    final POST to /citation-audit with the curated prompts.
+    MVP / free-tier behavior: anonymous, but ABUSE-RATE-LIMITED by the same
+    daily IP cap that governs full audits — generating prompts counts the
+    same as running an audit against FREE_DAILY_CAP. This prevents bots from
+    burning Claude tokens by hammering the endpoint without ever running an
+    actual audit. IPs on FREE_AUDIT_BYPASS_IPS skip the cap.
     """
-    user = current_signal_user()
-    if not user:
-        return jsonify({"error": "Please sign in to run a paid audit.", "code": "auth_required"}), 401
-    if current_user_credits(user) < 1:
-        return jsonify({"error": "No audit credits remaining.", "code": "no_credits"}), 402
-
     body = request.get_json(silent=True) or {}
     problem_statement = (body.get('problem_statement') or '').strip()
     if not problem_statement:
         return jsonify({"error": "Please describe the problem you want your brand to own."}), 400
-    tier = (body.get('tier') or 'paid').strip().lower()
-    if tier not in ('free', 'paid'):
-        tier = 'paid'
+
+    # MVP: tier always free. Paid-tier code path preserved on feat/pr-signal-finder.
+    tier = 'free'
+
+    # Same daily IP cap as /citation-audit so bots can't burn tokens by
+    # spamming this endpoint without ever running an audit. We do NOT
+    # increment here — only the actual audit increments. We just check.
+    ip = _client_ip()
+    if not _ip_is_exempt_from_cap(ip):
+        today = date.today()
+        use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
+        if use and use.count >= FREE_DAILY_CAP:
+            return jsonify({
+                "error": f"You've used your {FREE_DAILY_CAP} free audits for today. Talk to us about a bespoke audit for unlimited access.",
+                "code": "rate_limited",
+            }), 429
 
     try:
         gen = _generate_audit_prompts(problem_statement, tier=tier)
