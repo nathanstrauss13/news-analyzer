@@ -256,8 +256,8 @@
     {% set sov_strengths = (data.outlet_sov or []) | selectattr('verdict','equalto','strength') | list %}
     {% set sov_opps = (data.outlet_sov or []) | selectattr('verdict','equalto','opportunity') | list %}
     {% if sov_strengths or sov_opps %}
-    <h2>Share of voice by outlet — strengths &amp; opportunities</h2>
-    <div class="section-note">For each outlet that surfaced in AI responses, we compare {{ data.brand }}'s mention rate inside responses citing that outlet vs its overall mention rate. Strengths are outlets where the brand over-indexes (defend / amplify). Opportunities are where competitors over-index (pitch to close the gap).</div>
+    <h2>Share of voice across top editorial media — strengths &amp; opportunities</h2>
+    <div class="section-note">For each of the top 10 editorial outlets that surfaced in AI responses, we compare {{ data.brand }}'s mention rate inside responses citing that outlet vs its overall mention rate. <strong>Strengths</strong> are outlets where the brand over-indexes (defend / amplify; pitch follow-up coverage). <strong>Opportunities</strong> are where competitors over-index (pitch to close the gap). Scoped to editorial media only — .gov, .edu, trade associations, and brand-owned domains are excluded since they aren't pitchable.</div>
         {% for row in (sov_strengths + sov_opps) %}
         <div class="sov-row {{ row.verdict }}">
             <span class="sov-tag {{ row.verdict }}">{% if row.verdict == 'strength' %}Strength · defend{% else %}Opportunity · pitch{% endif %}</span>

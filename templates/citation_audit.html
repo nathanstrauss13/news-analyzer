@@ -1487,7 +1487,7 @@
                 .sort((a, b) => b.mention_count - a.mention_count)
                 .slice(0, 8);
 
-            const targets = (data.media_targets || []).slice(0, 5);
+            const targets = (data.media_targets || []).slice(0, 10);
 
             const slug = data.slug || null;
             const origin = window.location.origin;
@@ -1553,15 +1553,18 @@
                 html += `</div>`;
             }
 
-            // Share-of-voice strength / opportunity per outlet. Surfaces
-            // outlets where the brand over-indexes (defend & amplify) vs
-            // where competitors over-index (pitch to close the gap).
+            // Share-of-voice strength / opportunity across the top editorial
+            // media targets. Surfaces outlets where the brand over-indexes
+            // (defend & amplify) vs where competitors over-index (pitch to
+            // close the gap). Scoped to editorial-only so the section stays
+            // aligned with what a PR pro can actually act on — not .gov, .edu,
+            // trade associations, or brand-own domains.
             const sovRows = (data.outlet_sov || []);
             const sovStrengths = sovRows.filter(r => r.verdict === 'strength');
             const sovOpportunities = sovRows.filter(r => r.verdict === 'opportunity');
             if (sovStrengths.length || sovOpportunities.length) {
-                html += `<div class="section-title" style="margin-top:32px">Share of voice by outlet — strengths to defend, opportunities to pitch</div>`;
-                html += `<div class="section-note">For each outlet that surfaced in AI responses, we compare ${esc(data.brand || 'your brand')}'s mention rate inside responses citing that outlet against its overall mention rate. Strengths = where the brand over-indexes (keep momentum). Opportunities = where competitors dominate (where earned media will move the needle most).</div>`;
+                html += `<div class="section-title" style="margin-top:32px">Share of voice across top editorial media — strengths to defend, opportunities to pitch</div>`;
+                html += `<div class="section-note">For each of the top 10 editorial outlets that surfaced in AI responses, we compare ${esc(data.brand || 'your brand')}'s mention rate inside responses citing that outlet against its overall mention rate. <strong>Strengths</strong> = outlets where the brand over-indexes (defend the relationship; pitch follow-up coverage). <strong>Opportunities</strong> = outlets where competitors dominate (where earned media will move the needle most).</div>`;
                 html += `<div class="sov-grid">`;
                 const sovOrdered = [...sovStrengths, ...sovOpportunities];
                 for (const row of sovOrdered) {
@@ -1592,7 +1595,7 @@
                 html += `</div>`;
             }
 
-            html += `<div class="section-title">Top 5 editorial media targets — based on actual LLM citations</div>`;
+            html += `<div class="section-title">Top 10 editorial media targets — based on actual LLM citations</div>`;
             for (const t of targets) {
                 const sampleUrls = (t.sample_urls || []).slice(0, 10);
                 const llms = (t.cited_by_llms || []);

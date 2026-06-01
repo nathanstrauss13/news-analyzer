@@ -3341,12 +3341,21 @@ RESPONSES:
         return []
 
 
-def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, ranked_domains, max_outlets=20):
-    """For each top outlet (cited domain), compute the brand's and each
+def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, editorial_domains, max_outlets=10):
+    """For each top EDITORIAL MEDIA TARGET, compute the brand's and each
     competitor's mention rate WITHIN the subset of responses that cite that
     outlet, and compare to each brand's overall mention rate across all
     responses. Identifies outlets where the brand over-indexes (STRENGTH —
     defend/amplify) vs where competitors over-index (OPPORTUNITY — pitch).
+
+    IMPORTANT — caller must pass the EDITORIAL-ONLY list, not all ranked
+    domains. PR pitching opportunities + strengths only apply to editorial
+    publications (Allure, The Mighty, Beauty Independent, etc.) — they don't
+    apply to .gov pages, .edu pages, the brand's own domain, competitor own-
+    domains, trade-association sites, B2B vendor portals, etc. Pass
+    `editorial_domains` (the post-classify + post-self-domain + post-
+    verify_editorial_domains list) so the SoV section stays aligned with
+    the media_targets list in the rest of the report.
 
     Returns a list of dicts, one per outlet (capped at `max_outlets`), each:
       {
@@ -3373,7 +3382,7 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, rank
       with >= 2 responses).
     """
     total_responses = len(all_responses)
-    if total_responses == 0 or not ranked_domains:
+    if total_responses == 0 or not editorial_domains:
         return []
 
     # Pre-build mention-detection patterns for brand + each competitor.
@@ -3448,8 +3457,10 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, rank
     # For each cited domain, find the responses that mentioned it (any URL on
     # that domain in `r['citations']`), then count brand + competitor hits in
     # that subset.
+    # Input is already filtered to editorial-only by the caller, so we walk
+    # the list as-is. Cap at max_outlets to bound the SoV table size.
     out = []
-    for d in ranked_domains[:max_outlets * 2]:  # pull 2x then filter
+    for d in editorial_domains[:max_outlets * 2]:  # pull 2x then filter competitor-owned
         domain = d.get('domain')
         if not domain:
             continue
@@ -3852,7 +3863,11 @@ TIER_CONFIG = {
     "free": {
         "prompt_count": 10,
         "llms": ["Claude", "ChatGPT", "Gemini"],
-        "media_target_count": 5,
+        # Editorial media targets: bumped 5→10 so the SoV strength/opportunity
+        # section has a meaningful denominator (was producing 1-3 cards on
+        # narrow categories). Keeps the SoV scope aligned with the displayed
+        # target list.
+        "media_target_count": 10,
         "institutional_target_count": 5,
         "analyst_target_count": 5,
         "max_workers": 10,
@@ -5049,14 +5064,17 @@ Respond with ONLY valid JSON:
     # Full raw per-response data: {llm, prompt, response, citations}. Lets users
     # re-analyze, audit, debug, or rerun analysis on a past report.
     analysis["all_responses"] = all_responses
-    # Outlet share-of-voice analysis. For each top-cited domain, computes the
-    # brand's mention rate WITHIN responses citing that outlet vs overall, and
-    # the same for each competitor. Labels each outlet as 'strength' (defend),
-    # 'opportunity' (pitch — competitor over-indexes), or 'neutral'. The UI +
-    # CSV surface this as a separate section.
+    # Editorial-media share-of-voice analysis. For each top editorial outlet,
+    # computes the brand's mention rate WITHIN responses citing that outlet
+    # vs overall, and the same for each competitor. Labels each outlet as
+    # 'strength' (defend), 'opportunity' (pitch — competitor over-indexes),
+    # or 'neutral'. The UI + CSV surface this as a separate section.
+    # IMPORTANT: scoped to editorial_domains only (not all ranked_domains).
+    # PR opportunities/strengths only apply to pitchable media outlets, not
+    # .gov pages, .edu pages, brand-own domains, trade associations, etc.
     try:
         analysis["outlet_sov"] = _compute_outlet_share_of_voice(
-            brand, competitor_counts, all_responses, ranked_domains
+            brand, competitor_counts, all_responses, editorial_domains
         )
     except Exception as _sov_e:
         print("outlet share-of-voice computation failed (continuing without):", _sov_e)
@@ -5490,10 +5508,10 @@ def signal_report_csv(slug):
                 ptext,
             ])
 
-    # --- 5. SHARE OF VOICE BY OUTLET ---
+    # --- 5. SHARE OF VOICE ACROSS TOP EDITORIAL MEDIA ---
     sov_rows = data.get("outlet_sov") or []
     if sov_rows:
-        _section("SHARE OF VOICE BY OUTLET (strengths to defend, opportunities to pitch)")
+        _section("SHARE OF VOICE ACROSS TOP EDITORIAL MEDIA (strengths to defend, opportunities to pitch)")
         writer.writerow([
             "verdict",
             "domain",
