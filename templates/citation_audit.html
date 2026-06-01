@@ -1797,46 +1797,49 @@
                     : '';
 
                 // SoV visualization — stacked horizontal bars for the brand
-                // and the top competitor at this outlet, each with its label
-                // and "x/n (y%)" annotation. Below the bars: context line
-                // with overall mindshare + short prescription. Emerging
-                // outlets (n=1) skip the bars and show the caveat only.
+                // PLUS every competitor mentioned at this outlet (capped at
+                // top 5 to bound display height). Each bar is independent —
+                // brand and competitors can both be at 100% in the same row
+                // because they're computed against the same denominator
+                // (responses citing this outlet) but can co-occur in the
+                // same response, so they don't sum to 100%. Below the bars:
+                // context line with overall mindshare + short prescription.
                 let sovBlock = '';
-                if (sov && verdict !== 'emerging') {
+                if (sov) {
                     const brandAt = sov.brand_mentions_at_outlet ?? 0;
                     const n = sov.responses_citing ?? 0;
-                    const brandPct = Math.round((sov.brand_sov_at_outlet || 0) * 100);
-                    const tc = sov.top_competitor_at_outlet;
-                    const brandRow = `
+                    const brandPct = n ? Math.round((sov.brand_sov_at_outlet || 0) * 100) : 0;
+                    const competitors = (sov.all_competitors_at_outlet || []).slice(0, 5);
+
+                    // Brand row — always shown, even if brand_at == 0 (we
+                    // want to make the absence visible, not silently hide it).
+                    let rows = `
                         <div class="media-sov-row">
                             <span class="media-sov-row-label brand"><strong>${esc(brandLabel)}</strong></span>
                             <div class="media-sov-row-bar"><div class="fill brand" style="width:${brandPct}%"></div></div>
                             <span class="media-sov-row-num">${brandAt}/${n} (${brandPct}%)</span>
                         </div>
                     `;
-                    let compRow = '';
-                    if (tc) {
-                        const compPct = Math.round((tc.sov_at_outlet || 0) * 100);
-                        compRow = `
+                    for (const c of competitors) {
+                        const cAt = c.mentions_at_outlet || 0;
+                        const cPct = Math.round((c.sov_at_outlet || 0) * 100);
+                        rows += `
                             <div class="media-sov-row">
-                                <span class="media-sov-row-label">${esc(tc.name)}</span>
-                                <div class="media-sov-row-bar"><div class="fill comp" style="width:${compPct}%"></div></div>
-                                <span class="media-sov-row-num">${tc.mentions_at_outlet}/${n} (${compPct}%)</span>
+                                <span class="media-sov-row-label">${esc(c.name)}</span>
+                                <div class="media-sov-row-bar"><div class="fill comp" style="width:${cPct}%"></div></div>
+                                <span class="media-sov-row-num">${cAt}/${n} (${cPct}%)</span>
                             </div>
                         `;
                     }
+                    if (verdict === 'emerging' && !competitors.length) {
+                        // n=1 outlet with no competitors mentioned alongside —
+                        // just the brand row (which is 0/1 or 1/1) is enough.
+                        // Nothing to add.
+                    }
                     sovBlock = `
                         <div class="media-sov">
-                            ${brandRow}
-                            ${compRow}
+                            ${rows}
                             <div class="media-sov-context">${esc(brandLabel)} overall: ${overallPctTop}% across ${data.total_responses || 0} responses${sov.verdict_label ? ` &middot; ${esc(sov.verdict_label)}` : ''}</div>
-                        </div>
-                    `;
-                } else if (sov && verdict === 'emerging') {
-                    sovBlock = `
-                        <div class="media-sov">
-                            <div class="media-sov-emerging"><strong>${esc(brandLabel)}</strong>: ${sov.brand_mentions_at_outlet ?? 0}/1 mention at this outlet</div>
-                            <div class="media-sov-context">${esc(sov.verdict_label || '')}</div>
                         </div>
                     `;
                 }

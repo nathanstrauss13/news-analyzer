@@ -3574,14 +3574,44 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
             if any(p.search(r.get('response', '') or '') for p in brand_patterns)
         ) if brand_patterns else 0
 
-        # n=1 case: emit an 'emerging' row but skip the verdict math entirely.
-        # A single-citation outlet has degenerate share-of-voice (0% or 100%)
-        # and produces noise if you try to verdict it. Surface to the user as
-        # "cited only once — relationship worth developing" instead.
+        # Scan competitors first so both n=1 and n>=2 paths can surface the
+        # same all_competitors_at_outlet list. UI uses this to render a bar
+        # per competitor below the brand bar.
+        emerging_comp_rows = []
+        for cname, pats in competitor_pat_map.items():
+            if not pats:
+                continue
+            cnt = sum(
+                1 for r in citing_responses
+                if any(p.search(r.get('response', '') or '') for p in pats)
+            )
+            if cnt > 0:
+                emerging_comp_rows.append({
+                    "name": cname,
+                    "mentions_at_outlet": cnt,
+                    "sov_at_outlet": round(cnt / n_at_outlet, 3),
+                    "overall_sov": round(competitor_overall_sov.get(cname, 0.0), 3),
+                    "differential": round((cnt / n_at_outlet) - competitor_overall_sov.get(cname, 0.0), 3),
+                })
+        emerging_comp_rows.sort(key=lambda x: x["sov_at_outlet"], reverse=True)
+
+        # n=1 case: emit an 'emerging' row but skip the strength/opportunity
+        # verdict math (degenerate at this sample size). Still surface which
+        # competitors were mentioned alongside this single citation — that's
+        # actionable intel even at n=1.
         if n_at_outlet == 1:
+            also_mentioned = [c["name"] for c in emerging_comp_rows]
+            if brand_at:
+                core = f"{brand} appeared in that response"
+            else:
+                core = f"{brand} did not appear in that response"
+            if also_mentioned:
+                also_phrase = ", ".join(also_mentioned[:5])
+                core += f"; mentioned alongside: {also_phrase}."
+            else:
+                core += "."
             label = (
-                f"Emerging mention — this outlet was cited just once in the audit. "
-                f"{brand} {'appeared in that response' if brand_at else 'did not appear in that response'}. "
+                f"Emerging mention — this outlet was cited just once. {core} "
                 f"Too thin for share-of-voice analysis; worth investigating as a relationship to develop."
             )
             out.append({
@@ -3593,8 +3623,8 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
                 "brand_sov_differential": 0.0,
                 "verdict": "emerging",
                 "verdict_label": label,
-                "top_competitor_at_outlet": None,
-                "all_competitors_at_outlet": [],
+                "top_competitor_at_outlet": (emerging_comp_rows[0] if emerging_comp_rows else None),
+                "all_competitors_at_outlet": emerging_comp_rows[:5],
             })
             continue
 

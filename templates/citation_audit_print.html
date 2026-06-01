@@ -334,30 +334,24 @@
             {% for l in (t.cited_by_llms or []) %}<span class="target-stat">{{ l }}</span>{% endfor %}
             {% for c in (t.competitors_citing or []) %}<span class="competitor-chip">{{ c }}</span>{% endfor %}
             {% if t.rationale %}<div class="target-rationale">{{ t.rationale }}</div>{% endif %}
-            {% if sov and sov.verdict != 'emerging' %}
+            {% if sov %}
                 {% set brand_pct = (sov.brand_sov_at_outlet * 100) | round | int %}
                 {% set n = sov.responses_citing %}
-                {% set tc = sov.top_competitor_at_outlet %}
                 <div class="target-sov">
                     <div class="target-sov-row">
                         <span class="target-sov-label brand"><strong>{{ data.brand }}</strong></span>
                         <span class="target-sov-bar-wrap"><span class="target-sov-bar"><span class="fill brand" style="width:{{ brand_pct }}%"></span></span></span>
                         <span class="target-sov-num">{{ sov.brand_mentions_at_outlet }}/{{ n }} ({{ brand_pct }}%)</span>
                     </div>
-                    {% if tc %}
-                    {% set comp_pct = (tc.sov_at_outlet * 100) | round | int %}
+                    {% for c in (sov.all_competitors_at_outlet or [])[:5] %}
+                    {% set comp_pct = (c.sov_at_outlet * 100) | round | int %}
                     <div class="target-sov-row">
-                        <span class="target-sov-label">{{ tc.name }}</span>
+                        <span class="target-sov-label">{{ c.name }}</span>
                         <span class="target-sov-bar-wrap"><span class="target-sov-bar"><span class="fill comp" style="width:{{ comp_pct }}%"></span></span></span>
-                        <span class="target-sov-num">{{ tc.mentions_at_outlet }}/{{ n }} ({{ comp_pct }}%)</span>
+                        <span class="target-sov-num">{{ c.mentions_at_outlet }}/{{ n }} ({{ comp_pct }}%)</span>
                     </div>
-                    {% endif %}
+                    {% endfor %}
                     <div class="target-sov-context">{{ data.brand }} overall: {{ overall_pct }}% across {{ data.total_responses or 0 }} responses{% if sov.verdict_label %} &middot; {{ sov.verdict_label }}{% endif %}</div>
-                </div>
-            {% elif sov and sov.verdict == 'emerging' %}
-                <div class="target-sov">
-                    <div class="target-sov-emerging"><strong>{{ data.brand }}</strong>: {{ sov.brand_mentions_at_outlet }}/1 mention at this outlet</div>
-                    <div class="target-sov-context">{{ sov.verdict_label }}</div>
                 </div>
             {% endif %}
         </div>
