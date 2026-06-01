@@ -3014,25 +3014,56 @@ NON_EDITORIAL_VENDORS = {
 }
 
 
-def classify_citation_domain(domain):
-    """Return 'analyst', 'institutional', 'non_editorial', 'defunct', or 'editorial'.
+# Retailers, marketplaces, product databases, and shopping apps. LLMs cite
+# these heavily in consumer-product audits (esp. beauty), but you cannot pitch
+# a retailer an earned-media story — they sell product, they don't run an
+# editorial desk. Polluting the media-target list with these destroys trust
+# ("your #1 media target: sephora.com"). Matched on the registrable domain so
+# subdomains (shop.sephora.com) are caught too.
+RETAILER_DOMAINS = {
+    # General + beauty retailers / marketplaces
+    'sephora.com', 'ulta.com', 'nordstrom.com', 'macys.com', 'bloomingdales.com',
+    'dermstore.com', 'cultbeauty.com', 'cultbeauty.co.uk', 'spacenk.com',
+    'lookfantastic.com', 'feelunique.com', 'bluemercury.com', 'beautylish.com',
+    'credobeauty.com', 'thedetoxmarket.com', 'thedetoxmarket.ca', 'follain.com',
+    'revolve.com', 'asos.com', 'net-a-porter.com', 'goop.com', 'violetgrey.com',
+    'kohls.com', 'cvs.com', 'walgreens.com', 'riteaid.com',
+    # Ingredient / product databases + shopping/scanner apps (not editorial)
+    'incidecoder.com', 'skinsort.com', 'thinkdirtyapp.com', 'ewg.org',
+    'thingtesting.com', 'makeupalley.com', 'beautypedia.com', 'cosdna.com',
+    'yuka.io', 'thegoodface.org',
+}
 
-    'defunct' is a terminal classification — defunct orgs are excluded from
-    every downstream target list so Claude never recommends partnering with
-    an entity that no longer exists.
+
+def classify_citation_domain(domain):
+    """Return 'analyst', 'institutional', 'non_editorial', 'retail', 'defunct',
+    or 'editorial'.
+
+    'defunct' / 'non_editorial' / 'retail' are terminal non-pitchable
+    classifications — domains matching them are excluded from every downstream
+    target list so the report never surfaces a retailer, vendor, or dead org
+    as a media target.
     """
     d = (domain or "").lower().lstrip('.')
     d_stripped = d[4:] if d.startswith('www.') else d
+    # Registrable-ish domain (last two labels) so subdomains route correctly:
+    # go.forrester.com → forrester.com (analyst); shop.sephora.com → sephora.com.
+    parts = d_stripped.split('.')
+    reg = '.'.join(parts[-2:]) if len(parts) >= 2 else d_stripped
 
     # Defunct check first — wins over every other classification so a defunct
     # .org never leaks into the institutional list.
     if d_stripped in KNOWN_DEFUNCT_ORGS or d in KNOWN_DEFUNCT_ORGS:
         return 'defunct'
-    if d in NON_EDITORIAL_DOMAINS or d_stripped in NON_EDITORIAL_DOMAINS:
+    if d in NON_EDITORIAL_DOMAINS or d_stripped in NON_EDITORIAL_DOMAINS or reg in NON_EDITORIAL_DOMAINS:
         return 'non_editorial'
-    if d in NON_EDITORIAL_VENDORS or d_stripped in NON_EDITORIAL_VENDORS:
+    if d in NON_EDITORIAL_VENDORS or d_stripped in NON_EDITORIAL_VENDORS or reg in NON_EDITORIAL_VENDORS:
         return 'non_editorial'
-    if d_stripped in ANALYST_DOMAINS or d in ANALYST_DOMAINS:
+    if d_stripped in RETAILER_DOMAINS or reg in RETAILER_DOMAINS:
+        return 'retail'
+    # Analyst: match the registrable domain too so subdomains like
+    # go.forrester.com / www2.gartner.com route to 'analyst', not 'editorial'.
+    if d_stripped in ANALYST_DOMAINS or d in ANALYST_DOMAINS or reg in ANALYST_DOMAINS:
         return 'analyst'
     if d_stripped in EDITORIAL_ORG_ALLOWLIST:
         return 'editorial'
@@ -3043,55 +3074,117 @@ def classify_citation_domain(domain):
     return 'editorial'
 
 
+import unicodedata as _unicodedata
+
+# Leading/structural words that should not, on their own, identify a brand's
+# domain. Used when deriving competitor + brand domain stems.
+_BRAND_STOPWORDS = {
+    'the', 'and', 'a', 'an', 'of', 'co', 'inc', 'llc', 'ltd', 'corp',
+    'corporation', 'company', 'group', 'holdings', 'global', 'international',
+}
+
+
+def _ascii_fold(s):
+    """Strip accents/diacritics so 'Fjällräven' → 'fjallraven' and the domain
+    fjallraven.com matches. NFKD-decompose then drop combining marks."""
+    try:
+        return ''.join(c for c in _unicodedata.normalize('NFKD', s)
+                       if not _unicodedata.combining(c))
+    except Exception:
+        return s
+
+
 def _competitor_domain_stems(competitor_counts):
-    """Build a set of domain-stem strings for the brand's competitors so we
-    can quickly check whether a candidate editorial domain actually belongs
-    to a competitor's own corporate site.
+    """Return {'words': set, 'concats': set} of domain stems for the brand's
+    competitors, so we can drop competitor-owned sites from the editorial list.
 
-    Why: an LLM asked about Patagonia surfaces "newsroom.rei.com" as a
-    citation — REI Co-op is a Patagonia competitor, and `newsroom.rei.com`
-    is REI's corporate communications page, not an editorial publication
-    Patagonia can pitch. Same pattern: "press.theNorthFace.com",
-    "store.arcteryx.com", etc.
+    Two stem kinds, because a competitor's site can show up two ways:
+      words   — the first significant word of the name (accent-folded, alnum,
+                >= 3 chars, not a structural stopword). Matched against any
+                dot-SEGMENT of a domain. Catches subdomains:
+                  'REI Co-op'       → 'rei'   → newsroom.rei.com
+                  'The North Face'  → 'north' → north.example.com
+      concats — the full no-space concatenation of the name, AND the
+                concatenation minus a leading stopword. Matched EXACTLY against
+                a domain's registrable label. Catches multi-word brands whose
+                site concatenates the words (the common real case):
+                  'Guide Beauty'    → 'guidebeauty'   → guidebeauty.com
+                  'Kohl Kreatives'  → 'kohlkreatives' → kohlkreatives.com
+                  'The North Face'  → 'thenorthface' + 'northface' → thenorthface.com
+                  'Fenty Beauty'    → 'fentybeauty'   → fentybeauty.com
 
-    The stem is the first word of the competitor's name, lowercased + alnum
-    only (so "REI Co-op" → "rei", "The North Face" → "north" — but see the
-    >= 3 char guard below for stop-word cases).
+    Exact-match only on both kinds (see _is_competitor_owned_domain) so generic
+    words don't over-match legit publications.
     """
-    stems = set()
+    words, concats = set(), set()
     for c in (competitor_counts or []):
-        name = (c.get('name') or '').lower().strip()
-        if not name:
+        raw = (c.get('name') or '').strip()
+        if not raw:
             continue
-        parts = name.split()
+        name = _ascii_fold(raw.lower())
+        parts = [re.sub(r'[^a-z0-9]', '', p) for p in name.split()]
+        parts = [p for p in parts if p]
         if not parts:
             continue
-        first_word = re.sub(r'[^a-z0-9]', '', parts[0])
-        # Skip very short / common first words to avoid false positives
-        # ("The" / "AB" / etc).
-        if first_word and len(first_word) >= 3 and first_word not in ('the', 'and', 'inc'):
-            stems.add(first_word)
-    return stems
+        # First significant word (skip a leading stopword like "The").
+        sig = [p for p in parts if p not in _BRAND_STOPWORDS]
+        if sig and len(sig[0]) >= 3:
+            words.add(sig[0])
+        # Full concatenation + concatenation-without-leading-stopword.
+        full = ''.join(parts)
+        if len(full) >= 4:
+            concats.add(full)
+        if parts[0] in _BRAND_STOPWORDS and len(parts) > 1:
+            trimmed = ''.join(parts[1:])
+            if len(trimmed) >= 4:
+                concats.add(trimmed)
+    return {'words': words, 'concats': concats}
+
+
+def _registrable_label_candidates(segs):
+    """Given a domain's alnum dot-segments, return the labels that could be the
+    'registrable' name (the bit before the public-suffix-ish TLD). Handles both
+    foo.com (label 'foo') and foo.co.uk (label 'foo', not 'co')."""
+    cands = set()
+    if len(segs) >= 2:
+        cands.add(segs[-2])
+    if len(segs) >= 3:
+        cands.add(segs[-3])  # foo.co.uk → also consider 3rd-to-last
+    if segs:
+        cands.add(segs[0])
+    return cands
 
 
 def _is_competitor_owned_domain(domain, competitor_stems):
-    """True if any segment of `domain` matches a competitor's first-word stem.
+    """True if `domain` is a competitor's own site.
 
-    Walks the dot-separated segments of `domain` (lowercased, alnum-stripped)
-    and checks each against `competitor_stems`. Returns True on first match.
+    competitor_stems is the dict from _competitor_domain_stems. Match rules
+    (exact-equality only, never substring/startswith, to avoid nuking legit
+    publications like 'notionalfinance.com' for competitor 'Notion'):
+      - the domain's registrable label EQUALS a concat stem
+        (guidebeauty.com → 'guidebeauty', thenorthface.com → 'thenorthface')
+      - any dot-segment EQUALS a word stem
+        (newsroom.rei.com → segment 'rei')
 
-    Examples (with stems = {'rei', 'arc', 'patagonia'}):
-      'newsroom.rei.com'   → True   ('rei' matches)
-      'rei.com'            → True
-      'arcteryx.com'       → False  ('arc' is too loose? actually 'arcteryx' is one segment)
-      'theverge.com'       → False  ('the' was filtered out by stem builder)
-      'patagonia.com'      → True   (but should be caught by _is_brand_own_domain too)
+    Accepts the legacy plain-set shape too (treated as word stems) so any
+    older caller still works.
     """
     if not domain or not competitor_stems:
         return False
-    for p in (domain or '').lower().split('.'):
-        cleaned = re.sub(r'[^a-z0-9]', '', p)
-        if cleaned in competitor_stems:
+    if isinstance(competitor_stems, (set, frozenset)):
+        competitor_stems = {'words': set(competitor_stems), 'concats': set()}
+    words = competitor_stems.get('words') or set()
+    concats = competitor_stems.get('concats') or set()
+    d = _ascii_fold((domain or '').lower())
+    segs = [re.sub(r'[^a-z0-9]', '', p) for p in d.split('.')]
+    segs = [s for s in segs if s]
+    if not segs:
+        return False
+    for cand in _registrable_label_candidates(segs):
+        if cand in concats:
+            return True
+    for s in segs:
+        if s in words:
             return True
     return False
 
@@ -3524,30 +3617,15 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
     ) if brand_patterns else 0
     brand_overall_sov = (brand_overall_count / total_responses) if total_responses else 0.0
 
-    # Pre-compute competitor-owned domain stems so we can skip outlets that
-    # are a competitor's own .com. There's no meaningful "opportunity" to pitch
-    # IBM's coverage to ibm.com or Microsoft's coverage to azure.microsoft.com
-    # — the LLM is just citing the competitor's own product page when asked
-    # about them. Surfacing those outlets as opportunities is technically true
-    # but operationally useless.
-    competitor_domain_stems = set()
-    for c in (competitor_counts or []):
-        name = (c.get('name') or '').lower().strip()
-        if not name:
-            continue
-        # Take the first word as a stem (Microsoft → 'microsoft' matches
-        # 'azure.microsoft.com'; IBM → 'ibm' matches 'ibm.com').
-        first_word = re.sub(r'[^a-z0-9]', '', name.split()[0])
-        if first_word and len(first_word) >= 3:
-            competitor_domain_stems.add(first_word)
+    # Skip outlets that are a competitor's own site. There's no meaningful
+    # "opportunity" to pitch IBM's coverage to ibm.com — the LLM is just
+    # citing the competitor's own product page. Uses the shared module-level
+    # stem logic (multi-word + accent-aware) so this stays in sync with the
+    # editorial-list filter in run_citation_audit.
+    competitor_domain_stems = _competitor_domain_stems(competitor_counts)
 
     def _domain_owned_by_competitor(domain):
-        parts = domain.lower().split('.')
-        for p in parts:
-            cleaned = re.sub(r'[^a-z0-9]', '', p)
-            if cleaned in competitor_domain_stems:
-                return True
-        return False
+        return _is_competitor_owned_domain(domain, competitor_domain_stems)
 
     # For each cited domain, find the responses that mentioned it (any URL on
     # that domain in `r['citations']`), then count brand + competitor hits in
