@@ -3025,6 +3025,59 @@ def classify_citation_domain(domain):
     return 'editorial'
 
 
+def _competitor_domain_stems(competitor_counts):
+    """Build a set of domain-stem strings for the brand's competitors so we
+    can quickly check whether a candidate editorial domain actually belongs
+    to a competitor's own corporate site.
+
+    Why: an LLM asked about Patagonia surfaces "newsroom.rei.com" as a
+    citation — REI Co-op is a Patagonia competitor, and `newsroom.rei.com`
+    is REI's corporate communications page, not an editorial publication
+    Patagonia can pitch. Same pattern: "press.theNorthFace.com",
+    "store.arcteryx.com", etc.
+
+    The stem is the first word of the competitor's name, lowercased + alnum
+    only (so "REI Co-op" → "rei", "The North Face" → "north" — but see the
+    >= 3 char guard below for stop-word cases).
+    """
+    stems = set()
+    for c in (competitor_counts or []):
+        name = (c.get('name') or '').lower().strip()
+        if not name:
+            continue
+        parts = name.split()
+        if not parts:
+            continue
+        first_word = re.sub(r'[^a-z0-9]', '', parts[0])
+        # Skip very short / common first words to avoid false positives
+        # ("The" / "AB" / etc).
+        if first_word and len(first_word) >= 3 and first_word not in ('the', 'and', 'inc'):
+            stems.add(first_word)
+    return stems
+
+
+def _is_competitor_owned_domain(domain, competitor_stems):
+    """True if any segment of `domain` matches a competitor's first-word stem.
+
+    Walks the dot-separated segments of `domain` (lowercased, alnum-stripped)
+    and checks each against `competitor_stems`. Returns True on first match.
+
+    Examples (with stems = {'rei', 'arc', 'patagonia'}):
+      'newsroom.rei.com'   → True   ('rei' matches)
+      'rei.com'            → True
+      'arcteryx.com'       → False  ('arc' is too loose? actually 'arcteryx' is one segment)
+      'theverge.com'       → False  ('the' was filtered out by stem builder)
+      'patagonia.com'      → True   (but should be caught by _is_brand_own_domain too)
+    """
+    if not domain or not competitor_stems:
+        return False
+    for p in (domain or '').lower().split('.'):
+        cleaned = re.sub(r'[^a-z0-9]', '', p)
+        if cleaned in competitor_stems:
+            return True
+    return False
+
+
 def _is_brand_own_domain(domain, brand):
     """Quick deterministic check: is this domain the brand's own property?
 
@@ -3502,36 +3555,79 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
         comp_rows.sort(key=lambda x: x["mentions_at_outlet"], reverse=True)
         top_comp = comp_rows[0] if comp_rows else None
 
-        # Verdict logic.
+        # Verdict logic — switches between two modes based on brand's overall
+        # share of voice across the response set. The relative-delta thresholds
+        # (which work fine for "normal" brands at 20-60% baseline) collapse on
+        # dominant brands (Patagonia at 97% overall has no headroom for +15pp
+        # strength and no competitor can plausibly catch up to opportunity-trigger
+        # +15pp ahead). For those brands we switch to absolute floors so the
+        # section still surfaces meaningful insight.
         STRENGTH_PP = 0.15
         OPPORTUNITY_PP = 0.15
+        DOMINANT_BRAND_THRESHOLD = 0.70  # overall SoV at which we switch modes
+        DOMINANT_STRENGTH_FLOOR = 0.95   # in dominant mode, strength = brand at >= 95%
+        DOMINANT_OPPORTUNITY_DELTA = 0.10  # in dominant mode, opportunity = brand drops 10pp below baseline
+        # The 10pp opportunity floor for dominant brands is intentionally looser
+        # than the 15pp delta for normal-mode brands. At a 97% baseline, even a
+        # 10pp slip (e.g. 83% at an outlet) is signal — the brand is essentially
+        # ubiquitous everywhere except a few specific places, and those places
+        # are where targeted earned media moves the needle the most.
         verdict = "neutral"
         verdict_label = "Neutral — brand performs in line with its overall share of voice here."
-        if brand_patterns and brand_diff >= STRENGTH_PP and (not top_comp or brand_sov_at >= top_comp["sov_at_outlet"]):
-            verdict = "strength"
-            verdict_label = (
-                f"Strength — {brand} appears in {brand_at}/{n_at_outlet} responses citing this outlet "
-                f"({int(brand_sov_at * 100)}%), vs {int(brand_overall_sov * 100)}% across all responses. "
-                f"Defend the relationship; pitch follow-up coverage."
-            )
-        elif top_comp:
-            comp_lead = top_comp["sov_at_outlet"] - brand_sov_at
-            if comp_lead >= OPPORTUNITY_PP or (brand_at == 0 and top_comp["mentions_at_outlet"] >= 2):
+
+        is_dominant_brand = brand_patterns and brand_overall_sov >= DOMINANT_BRAND_THRESHOLD
+
+        if is_dominant_brand:
+            # Saturation mode: brand already wins almost everywhere. Strength =
+            # totally saturating this outlet (everyone citing it mentions the
+            # brand). Opportunity = brand's mention rate slips noticeably below
+            # its overall baseline, i.e. this outlet is one of the few where it
+            # under-performs.
+            if brand_sov_at >= DOMINANT_STRENGTH_FLOOR:
+                verdict = "strength"
+                verdict_label = (
+                    f"Strength — {brand} appears in {brand_at}/{n_at_outlet} responses citing this outlet "
+                    f"({int(brand_sov_at * 100)}%). {brand} dominates the AI conversation here — "
+                    f"defend the relationship and pitch follow-up coverage to extend the lead."
+                )
+            elif (brand_overall_sov - brand_sov_at) >= DOMINANT_OPPORTUNITY_DELTA:
                 verdict = "opportunity"
-                if brand_at == 0:
-                    verdict_label = (
-                        f"Opportunity — {top_comp['name']} owns this outlet "
-                        f"({top_comp['mentions_at_outlet']}/{n_at_outlet} responses, "
-                        f"{int(top_comp['sov_at_outlet'] * 100)}%), {brand} is absent. "
-                        f"Pitch a story angle that displaces them."
-                    )
-                else:
-                    verdict_label = (
-                        f"Opportunity — {top_comp['name']} appears in "
-                        f"{top_comp['mentions_at_outlet']}/{n_at_outlet} responses "
-                        f"({int(top_comp['sov_at_outlet'] * 100)}%) vs {brand} at "
-                        f"{int(brand_sov_at * 100)}%. Close the gap with earned coverage."
-                    )
+                tc_phrase = (
+                    f" Top competitor here: {top_comp['name']} at {int(top_comp['sov_at_outlet'] * 100)}%."
+                    if top_comp else ""
+                )
+                verdict_label = (
+                    f"Opportunity — {brand} appears in only {int(brand_sov_at * 100)}% of responses citing this "
+                    f"outlet, vs {int(brand_overall_sov * 100)}% across all responses. This outlet under-cites "
+                    f"{brand} relative to its overall AI mindshare.{tc_phrase} Pitch to close the gap."
+                )
+        else:
+            # Standard mode: relative-delta verdicts.
+            if brand_patterns and brand_diff >= STRENGTH_PP and (not top_comp or brand_sov_at >= top_comp["sov_at_outlet"]):
+                verdict = "strength"
+                verdict_label = (
+                    f"Strength — {brand} appears in {brand_at}/{n_at_outlet} responses citing this outlet "
+                    f"({int(brand_sov_at * 100)}%), vs {int(brand_overall_sov * 100)}% across all responses. "
+                    f"Defend the relationship; pitch follow-up coverage."
+                )
+            elif top_comp:
+                comp_lead = top_comp["sov_at_outlet"] - brand_sov_at
+                if comp_lead >= OPPORTUNITY_PP or (brand_at == 0 and top_comp["mentions_at_outlet"] >= 2):
+                    verdict = "opportunity"
+                    if brand_at == 0:
+                        verdict_label = (
+                            f"Opportunity — {top_comp['name']} owns this outlet "
+                            f"({top_comp['mentions_at_outlet']}/{n_at_outlet} responses, "
+                            f"{int(top_comp['sov_at_outlet'] * 100)}%), {brand} is absent. "
+                            f"Pitch a story angle that displaces them."
+                        )
+                    else:
+                        verdict_label = (
+                            f"Opportunity — {top_comp['name']} appears in "
+                            f"{top_comp['mentions_at_outlet']}/{n_at_outlet} responses "
+                            f"({int(top_comp['sov_at_outlet'] * 100)}%) vs {brand} at "
+                            f"{int(brand_sov_at * 100)}%. Close the gap with earned coverage."
+                        )
 
         out.append({
             "domain": domain,
@@ -4750,6 +4846,35 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
             print(f"_is_brand_own_domain: dropped {before_e - len(editorial_domains)} editorial + "
                   f"{before_i - len(institutional_domains)} institutional self-domains for brand '{brand}': "
                   + ", ".join(self_domains_dropped[:10]))
+
+    # Competitor-domain filter — drop sites that belong to a competitor's
+    # corporate property (e.g. newsroom.rei.com when REI Co-op is a Patagonia
+    # competitor; press.northface.com when North Face is a competitor). These
+    # are technically "editorial-looking" subdomains but aren't pitchable —
+    # you can't get earned media from a competitor's own communications team.
+    # Applies the same logic the SoV computation uses, hoisted here so the
+    # analysis prompt and the displayed media_targets list never see them.
+    competitor_stems = _competitor_domain_stems(competitor_counts)
+    if competitor_stems:
+        before_e = len(editorial_domains)
+        dropped_comp_editorial = [
+            d['domain'] for d in editorial_domains
+            if _is_competitor_owned_domain(d['domain'], competitor_stems)
+        ]
+        editorial_domains = [
+            d for d in editorial_domains
+            if not _is_competitor_owned_domain(d['domain'], competitor_stems)
+        ]
+        before_i = len(institutional_domains)
+        institutional_domains = [
+            d for d in institutional_domains
+            if not _is_competitor_owned_domain(d['domain'], competitor_stems)
+        ]
+        if before_e > len(editorial_domains) or before_i > len(institutional_domains):
+            print(f"_is_competitor_owned_domain: dropped {before_e - len(editorial_domains)} editorial + "
+                  f"{before_i - len(institutional_domains)} institutional competitor-owned domains "
+                  f"(stems: {sorted(competitor_stems)[:10]}): "
+                  + ", ".join(dropped_comp_editorial[:10]))
 
     # AI verification: filter out B2B vendors / marketplaces / non-media domains the heuristic missed.
     editorial_domains, rejected_editorial = verify_editorial_domains(editorial_domains, brand, category)
