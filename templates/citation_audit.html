@@ -1251,7 +1251,7 @@
             </div>
         </div>
         <h1>AI Citation Audit | PR Signal Finder</h1>
-        <p class="subtitle" id="initialSubtitle">What do you want your brand to be known for? We'll query Claude, ChatGPT, and Gemini to identify the top 10 media outlets shaping AI responses on your topic — the publications where earned media will move your AI visibility most.</p>
+        <p class="subtitle" id="initialSubtitle">What do you want your brand to be known for? We'll query the 5 leading AI assistants — Claude, ChatGPT, Gemini, Perplexity, and Grok — to identify the top 10 media outlets shaping AI responses on your topic, the publications where earned media will move your AI visibility most.</p>
 
         <div class="form-section" id="formSection">
             <div class="input-group">
@@ -1277,7 +1277,7 @@
             <div class="prompt-editor-header">
                 <div>
                     <div class="prompt-editor-title">Review &amp; revise your audit prompts</div>
-                    <div class="prompt-editor-desc">These are the prompts we'll run across Claude, ChatGPT, and Gemini. Edit any to match how your real audience actually asks. <strong>Don't pre-name your competitors</strong> — that biases the competitor discovery. Use brand-agnostic framing like "<em>top alternatives to {{ "{{ brand }}" }}</em>" instead.</div>
+                    <div class="prompt-editor-desc">These are the prompts we'll run across all 5 AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). Edit any to match how your real audience actually asks. <strong>Don't pre-name your competitors</strong> — that biases the competitor discovery. Use brand-agnostic framing like "<em>top alternatives to {{ "{{ brand }}" }}</em>" instead.</div>
                 </div>
                 <span class="prompt-editor-count" id="promptEditorCount">10 prompts</span>
             </div>
@@ -1329,7 +1329,7 @@
             <button class="modal-close" onclick="closeDemoModal()">&times;</button>
             <div id="demoForm">
                 <h3 id="demoFormTitle">Request a call</h3>
-                <p id="demoFormDesc">This free audit runs 10 prompts &times; 3 LLMs. A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
+                <p id="demoFormDesc">This free audit runs 10 prompts &times; 5 leading AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
                 <p id="demoFormSubdesc" style="font-size:13px;color:#888;margin-bottom:14px">Drop your details and we'll reach out within 24 hours to scope the engagement.</p>
                 <div class="modal-field">
                     <label>Name *</label>
@@ -1889,7 +1889,7 @@
                 <div class="bespoke-cta">
                     <div class="bespoke-cta-label">Want deeper insight?</div>
                     <h3>Get a bespoke AI citation analysis</h3>
-                    <p>This free audit runs 10 prompts &times; 3 LLMs. A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
+                    <p>This free audit runs 10 prompts &times; 5 leading AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
                     <button class="cta-buy-btn" onclick="openDemoModal()">
                         Talk to us about a bespoke audit &rarr;
                     </button>
@@ -1950,14 +1950,14 @@
             const successBody = document.getElementById('demoSuccessBody');
             if (currentDemoContext === 'csv') {
                 if (titleEl) titleEl.textContent = 'Request your CSV export';
-                if (descEl) descEl.innerHTML = 'Your CSV includes <strong>every prompt</strong> we ran, the <strong>full LLM response</strong> from Claude, ChatGPT, and Gemini for each one, and <strong>every citation URL</strong> extracted from those responses — formatted for re-analysis, internal briefing, or competitive review.';
+                if (descEl) descEl.innerHTML = 'Your CSV includes <strong>every prompt</strong> we ran, the <strong>full LLM response</strong> from all 5 AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok) for each one, and <strong>every citation URL</strong> extracted from those responses — formatted for re-analysis, internal briefing, or competitive review.';
                 if (subdescEl) subdescEl.textContent = "Share your details and we'll send the CSV (and a short note about how to read it) within 24 hours.";
                 if (submitBtn) submitBtn.textContent = 'Send my CSV request';
                 if (successTitle) successTitle.textContent = "Thanks — your CSV is on the way.";
                 if (successBody) successBody.textContent = "We'll email the CSV with a short read-me within 24 hours.";
             } else {
                 if (titleEl) titleEl.textContent = 'Request a call';
-                if (descEl) descEl.innerHTML = 'This free audit runs 10 prompts &times; 3 LLMs. A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.';
+                if (descEl) descEl.innerHTML = 'This free audit runs 10 prompts &times; 5 leading AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.';
                 if (subdescEl) subdescEl.textContent = "Drop your details and we'll reach out within 24 hours to scope the engagement.";
                 if (submitBtn) submitBtn.textContent = 'Request a call';
                 if (successTitle) successTitle.textContent = "Thanks — we'll be in touch.";

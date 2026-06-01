@@ -4074,7 +4074,14 @@ def _apply_url_resolution(all_responses, url_map):
 TIER_CONFIG = {
     "free": {
         "prompt_count": 10,
-        "llms": ["Claude", "ChatGPT", "Gemini"],
+        # Five-LLM mix: Claude/ChatGPT/Gemini covers the conversational big-3,
+        # Perplexity adds retrieval-augmented search signal (structured
+        # citations[] API), Grok adds breadth + xAI's real-time data lean.
+        # 10 prompts × 5 LLMs = 50 responses per audit, yielding more
+        # granular outlet-level share-of-voice than the prior 30-response
+        # baseline. Perplexity + Grok credits funded by operator
+        # (perplexity.ai/settings/api + openrouter.ai dashboard).
+        "llms": ["Claude", "ChatGPT", "Gemini", "Perplexity", "Grok"],
         # Editorial media targets: bumped 5→10 so the SoV strength/opportunity
         # section has a meaningful denominator (was producing 1-3 cards on
         # narrow categories). Keeps the SoV scope aligned with the displayed
