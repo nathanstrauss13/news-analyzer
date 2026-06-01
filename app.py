@@ -5321,7 +5321,7 @@ Respond with ONLY valid JSON:
 
 
 # MVP branch: free-tier rate limit + client-IP helper.
-FREE_DAILY_CAP = 3
+FREE_DAILY_CAP = 10
 
 # Comma-separated list of client IPs exempt from the per-day cap. Set on Render
 # (Environment tab) when you want unlimited audits from a specific IP — your own
