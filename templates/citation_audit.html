@@ -267,12 +267,75 @@
         .media-card {
             background: #111;
             border: 1px solid #1e1e1e;
+            border-left: 4px solid #1e1e1e;
             border-radius: 12px;
             padding: 24px;
             margin-bottom: 16px;
             transition: border-color 0.2s;
+            position: relative;
         }
         .media-card:hover { border-color: #333; }
+        .media-card.strength { border-left-color: #5a9a5a; }
+        .media-card.opportunity { border-left-color: #e8a04c; }
+        /* Verdict badge in top-right of card */
+        .card-badge {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            padding: 4px 10px;
+            border-radius: 5px;
+        }
+        .card-badge.strength { background: #0d1a0d; color: #7acc7a; border: 1px solid #1a3a1a; }
+        .card-badge.opportunity { background: #1a1510; color: #ffb860; border: 1px solid #3a2a1a; }
+        /* In-card SoV bar */
+        .media-sov {
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid #1a1a22;
+        }
+        .media-sov-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 12px;
+            color: #aaa;
+        }
+        .media-sov-label {
+            color: #cfd2ff;
+            font-weight: 500;
+            min-width: 110px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .media-sov-track {
+            flex: 1;
+            height: 8px;
+            background: #1a1a22;
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+        }
+        .media-sov-track .sov-bar-brand { background: #4a9eff; }
+        .media-sov-track .sov-bar-rest { background: #3a2a1a; }
+        .media-sov-num {
+            color: #cfd2ff;
+            font-weight: 600;
+            min-width: 220px;
+            text-align: right;
+            font-size: 11px;
+            line-height: 1.3;
+        }
+        .media-sov-caption {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #999;
+            line-height: 1.5;
+        }
         .media-rank {
             font-size: 11px;
             font-weight: 600;
@@ -354,72 +417,9 @@
             color: #888;
             margin-top: 4px;
         }
-        /* Share of voice strength / opportunity per outlet */
-        .sov-grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 12px;
-            margin-bottom: 40px;
-        }
-        .sov-card {
-            background: #111;
-            border: 1px solid #1e1e1e;
-            border-left-width: 4px;
-            border-radius: 10px;
-            padding: 16px 20px;
-        }
-        .sov-card.strength { border-left-color: #5a9a5a; }
-        .sov-card.opportunity { border-left-color: #e8a04c; }
-        .sov-card.neutral { border-left-color: #4a4a5a; }
-        .sov-tag {
-            display: inline-block;
-            font-size: 10px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-            padding: 3px 9px;
-            border-radius: 5px;
-            margin-bottom: 8px;
-        }
-        .sov-tag.strength { background: #0d1a0d; color: #7acc7a; }
-        .sov-tag.opportunity { background: #1a1510; color: #ffb860; }
-        .sov-tag.neutral { background: #1a1a22; color: #888; }
-        .sov-domain {
-            font-size: 16px;
-            font-weight: 600;
-            color: #fff;
-            font-family: monospace;
-            margin-bottom: 4px;
-        }
-        .sov-meta {
-            font-size: 12px;
-            color: #888;
-            margin-bottom: 6px;
-        }
-        .sov-label {
-            font-size: 13px;
-            color: #cfd2ff;
-            line-height: 1.5;
-        }
-        .sov-bar {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-top: 10px;
-            font-size: 12px;
-            color: #aaa;
-        }
-        .sov-bar-track {
-            flex: 1;
-            height: 8px;
-            background: #1a1a22;
-            border-radius: 4px;
-            overflow: hidden;
-            display: flex;
-        }
+        /* Shared SoV bar fill colors (used by the in-card .media-sov bar). */
         .sov-bar-brand { background: #4a9eff; }
         .sov-bar-rest { background: #3a2a1a; }
-        .sov-bar-num { color: #cfd2ff; font-weight: 600; min-width: 220px; text-align: right; font-size: 11px; line-height: 1.3; }
         .action-bar {
             display: flex;
             gap: 10px;
@@ -1199,7 +1199,7 @@
             </div>
         </div>
         <h1>AI Citation Audit | PR Signal Finder</h1>
-        <p class="subtitle" id="initialSubtitle">What do you want your brand to be known for? We'll query Claude, ChatGPT, and Gemini to find which media outlets are shaping AI responses about your competitors — and where earned media will close the gap.</p>
+        <p class="subtitle" id="initialSubtitle">What do you want your brand to be known for? We'll query Claude, ChatGPT, and Gemini to identify the top 10 media outlets shaping AI responses on your topic — the publications where earned media will move your AI visibility most.</p>
 
         <div class="form-section" id="formSection">
             <div class="input-group">
@@ -1552,54 +1552,39 @@
                 html += `</div>`;
             }
 
-            // Share-of-voice strength / opportunity across the top editorial
-            // media targets. Surfaces outlets where the brand over-indexes
-            // (defend & amplify) vs where competitors over-index (pitch to
-            // close the gap). Scoped to editorial-only so the section stays
-            // aligned with what a PR pro can actually act on — not .gov, .edu,
-            // trade associations, or brand-own domains.
-            const sovRows = (data.outlet_sov || []);
-            const sovStrengths = sovRows.filter(r => r.verdict === 'strength');
-            const sovOpportunities = sovRows.filter(r => r.verdict === 'opportunity');
-            if (sovStrengths.length || sovOpportunities.length) {
-                html += `<div class="section-title" style="margin-top:32px">Share of voice across top editorial media — strengths to defend, opportunities to pitch</div>`;
-                html += `<div class="section-note">For each of the top 10 editorial outlets that surfaced in AI responses, we compare ${esc(data.brand || 'your brand')}'s mention rate inside responses citing that outlet against its overall mention rate. <strong>Strengths</strong> = outlets where the brand over-indexes (defend the relationship; pitch follow-up coverage). <strong>Opportunities</strong> = outlets where competitors dominate (where earned media will move the needle most).</div>`;
-                html += `<div class="sov-grid">`;
-                const sovOrdered = [...sovStrengths, ...sovOpportunities];
-                for (const row of sovOrdered) {
-                    const tag = row.verdict;
-                    const brandPct = Math.round((row.brand_sov_at_outlet || 0) * 100);
-                    const overallPct = Math.round((row.brand_overall_sov || 0) * 100);
-                    const topComp = row.top_competitor_at_outlet;
-                    const compName = topComp ? topComp.name : null;
-                    const compPct = topComp ? Math.round((topComp.sov_at_outlet || 0) * 100) : 0;
-                    const restPct = Math.max(0, 100 - brandPct);
-                    html += `
-                        <div class="sov-card ${tag}">
-                            <span class="sov-tag ${tag}">${tag === 'strength' ? 'Strength · defend' : 'Opportunity · pitch'}</span>
-                            <div class="sov-domain">${esc(row.domain)}</div>
-                            <div class="sov-meta">Cited in ${row.responses_citing} AI responses${compName ? ` · top competitor here: ${esc(compName)} (${compPct}%)` : ''}</div>
-                            <div class="sov-label">${esc(row.verdict_label || '')}</div>
-                            <div class="sov-bar">
-                                <span>${esc(data.brand || 'Brand')}</span>
-                                <div class="sov-bar-track">
-                                    <div class="sov-bar-brand" style="width:${brandPct}%"></div>
-                                    <div class="sov-bar-rest" style="width:${restPct}%"></div>
-                                </div>
-                                <span class="sov-bar-num" title="${brandPct}% of responses citing ${esc(row.domain)} mention ${esc(data.brand || 'the brand')}; ${overallPct}% of all responses do">${brandPct}% at this outlet &middot; ${overallPct}% across all responses</span>
-                            </div>
-                        </div>
-                    `;
-                }
-                html += `</div>`;
+            // Top 10 media targets with each card's share-of-voice merged
+            // inline. Per-card badge surfaces whether the outlet is a strength
+            // (defend / extend) or an opportunity (pitch to close the gap),
+            // computed from outlet_sov keyed by domain. The standalone SoV
+            // section, the institutional section, and the analyst section
+            // have been removed from the UI — institutional + analyst data
+            // is still computed and is available via the JSON + CSV exports.
+            const sovByDomain = {};
+            for (const row of (data.outlet_sov || [])) {
+                if (row && row.domain) sovByDomain[row.domain.toLowerCase()] = row;
             }
 
-            html += `<div class="section-title">Top 10 editorial media targets — based on actual LLM citations</div>`;
+            html += `<div class="section-title">Your top 10 media targets — based on actual AI citations</div>`;
+            html += `<div class="section-note">These are the editorial outlets where ${esc(data.brand || 'your brand')} should focus PR efforts. Each surfaced most often in AI responses about ${esc(data.category || 'this category')}. Each card explains why the outlet matters and shows how ${esc(data.brand || 'the brand')} currently performs in the AI conversation there.</div>`;
             for (const t of targets) {
                 const sampleUrls = (t.sample_urls || []).slice(0, 10);
                 const llms = (t.cited_by_llms || []);
+                const sov = sovByDomain[(t.domain || '').toLowerCase()];
+                const verdict = sov ? sov.verdict : null;
+                const brandPct = sov ? Math.round((sov.brand_sov_at_outlet || 0) * 100) : null;
+                const overallPct = sov ? Math.round((sov.brand_overall_sov || 0) * 100) : null;
+                const restPct = (brandPct !== null) ? Math.max(0, 100 - brandPct) : 0;
+
+                let badge = '';
+                if (verdict === 'strength') {
+                    badge = `<span class="card-badge strength">Strength &middot; defend</span>`;
+                } else if (verdict === 'opportunity') {
+                    badge = `<span class="card-badge opportunity">Opportunity &middot; pitch</span>`;
+                }
+
                 html += `
-                    <div class="media-card">
+                    <div class="media-card ${verdict || ''}">
+                        ${badge}
                         <div class="media-rank">#${t.rank} target</div>
                         <div class="media-outlet">${esc(t.outlet)}</div>
                         ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
@@ -1608,7 +1593,19 @@
                         ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
                         ${(t.competitors_citing || []).map(c => `<span class="competitor-chip" style="font-size:12px;padding:3px 8px">${esc(c)}</span>`).join('')}
                         <div class="media-rationale">${esc(t.rationale)}</div>
-                        ${t.gap_insight ? `<div class="media-gap"><strong>Gap:</strong> ${esc(t.gap_insight)}</div>` : ''}
+                        ${sov ? `
+                            <div class="media-sov">
+                                <div class="media-sov-bar">
+                                    <span class="media-sov-label">${esc(data.brand || 'Brand')} visibility</span>
+                                    <div class="media-sov-track">
+                                        <div class="sov-bar-brand" style="width:${brandPct}%"></div>
+                                        <div class="sov-bar-rest" style="width:${restPct}%"></div>
+                                    </div>
+                                    <span class="media-sov-num">${brandPct}% at this outlet &middot; ${overallPct}% across all responses</span>
+                                </div>
+                                ${sov.verdict_label ? `<div class="media-sov-caption">${esc(sov.verdict_label)}</div>` : ''}
+                            </div>
+                        ` : ''}
                         ${sampleUrls.length ? `
                             <div class="media-urls">
                                 <div class="media-urls-label">Cited URLs</div>
@@ -1617,62 +1614,6 @@
                         ` : ''}
                     </div>
                 `;
-            }
-
-            const institutional = (data.institutional_targets || []).slice(0, 5);
-            if (institutional.length) {
-                html += `<div class="section-title" style="margin-top:32px">Associations, authorities & partnerships</div>`;
-                html += `<div class="section-note">These trade associations, certification bodies, advocacy non-profits, .gov, and .edu sources also shape AI responses — but require partnership, sponsorship, certification, or research collaboration rather than traditional PR pitching.</div>`;
-                for (const t of institutional) {
-                    const sampleUrls = (t.sample_urls || []).slice(0, 10);
-                    const llms = (t.cited_by_llms || []);
-                    html += `
-                        <div class="institutional-card">
-                            <div class="institutional-rank">#${t.rank} partnership target</div>
-                            <div class="institutional-name">${esc(t.institution)}</div>
-                            ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
-                            ${t.type ? `<span class="institutional-type">${esc(t.type)}</span><br>` : ''}
-                            <span class="media-stat">Cited ${t.citation_frequency}x across responses</span>
-                            ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
-                            <div class="institutional-play">${esc(t.partnership_play || '')}</div>
-                            ${sampleUrls.length ? `
-                                <div class="media-urls">
-                                    <div class="media-urls-label">Cited URLs</div>
-                                    ${sampleUrls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join('')}
-                                </div>
-                            ` : ''}
-                        </div>
-                    `;
-                }
-            }
-
-            const analysts = (data.analyst_targets || []).slice(0, 5);
-            if (analysts.length) {
-                html += `<div class="section-title" style="margin-top:32px">Industry analyst citations</div>`;
-                html += `<div class="section-note">These analyst firms shape AI responses through reports and evaluations (Magic Quadrants, Waves, MarketScapes). Influence is via analyst relations — briefings, inclusion in evaluations, sponsored research — not pitching.</div>`;
-                for (const t of analysts) {
-                    const sampleUrls = (t.sample_urls || []).slice(0, 10);
-                    const llms = (t.cited_by_llms || []);
-                    const evals = (t.evaluations_referenced || []);
-                    html += `
-                        <div class="analyst-card">
-                            <div class="analyst-rank">#${t.rank} analyst target</div>
-                            <div class="analyst-name">${esc(t.firm)}</div>
-                            ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
-                            ${t.type ? `<span class="analyst-type">${esc(t.type)}</span><br>` : ''}
-                            <span class="media-stat">Cited ${t.citation_frequency}x across responses</span>
-                            ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
-                            ${evals.length ? `<div style="margin-top:8px">${evals.map(e => `<span class="analyst-eval">${esc(e)}</span>`).join('')}</div>` : ''}
-                            <div class="analyst-play">${esc(t.analyst_play || '')}</div>
-                            ${sampleUrls.length ? `
-                                <div class="media-urls">
-                                    <div class="media-urls-label">Cited URLs</div>
-                                    ${sampleUrls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join('')}
-                                </div>
-                            ` : ''}
-                        </div>
-                    `;
-                }
             }
 
             if (shareUrl || pdfUrl || csvUrl) {

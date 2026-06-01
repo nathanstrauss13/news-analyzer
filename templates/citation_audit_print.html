@@ -95,11 +95,36 @@
         }
         .target-card {
             border: 0.5pt solid #d4d4d4;
+            border-left: 2.5pt solid #d4d4d4;
             border-radius: 6pt;
             padding: 10pt 14pt;
             margin-bottom: 10pt;
             page-break-inside: avoid;
+            position: relative;
         }
+        .target-card.strength { border-left-color: #4a8a4a; }
+        .target-card.opportunity { border-left-color: #c08040; }
+        .card-badge {
+            position: absolute;
+            top: 8pt;
+            right: 10pt;
+            font-size: 7.5pt;
+            font-weight: 700;
+            letter-spacing: 1pt;
+            text-transform: uppercase;
+            padding: 1.5pt 6pt;
+            border-radius: 3pt;
+        }
+        .card-badge.strength { background: #d8efd8; color: #1f5a1f; }
+        .card-badge.opportunity { background: #f1e2c1; color: #7a5a10; }
+        .target-sov {
+            margin-top: 8pt;
+            padding-top: 6pt;
+            border-top: 0.5pt solid #e0e0e0;
+            font-size: 9pt;
+        }
+        .target-sov-line { color: #333; margin-bottom: 3pt; }
+        .target-sov-caption { color: #555; font-size: 8.5pt; line-height: 1.4; }
         .target-rank {
             font-size: 9pt;
             text-transform: uppercase;
@@ -253,34 +278,24 @@
     </div>
     {% endif %}
 
-    {% set sov_strengths = (data.outlet_sov or []) | selectattr('verdict','equalto','strength') | list %}
-    {% set sov_opps = (data.outlet_sov or []) | selectattr('verdict','equalto','opportunity') | list %}
-    {% if sov_strengths or sov_opps %}
-    <h2>Share of voice across top editorial media — strengths &amp; opportunities</h2>
-    <div class="section-note">For each of the top 10 editorial outlets that surfaced in AI responses, we compare {{ data.brand }}'s mention rate inside responses citing that outlet vs its overall mention rate. <strong>Strengths</strong> are outlets where the brand over-indexes (defend / amplify; pitch follow-up coverage). <strong>Opportunities</strong> are where competitors over-index (pitch to close the gap). Scoped to editorial media only — .gov, .edu, trade associations, and brand-owned domains are excluded since they aren't pitchable.</div>
-        {% for row in (sov_strengths + sov_opps) %}
-        <div class="sov-row {{ row.verdict }}">
-            <span class="sov-tag {{ row.verdict }}">{% if row.verdict == 'strength' %}Strength · defend{% else %}Opportunity · pitch{% endif %}</span>
-            <div class="sov-domain">{{ row.domain }}</div>
-            <div class="sov-meta">
-                Cited in {{ row.responses_citing }} AI responses ·
-                {{ data.brand }} appears in {{ row.brand_mentions_at_outlet }}/{{ row.responses_citing }}
-                ({{ (row.brand_sov_at_outlet * 100) | round | int }}%)
-                vs {{ (row.brand_overall_sov * 100) | round | int }}% overall
-                {% if row.top_competitor_at_outlet %}
-                    · top competitor here: {{ row.top_competitor_at_outlet.name }}
-                    ({{ (row.top_competitor_at_outlet.sov_at_outlet * 100) | round | int }}%)
-                {% endif %}
-            </div>
-            <div class="sov-label">{{ row.verdict_label }}</div>
-        </div>
-        {% endfor %}
-    {% endif %}
+    {# Build per-domain SoV lookup so each target card can show its inline
+       strength / opportunity badge + bar. Replaces the standalone SoV section
+       and the separate institutional + analyst sections (those are still in
+       the JSON / CSV exports). #}
+    {% set sov_lookup = {} %}
+    {% for row in (data.outlet_sov or []) %}
+        {% set _ = sov_lookup.update({row.domain | lower: row}) %}
+    {% endfor %}
 
-    <h2>Editorial media targets</h2>
+    <h2>Your top 10 media targets — based on actual AI citations</h2>
+    <div class="section-note">These are the editorial outlets where {{ data.brand }} should focus PR efforts. Each surfaced most often in AI responses about {{ data.category or 'this category' }}. Each card explains why the outlet matters and shows how {{ data.brand }} currently performs in the AI conversation there.</div>
     {% if data.media_targets %}
         {% for t in data.media_targets %}
-        <div class="target-card">
+        {% set sov = sov_lookup.get((t.domain or '') | lower) %}
+        <div class="target-card {{ sov.verdict if sov else '' }}">
+            {% if sov and sov.verdict in ('strength','opportunity') %}
+                <span class="card-badge {{ sov.verdict }}">{% if sov.verdict == 'strength' %}Strength · defend{% else %}Opportunity · pitch{% endif %}</span>
+            {% endif %}
             <div class="target-rank">#{{ t.rank }} target</div>
             <div class="target-name">{{ t.outlet }}</div>
             {% if t.domain %}<div class="target-domain">{{ t.domain }}</div>{% endif %}
@@ -289,7 +304,14 @@
             {% for l in (t.cited_by_llms or []) %}<span class="target-stat">{{ l }}</span>{% endfor %}
             {% for c in (t.competitors_citing or []) %}<span class="competitor-chip">{{ c }}</span>{% endfor %}
             {% if t.rationale %}<div class="target-rationale">{{ t.rationale }}</div>{% endif %}
-            {% if t.gap_insight %}<div class="target-gap"><strong>Gap:</strong> {{ t.gap_insight }}</div>{% endif %}
+            {% if sov %}
+                {% set brand_pct = (sov.brand_sov_at_outlet * 100) | round | int %}
+                {% set overall_pct = (sov.brand_overall_sov * 100) | round | int %}
+                <div class="target-sov">
+                    <div class="target-sov-line"><strong>{{ data.brand }} visibility:</strong> {{ brand_pct }}% at this outlet &middot; {{ overall_pct }}% across all responses</div>
+                    {% if sov.verdict_label %}<div class="target-sov-caption">{{ sov.verdict_label }}</div>{% endif %}
+                </div>
+            {% endif %}
             {% if t.sample_urls %}
                 <div class="target-urls">
                     <span class="label">Cited URLs</span>
@@ -300,49 +322,6 @@
         {% endfor %}
     {% else %}
         <div class="empty">No editorial media targets found.</div>
-    {% endif %}
-
-    {% if data.institutional_targets %}
-    <h2>Authority & partnership targets</h2>
-    <div class="section-note">Trade associations, certification bodies, advocacy non-profits, .gov, .edu sources that shape AI responses — influenced via partnership, sponsorship, certification, or research collaboration rather than traditional PR pitching.</div>
-        {% for t in data.institutional_targets %}
-        <div class="target-card">
-            <div class="target-rank">#{{ t.rank }} partnership target</div>
-            <div class="target-name">{{ t.institution }}</div>
-            {% if t.domain %}<div class="target-domain">{{ t.domain }} · {{ t.type or '' }}</div>{% endif %}
-            <span class="target-stat">Cited {{ t.citation_frequency }}x</span>
-            {% for l in (t.cited_by_llms or []) %}<span class="target-stat">{{ l }}</span>{% endfor %}
-            {% if t.partnership_play %}<div class="target-rationale">{{ t.partnership_play }}</div>{% endif %}
-            {% if t.sample_urls %}
-                <div class="target-urls">
-                    <span class="label">Cited URLs</span>
-                    {% for u in t.sample_urls[:10] %}<a href="{{ u }}">{{ u }}</a><br>{% endfor %}
-                </div>
-            {% endif %}
-        </div>
-        {% endfor %}
-    {% endif %}
-
-    {% if data.analyst_targets %}
-    <h2>Industry analyst citations</h2>
-    <div class="section-note">Analyst firms that shape AI responses through reports and evaluations (Magic Quadrants, Waves, MarketScapes). Influence is via analyst relations — briefings, inclusion in evaluations, sponsored research.</div>
-        {% for t in data.analyst_targets %}
-        <div class="target-card">
-            <div class="target-rank">#{{ t.rank }} analyst target</div>
-            <div class="target-name">{{ t.firm }}</div>
-            {% if t.domain %}<div class="target-domain">{{ t.domain }} · {{ t.type or '' }}</div>{% endif %}
-            <span class="target-stat">Cited {{ t.citation_frequency }}x</span>
-            {% for l in (t.cited_by_llms or []) %}<span class="target-stat">{{ l }}</span>{% endfor %}
-            {% for e in (t.evaluations_referenced or []) %}<span class="competitor-chip">{{ e }}</span>{% endfor %}
-            {% if t.analyst_play %}<div class="target-rationale">{{ t.analyst_play }}</div>{% endif %}
-            {% if t.sample_urls %}
-                <div class="target-urls">
-                    <span class="label">Cited URLs</span>
-                    {% for u in t.sample_urls[:10] %}<a href="{{ u }}">{{ u }}</a><br>{% endfor %}
-                </div>
-            {% endif %}
-        </div>
-        {% endfor %}
     {% endif %}
 
     {% if data.prompts_used %}
