@@ -3035,6 +3035,22 @@ PRODUCTISH_TLDS = (
     '.xyz', '.tech', '.live', '.build', '.sh',
 )
 
+# Certification / standards bodies. AI cites these when a brand's value prop
+# involves a certification (B Corp, bluesign, OEKO-TEX, Fair Trade, etc.).
+# They influence AI mindshare — but you EARN a certification or partner with
+# them, you don't pitch them an earned-media story. So they belong in the
+# institutional/partnership bucket, not the editorial media-target list.
+# (Most cert bodies are .org and already route to institutional; this catches
+# the .com/.net ones that were leaking into editorial — observed on Patagonia.)
+CERTIFICATION_DOMAINS = {
+    'bcorporation.net', 'bcorporation.com', 'bluesign.com', 'oeko-tex.com',
+    'ecocert.com', 'fairtrade.net', 'fairtradecertified.org', 'gots.org',
+    'cradletocradle.org', 'c2ccertified.org', 'climateneutral.org',
+    'leapingbunny.org', 'crueltyfree.org', 'rainforest-alliance.org',
+    'fsc.org', 'us.fsc.org', 'globalrecycled.org', 'responsiblewool.org',
+    'usgbc.org', 'energystar.gov', 'gluten.org', 'usda.gov',
+}
+
 
 # Retailers, marketplaces, product databases, and shopping apps. LLMs cite
 # these heavily in consumer-product audits (esp. beauty), but you cannot pitch
@@ -3083,6 +3099,11 @@ def classify_citation_domain(domain):
         return 'non_editorial'
     if d_stripped in RETAILER_DOMAINS or reg in RETAILER_DOMAINS:
         return 'retail'
+    # Certification / standards bodies → institutional (partner/certify, don't
+    # pitch). Checked before the editorial fallback so .com/.net cert bodies
+    # don't leak into media targets.
+    if d_stripped in CERTIFICATION_DOMAINS or reg in CERTIFICATION_DOMAINS:
+        return 'institutional'
     # Analyst: match the registrable domain too so subdomains like
     # go.forrester.com / www2.gartner.com route to 'analyst', not 'editorial'.
     if d_stripped in ANALYST_DOMAINS or d in ANALYST_DOMAINS or reg in ANALYST_DOMAINS:
