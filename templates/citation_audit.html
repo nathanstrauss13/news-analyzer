@@ -1328,9 +1328,9 @@
         <div class="modal">
             <button class="modal-close" onclick="closeDemoModal()">&times;</button>
             <div id="demoForm">
-                <h3>Request a call</h3>
-                <p>This free audit runs 10 prompts &times; 3 LLMs. A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
-                <p style="font-size:13px;color:#888;margin-bottom:14px">Drop your details and we'll reach out within 24 hours to scope the engagement.</p>
+                <h3 id="demoFormTitle">Request a call</h3>
+                <p id="demoFormDesc">This free audit runs 10 prompts &times; 3 LLMs. A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
+                <p id="demoFormSubdesc" style="font-size:13px;color:#888;margin-bottom:14px">Drop your details and we'll reach out within 24 hours to scope the engagement.</p>
                 <div class="modal-field">
                     <label>Name *</label>
                     <input type="text" id="demoName" autocomplete="name">
@@ -1351,8 +1351,8 @@
                 <div class="modal-error" id="demoError"></div>
             </div>
             <div class="modal-success" id="demoSuccess" style="display:none">
-                <h3>Thanks — we'll be in touch.</h3>
-                <p>Your request is in. We'll reach out within 24 hours to scope your bespoke analysis.</p>
+                <h3 id="demoSuccessTitle">Thanks — we'll be in touch.</h3>
+                <p id="demoSuccessBody">Your request is in. We'll reach out within 24 hours to scope your bespoke analysis.</p>
                 <p id="demoDevNote" style="display:none;margin-top:12px;font-size:12px;color:#5aff8a;border:1px solid #1c4d2e;background:#0e1a14;padding:8px 12px;border-radius:6px">
                     Dev mode — your request is saved locally. In production this would email <strong>nstrauss@innatec3.com</strong> via SendGrid.
                 </p>
@@ -1744,11 +1744,11 @@
                     <div class="citation-total">
                         ${data.total_citations_extracted || 0} citation URLs extracted across ${data.total_responses || 30} responses
                     </div>
-                    ${(shareUrl || pdfUrl || csvUrl) ? `
+                    ${(shareUrl || pdfUrl) ? `
                         <div class="action-bar">
                             ${shareUrl ? `<button class="action-btn" id="shareBtn" onclick="copyShareLink('${esc(shareUrl)}')">Share report</button>` : ''}
                             ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
-                            ${csvUrl ? `<a class="action-btn" href="${esc(csvUrl)}" rel="noopener">Download CSV</a>` : ''}
+                            <button class="action-btn" onclick="openDemoModal('csv')" title="Your CSV includes every prompt we ran, every full LLM response (Claude · ChatGPT · Gemini), and every citation URL extracted — for your own re-analysis, internal briefing, or competitive review. Share your details and we'll send it within 24 hours.">Request CSV &rarr;</button>
                         </div>
                     ` : ''}
                 </div>
@@ -1857,16 +1857,16 @@
                 `;
             }
 
-            if (shareUrl || pdfUrl || csvUrl) {
+            if (shareUrl || pdfUrl) {
                 html += `
                     <div class="save-panel">
                         <div class="save-panel-label">Save & share</div>
                         <h4>Hold onto this report</h4>
-                        <div class="save-panel-desc">Anyone with the link can view this report. The PDF includes the full target list with cited URLs; the CSV lets you sort/filter the target list in Excel or Google Sheets.</div>
+                        <div class="save-panel-desc">Anyone with the link can view this report. The PDF captures everything on this page. Want the full raw data — every prompt, every LLM response, every citation URL? Request the CSV and we'll send it.</div>
                         <div class="save-panel-actions">
                             ${shareUrl ? `<button class="action-btn primary-action" onclick="copyShareLink('${esc(shareUrl)}')">Copy share link</button>` : ''}
                             ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
-                            ${csvUrl ? `<a class="action-btn" href="${esc(csvUrl)}" rel="noopener">Download CSV</a>` : ''}
+                            <button class="action-btn" onclick="openDemoModal('csv')" title="Your CSV includes every prompt we ran, every full LLM response (Claude · ChatGPT · Gemini), and every citation URL extracted — for your own re-analysis, internal briefing, or competitive review. Share your details and we'll send it within 24 hours.">Request CSV &rarr;</button>
                         </div>
                         ${shareUrl ? `<input type="text" class="share-url-display" value="${esc(shareUrl)}" readonly onclick="this.select()">` : ''}
                     </div>
@@ -1933,7 +1933,33 @@
             if (thanks) thanks.style.display = 'block';
         }
 
-        function openDemoModal() {
+        // Modal request_type controls the title / subtitle / submit-button
+        // copy AND is sent to the backend so the lead-capture email
+        // distinguishes "CSV request" from generic bespoke-audit interest.
+        let currentDemoContext = 'bespoke';
+        function openDemoModal(context) {
+            currentDemoContext = (context === 'csv') ? 'csv' : 'bespoke';
+            const titleEl = document.getElementById('demoFormTitle');
+            const descEl = document.getElementById('demoFormDesc');
+            const subdescEl = document.getElementById('demoFormSubdesc');
+            const submitBtn = document.getElementById('demoSubmit');
+            const successTitle = document.getElementById('demoSuccessTitle');
+            const successBody = document.getElementById('demoSuccessBody');
+            if (currentDemoContext === 'csv') {
+                if (titleEl) titleEl.textContent = 'Request your CSV export';
+                if (descEl) descEl.innerHTML = 'Your CSV includes <strong>every prompt</strong> we ran, the <strong>full LLM response</strong> from Claude, ChatGPT, and Gemini for each one, and <strong>every citation URL</strong> extracted from those responses — formatted for re-analysis, internal briefing, or competitive review.';
+                if (subdescEl) subdescEl.textContent = "Share your details and we'll send the CSV (and a short note about how to read it) within 24 hours.";
+                if (submitBtn) submitBtn.textContent = 'Send my CSV request';
+                if (successTitle) successTitle.textContent = "Thanks — your CSV is on the way.";
+                if (successBody) successBody.textContent = "We'll email the CSV with a short read-me within 24 hours.";
+            } else {
+                if (titleEl) titleEl.textContent = 'Request a call';
+                if (descEl) descEl.innerHTML = 'This free audit runs 10 prompts &times; 3 LLMs. A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.';
+                if (subdescEl) subdescEl.textContent = "Drop your details and we'll reach out within 24 hours to scope the engagement.";
+                if (submitBtn) submitBtn.textContent = 'Request a call';
+                if (successTitle) successTitle.textContent = "Thanks — we'll be in touch.";
+                if (successBody) successBody.textContent = "Your request is in. We'll reach out within 24 hours to scope your bespoke analysis.";
+            }
             document.getElementById('demoForm').style.display = 'block';
             document.getElementById('demoSuccess').style.display = 'none';
             document.getElementById('demoError').classList.remove('active');
@@ -1968,6 +1994,7 @@
                         name, title, org, email,
                         slug: lastAuditContext.slug,
                         problem_statement: lastAuditContext.problem_statement,
+                        request_type: currentDemoContext,
                     }),
                 });
                 const data = await resp.json();

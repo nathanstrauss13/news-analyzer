@@ -5906,13 +5906,21 @@ def citation_audit_request_demo():
     email = (data.get('email') or '').strip()
     slug = (data.get('slug') or '').strip() or None
     problem_statement = (data.get('problem_statement') or '').strip()
+    # 'csv' when triggered by Request CSV button; 'bespoke' otherwise.
+    # Controls email subject + body so the operator can triage CSV-export
+    # requests separately from full-engagement leads.
+    request_type = (data.get('request_type') or 'bespoke').strip().lower()
+    if request_type not in ('csv', 'bespoke'):
+        request_type = 'bespoke'
 
     if not name or not email:
         return jsonify({"error": "Name and email are required."}), 400
     if '@' not in email or '.' not in email:
         return jsonify({"error": "Please enter a valid email address."}), 400
 
-    extra = json.dumps({"name": name, "title": title, "org": org, "problem_statement": problem_statement})
+    extra = json.dumps({"name": name, "title": title, "org": org,
+                        "problem_statement": problem_statement,
+                        "request_type": request_type})
     lead = LeadCapture(email=email, slug=slug, app_name='signal_finder_demo', extra=extra)
     db.session.add(lead)
     db.session.commit()
@@ -5928,8 +5936,25 @@ def citation_audit_request_demo():
             # exist on innatec3.com.
             base = os.environ.get("SIGNAL_BASE_URL") or (request.url_root.rstrip('/'))
             report_link = f"{base}/signal/{slug}" if slug else "(no audit slug)"
+            # CSV-request leads get their own subject + framing so they're
+            # easy to triage separately. Both types still capture all the same
+            # contact fields + audit context + report link.
+            if request_type == 'csv':
+                lead_label = "CSV export request"
+                subject_prefix = "[PR Signal Finder · CSV REQUEST]"
+                lead_note = (
+                    "ACTION: Send the CSV export for this user's audit "
+                    f"({slug or 'no slug'}). Includes all prompts, full LLM "
+                    "responses (Claude / ChatGPT / Gemini), and every citation "
+                    "URL extracted."
+                )
+            else:
+                lead_label = "bespoke audit request"
+                subject_prefix = "[PR Signal Finder]"
+                lead_note = ""
+
             text_body = (
-                f"New PR Signal Finder bespoke audit request:\n\n"
+                f"New PR Signal Finder {lead_label}:\n\n"
                 f"Name: {name}\n"
                 f"Title: {title or '(not provided)'}\n"
                 f"Organization: {org or '(not provided)'}\n"
@@ -5937,12 +5962,15 @@ def citation_audit_request_demo():
                 f"Problem statement they audited:\n{problem_statement or '(not provided)'}\n\n"
                 f"Their light audit report: {report_link}\n"
             )
+            if lead_note:
+                text_body += f"\n{lead_note}\n"
+
             report_link_html = (
                 f'<a href="{report_link}">{report_link}</a>' if slug else '<em>(no slug captured)</em>'
             )
             email_link_html = f'<a href="mailto:{html.escape(email)}">{html.escape(email)}</a>'
             html_body = (
-                f"<h3>New PR Signal Finder bespoke audit request</h3>"
+                f"<h3>New PR Signal Finder {lead_label}</h3>"
                 f"<p><strong>Name:</strong> {html.escape(name)}<br>"
                 f"<strong>Title:</strong> {html.escape(title) or '<em>(not provided)</em>'}<br>"
                 f"<strong>Organization:</strong> {html.escape(org) or '<em>(not provided)</em>'}<br>"
@@ -5950,10 +5978,23 @@ def citation_audit_request_demo():
                 f"<p><strong>Problem they audited:</strong><br>{html.escape(problem_statement) or '<em>(not provided)</em>'}</p>"
                 f"<p><strong>Their light audit report:</strong> {report_link_html}</p>"
             )
+            if lead_note:
+                if slug:
+                    csv_link = f"{base}/signal/{slug}.csv"
+                    csv_link_html = f'<a href="{csv_link}">{csv_link}</a>'
+                else:
+                    csv_link_html = '<em>(no slug captured)</em>'
+                html_body += (
+                    f'<p style="background:#fffae0;padding:10px 14px;border-left:3px solid #d4a500;'
+                    f'border-radius:4px;margin-top:14px"><strong>Action:</strong> {html.escape(lead_note)}<br>'
+                    f'<strong>CSV download URL (operator-only):</strong> {csv_link_html}</p>'
+                )
+
+            subject_suffix = f" from {name}" + (f" ({org})" if org else "")
             msg = Mail(
                 from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
                 to_emails=["nstrauss@innatec3.com"],
-                subject=f"[PR Signal Finder] Bespoke audit request from {name}" + (f" ({org})" if org else ""),
+                subject=f"{subject_prefix} {lead_label}{subject_suffix}",
                 plain_text_content=text_body,
                 html_content=html_body,
             )
