@@ -3465,6 +3465,269 @@ def aggregate_citations(all_responses):
     return sorted(domain_data.values(), key=lambda x: x['diversity_score'], reverse=True)
 
 
+# ---------------------------------------------------------------------------
+# Named-outlet detection — count outlets by NAME, not just by fetchable URL.
+# ---------------------------------------------------------------------------
+# Problem this solves: the citation universe (`aggregate_citations`) is built
+# only from extracted URLs. But AI assistants — especially search-grounded ones
+# (Gemini, Perplexity) — routinely NAME influential outlets in prose and in
+# numbered reference lists while attaching URLs that don't resolve (hallucinated
+# article paths). Topic-verify then prunes those URLs, so the outlet drops to a
+# near-zero count or disappears entirely — even though three different models
+# clearly cited it. Real, frequently-named publications (WWD, Fortune, Forbes,
+# TechCrunch, The Verge, Harper's Bazaar…) were being badly under-counted or
+# left off the report. The product's job is to identify the outlets that shape
+# AI visibility, not to grade them on whether a link happened to survive.
+#
+# Fix: detect an outlet when its NAME (or bare domain string) appears in a
+# response, independent of any working URL.
+#
+# PRECISION GUARANTEE: name-detection is gated to this curated ALLOWLIST of
+# known editorial outlets. It can therefore never surface a competitor brand,
+# retailer, or vendor product site by name — the registry *is* the safety
+# mechanism. (That's the failure mode five cleanup cycles removed; this keeps
+# it removed.)
+#
+# Per outlet:  domain -> {"name": display, "ci": [...], "abbr": [...]}
+#   ci   — multiword names + coined single tokens that are NOT common English
+#          words (e.g. "Beauty Independent", "TechCrunch", "Byrdie"). Matched
+#          case-INsensitively on word boundaries — safe because they don't
+#          collide with ordinary prose.
+#   abbr — uppercase abbreviations (WWD, WSJ, NYT…). Matched case-SENSITIVELY so
+#          "NYT" hits but "ap"/"ad"/"self" never do.
+#   (no alias) — outlets whose only short name IS a common English word
+#          (Fortune, Time, Self, Vogue, Allure, Outside, Wired…) carry no name
+#          alias; they're still caught by their URL or bare-domain string, which
+#          is unambiguous. This deliberately trades a little recall for zero
+#          false positives on common nouns.
+EDITORIAL_OUTLETS = {
+    # ---- Beauty / fashion ----
+    "wwd.com": {"name": "WWD", "ci": ["Women's Wear Daily"], "abbr": ["WWD"]},
+    "businessoffashion.com": {"name": "Business of Fashion", "ci": ["Business of Fashion"], "abbr": ["BoF"]},
+    "glossy.co": {"name": "Glossy", "ci": ["Glossy"], "abbr": []},
+    "harpersbazaar.com": {"name": "Harper's Bazaar", "ci": ["Harper's Bazaar"], "abbr": []},
+    "allure.com": {"name": "Allure", "ci": [], "abbr": []},
+    "vogue.com": {"name": "Vogue", "ci": ["Teen Vogue", "Vogue Business"], "abbr": []},
+    "elle.com": {"name": "Elle", "ci": [], "abbr": []},
+    "cosmopolitan.com": {"name": "Cosmopolitan", "ci": [], "abbr": []},
+    "glamour.com": {"name": "Glamour", "ci": [], "abbr": []},
+    "marieclaire.com": {"name": "Marie Claire", "ci": ["Marie Claire"], "abbr": []},
+    "instyle.com": {"name": "InStyle", "ci": ["InStyle"], "abbr": []},
+    "refinery29.com": {"name": "Refinery29", "ci": ["Refinery29", "Refinery 29"], "abbr": []},
+    "popsugar.com": {"name": "PopSugar", "ci": ["PopSugar", "Pop Sugar"], "abbr": []},
+    "whowhatwear.com": {"name": "Who What Wear", "ci": ["Who What Wear"], "abbr": []},
+    "fashionista.com": {"name": "Fashionista", "ci": ["Fashionista"], "abbr": []},
+    "byrdie.com": {"name": "Byrdie", "ci": ["Byrdie"], "abbr": []},
+    "beautyindependent.com": {"name": "Beauty Independent", "ci": ["Beauty Independent"], "abbr": []},
+    "newbeauty.com": {"name": "NewBeauty", "ci": ["NewBeauty", "New Beauty"], "abbr": []},
+    "beautypackaging.com": {"name": "Beauty Packaging", "ci": ["Beauty Packaging"], "abbr": []},
+    "cosmeticsandtoiletries.com": {"name": "Cosmetics & Toiletries", "ci": ["Cosmetics & Toiletries", "Cosmetics and Toiletries"], "abbr": []},
+    "thezoereport.com": {"name": "The Zoe Report", "ci": ["The Zoe Report"], "abbr": []},
+    "coveteur.com": {"name": "Coveteur", "ci": ["Coveteur"], "abbr": []},
+    "nylon.com": {"name": "Nylon", "ci": [], "abbr": []},
+    "dazeddigital.com": {"name": "Dazed", "ci": ["Dazed Digital"], "abbr": []},
+    "hypebeast.com": {"name": "Hypebeast", "ci": ["Hypebeast"], "abbr": []},
+    "hypebae.com": {"name": "Hypebae", "ci": ["Hypebae"], "abbr": []},
+    "thecut.com": {"name": "The Cut", "ci": ["The Cut"], "abbr": []},
+    "wmagazine.com": {"name": "W Magazine", "ci": ["W Magazine"], "abbr": []},
+    "highsnobiety.com": {"name": "Highsnobiety", "ci": ["Highsnobiety"], "abbr": []},
+    # ---- Health / wellness / lifestyle / home ----
+    "themighty.com": {"name": "The Mighty", "ci": ["The Mighty"], "abbr": []},
+    "healthline.com": {"name": "Healthline", "ci": ["Healthline"], "abbr": []},
+    "verywellhealth.com": {"name": "Verywell Health", "ci": ["Verywell Health", "Verywell"], "abbr": []},
+    "wellandgood.com": {"name": "Well+Good", "ci": ["Well+Good", "Well and Good"], "abbr": []},
+    "self.com": {"name": "Self", "ci": [], "abbr": []},
+    "womenshealthmag.com": {"name": "Women's Health", "ci": ["Women's Health"], "abbr": []},
+    "menshealth.com": {"name": "Men's Health", "ci": ["Men's Health"], "abbr": []},
+    "goodhousekeeping.com": {"name": "Good Housekeeping", "ci": ["Good Housekeeping"], "abbr": []},
+    "realsimple.com": {"name": "Real Simple", "ci": ["Real Simple"], "abbr": []},
+    "apartmenttherapy.com": {"name": "Apartment Therapy", "ci": ["Apartment Therapy"], "abbr": []},
+    "architecturaldigest.com": {"name": "Architectural Digest", "ci": ["Architectural Digest"], "abbr": []},
+    "thespruce.com": {"name": "The Spruce", "ci": ["The Spruce"], "abbr": []},
+    # ---- General news / business ----
+    "reuters.com": {"name": "Reuters", "ci": ["Reuters"], "abbr": []},
+    "bloomberg.com": {"name": "Bloomberg", "ci": ["Bloomberg"], "abbr": []},
+    "forbes.com": {"name": "Forbes", "ci": ["Forbes"], "abbr": []},
+    "wsj.com": {"name": "The Wall Street Journal", "ci": ["Wall Street Journal"], "abbr": ["WSJ"]},
+    "nytimes.com": {"name": "The New York Times", "ci": ["New York Times"], "abbr": ["NYT"]},
+    "washingtonpost.com": {"name": "The Washington Post", "ci": ["Washington Post"], "abbr": []},
+    "theguardian.com": {"name": "The Guardian", "ci": ["The Guardian"], "abbr": []},
+    "cnbc.com": {"name": "CNBC", "ci": ["CNBC"], "abbr": []},
+    "businessinsider.com": {"name": "Business Insider", "ci": ["Business Insider"], "abbr": []},
+    "fastcompany.com": {"name": "Fast Company", "ci": ["Fast Company"], "abbr": []},
+    "theatlantic.com": {"name": "The Atlantic", "ci": ["The Atlantic"], "abbr": []},
+    "axios.com": {"name": "Axios", "ci": ["Axios"], "abbr": []},
+    "ft.com": {"name": "Financial Times", "ci": ["Financial Times"], "abbr": []},
+    "economist.com": {"name": "The Economist", "ci": ["The Economist"], "abbr": []},
+    "fortune.com": {"name": "Fortune", "ci": [], "abbr": []},
+    "inc.com": {"name": "Inc.", "ci": ["Inc. Magazine", "Inc Magazine"], "abbr": []},
+    "entrepreneur.com": {"name": "Entrepreneur", "ci": [], "abbr": []},
+    "hbr.org": {"name": "Harvard Business Review", "ci": ["Harvard Business Review"], "abbr": ["HBR"]},
+    "npr.org": {"name": "NPR", "ci": [], "abbr": ["NPR"]},
+    "bbc.com": {"name": "BBC", "ci": [], "abbr": ["BBC"]},
+    "vox.com": {"name": "Vox", "ci": [], "abbr": []},
+    "marketwatch.com": {"name": "MarketWatch", "ci": ["MarketWatch"], "abbr": []},
+    "qz.com": {"name": "Quartz", "ci": [], "abbr": []},
+    # ---- Tech ----
+    "techcrunch.com": {"name": "TechCrunch", "ci": ["TechCrunch"], "abbr": []},
+    "theverge.com": {"name": "The Verge", "ci": ["The Verge"], "abbr": []},
+    "wired.com": {"name": "Wired", "ci": [], "abbr": []},
+    "arstechnica.com": {"name": "Ars Technica", "ci": ["Ars Technica"], "abbr": []},
+    "engadget.com": {"name": "Engadget", "ci": ["Engadget"], "abbr": []},
+    "venturebeat.com": {"name": "VentureBeat", "ci": ["VentureBeat"], "abbr": []},
+    "mashable.com": {"name": "Mashable", "ci": ["Mashable"], "abbr": []},
+    "gizmodo.com": {"name": "Gizmodo", "ci": ["Gizmodo"], "abbr": []},
+    "cnet.com": {"name": "CNET", "ci": ["CNET"], "abbr": []},
+    "zdnet.com": {"name": "ZDNet", "ci": ["ZDNet"], "abbr": []},
+    "technologyreview.com": {"name": "MIT Technology Review", "ci": ["MIT Technology Review"], "abbr": []},
+    "theinformation.com": {"name": "The Information", "ci": ["The Information"], "abbr": []},
+    "pcmag.com": {"name": "PCMag", "ci": ["PCMag"], "abbr": []},
+    "pcworld.com": {"name": "PCWorld", "ci": ["PCWorld"], "abbr": []},
+    "techradar.com": {"name": "TechRadar", "ci": ["TechRadar"], "abbr": []},
+    "tomsguide.com": {"name": "Tom's Guide", "ci": ["Tom's Guide"], "abbr": []},
+    "tomshardware.com": {"name": "Tom's Hardware", "ci": ["Tom's Hardware"], "abbr": []},
+    "digitaltrends.com": {"name": "Digital Trends", "ci": ["Digital Trends"], "abbr": []},
+    "thenextweb.com": {"name": "The Next Web", "ci": ["The Next Web"], "abbr": ["TNW"]},
+    "9to5mac.com": {"name": "9to5Mac", "ci": ["9to5Mac"], "abbr": []},
+    "macrumors.com": {"name": "MacRumors", "ci": ["MacRumors"], "abbr": []},
+    "restofworld.org": {"name": "Rest of World", "ci": ["Rest of World"], "abbr": []},
+    # ---- Marketing / adtech / B2B SaaS press ----
+    "adage.com": {"name": "Ad Age", "ci": ["Ad Age", "AdAge"], "abbr": []},
+    "adweek.com": {"name": "Adweek", "ci": ["Adweek"], "abbr": []},
+    "digiday.com": {"name": "Digiday", "ci": ["Digiday"], "abbr": []},
+    "thedrum.com": {"name": "The Drum", "ci": ["The Drum"], "abbr": []},
+    "prweek.com": {"name": "PRWeek", "ci": ["PRWeek", "PR Week"], "abbr": []},
+    "marketingdive.com": {"name": "Marketing Dive", "ci": ["Marketing Dive"], "abbr": []},
+    "retaildive.com": {"name": "Retail Dive", "ci": ["Retail Dive"], "abbr": []},
+    "modernretail.co": {"name": "Modern Retail", "ci": ["Modern Retail"], "abbr": []},
+    "chiefmartec.com": {"name": "Chiefmartec", "ci": ["Chiefmartec", "Chief Martec"], "abbr": []},
+    "searchenginejournal.com": {"name": "Search Engine Journal", "ci": ["Search Engine Journal"], "abbr": ["SEJ"]},
+    "searchengineland.com": {"name": "Search Engine Land", "ci": ["Search Engine Land"], "abbr": []},
+    "cmswire.com": {"name": "CMSWire", "ci": ["CMSWire"], "abbr": []},
+    "techrepublic.com": {"name": "TechRepublic", "ci": ["TechRepublic"], "abbr": []},
+    "infoworld.com": {"name": "InfoWorld", "ci": ["InfoWorld"], "abbr": []},
+    "computerworld.com": {"name": "Computerworld", "ci": ["Computerworld"], "abbr": []},
+    "thenewstack.io": {"name": "The New Stack", "ci": ["The New Stack"], "abbr": []},
+    "thedigitalprojectmanager.com": {"name": "The Digital Project Manager", "ci": ["The Digital Project Manager"], "abbr": []},
+    # ---- Outdoor / sustainability ----
+    "outsideonline.com": {"name": "Outside", "ci": ["Outside Magazine", "Outside Online"], "abbr": []},
+    "backpacker.com": {"name": "Backpacker", "ci": ["Backpacker"], "abbr": []},
+    "gearpatrol.com": {"name": "Gear Patrol", "ci": ["Gear Patrol"], "abbr": []},
+    "goodonyou.eco": {"name": "Good On You", "ci": ["Good On You"], "abbr": []},
+    "treehugger.com": {"name": "Treehugger", "ci": ["Treehugger"], "abbr": []},
+    "grist.org": {"name": "Grist", "ci": [], "abbr": []},
+    # ---- Food / travel / hospitality ----
+    "eater.com": {"name": "Eater", "ci": ["Eater"], "abbr": []},
+    "bonappetit.com": {"name": "Bon Appétit", "ci": ["Bon Appetit", "Bon Appétit"], "abbr": []},
+    "foodandwine.com": {"name": "Food & Wine", "ci": ["Food & Wine", "Food and Wine"], "abbr": []},
+    "seriouseats.com": {"name": "Serious Eats", "ci": ["Serious Eats"], "abbr": []},
+    "skift.com": {"name": "Skift", "ci": ["Skift"], "abbr": []},
+    "travelandleisure.com": {"name": "Travel + Leisure", "ci": ["Travel + Leisure", "Travel and Leisure"], "abbr": []},
+    "cntraveler.com": {"name": "Condé Nast Traveler", "ci": ["Conde Nast Traveler", "Condé Nast Traveler"], "abbr": []},
+    "thepointsguy.com": {"name": "The Points Guy", "ci": ["The Points Guy"], "abbr": ["TPG"]},
+    # ---- Personal finance ----
+    "investopedia.com": {"name": "Investopedia", "ci": ["Investopedia"], "abbr": []},
+    "nerdwallet.com": {"name": "NerdWallet", "ci": ["NerdWallet"], "abbr": []},
+    "bankrate.com": {"name": "Bankrate", "ci": ["Bankrate"], "abbr": []},
+    "kiplinger.com": {"name": "Kiplinger", "ci": ["Kiplinger"], "abbr": []},
+    "barrons.com": {"name": "Barron's", "ci": ["Barron's"], "abbr": []},
+}
+
+
+def _norm_apostrophes(t):
+    """Fold curly quotes to straight so 'Harper's' patterns match LLM prose."""
+    return (t or '').replace('’', "'").replace('‘', "'")
+
+
+_OUTLET_PATTERNS = None
+
+
+def _outlet_patterns():
+    """Lazily compile the registry into match patterns (compiled once)."""
+    global _OUTLET_PATTERNS
+    if _OUTLET_PATTERNS is None:
+        m = {}
+        for dom, a in EDITORIAL_OUTLETS.items():
+            m[dom] = {
+                'name': a.get('name') or dom,
+                'ci': [re.compile(r'\b' + re.escape(_norm_apostrophes(x)) + r'\b', re.IGNORECASE)
+                       for x in a.get('ci', [])],
+                'abbr': [re.compile(r'\b' + re.escape(x) + r'\b') for x in a.get('abbr', [])],
+                'dom': re.compile(r'\b' + re.escape(dom) + r'\b', re.IGNORECASE),
+            }
+        _OUTLET_PATTERNS = m
+    return _OUTLET_PATTERNS
+
+
+def _responses_citing_outlet_idx(domain, all_responses, pats=None):
+    """Indices of the responses that cite `domain` — by a real URL OR by name.
+
+    Counts a response when ANY of:
+      - it has an extracted citation URL on that domain (existing signal), OR
+      - the bare domain string appears in the text (e.g. 'wwd.com' with no
+        protocol — unambiguous), OR
+      - a registry name/abbreviation alias appears (allowlist-gated, so safe).
+    """
+    p = (pats or _outlet_patterns()).get(domain)
+    idx = []
+    for i, r in enumerate(all_responses):
+        if any((c.get('domain') == domain) for c in (r.get('citations') or [])):
+            idx.append(i)
+            continue
+        if not p:
+            continue
+        t = _norm_apostrophes(r.get('response', '') or '')
+        if p['dom'].search(t) \
+           or any(pp.search(t) for pp in p['ci']) \
+           or any(pp.search(t) for pp in p['abbr']):
+            idx.append(i)
+    return idx
+
+
+def _augment_citations_with_named_outlets(ranked_domains, all_responses):
+    """Make named-but-unlinked outlets first-class citizens of the citation
+    universe. For every allowlisted outlet that is cited by name or bare domain,
+    set its count to the number of responses that name it (if higher than the
+    URL-only count) and attach `_citing_idx` so share-of-voice stays consistent.
+
+    Monotonic: never LOWERS an existing count — it only promotes known-good
+    outlets the URL counter under-credited. Returns a re-sorted list.
+    """
+    if not all_responses:
+        return ranked_domains
+    pats = _outlet_patterns()
+    by_dom = {d.get('domain'): d for d in ranked_domains}
+    new_entries = []
+    for dom in EDITORIAL_OUTLETS:
+        idx = _responses_citing_outlet_idx(dom, all_responses, pats)
+        if not idx:
+            continue
+        rc = len(idx)
+        llms = sorted({all_responses[i].get('llm') for i in idx if all_responses[i].get('llm')})
+        prompts = sorted({all_responses[i].get('prompt') for i in idx if all_responses[i].get('prompt')})
+        entry = by_dom.get(dom)
+        if entry is None:
+            entry = {
+                'domain': dom, 'urls': [], 'specific_urls': [],
+                'count': rc, 'llms': llms, 'prompts': prompts,
+                'via_name_mention': True,
+            }
+            by_dom[dom] = entry
+            new_entries.append(entry)
+        else:
+            if rc > entry.get('count', 0):
+                entry['count'] = rc
+                entry['via_name_mention'] = True
+            entry['llms'] = sorted(set(entry.get('llms') or []) | set(llms))
+            entry['prompts'] = sorted(set(entry.get('prompts') or []) | set(prompts))
+        entry['_citing_idx'] = idx
+        entry['outlet_name'] = pats[dom]['name']
+        entry['diversity_score'] = entry['count'] * (1 + 0.25 * max(0, len(entry['llms']) - 1))
+    merged = list(ranked_domains) + new_entries
+    merged.sort(key=lambda x: x.get('diversity_score', 0), reverse=True)
+    return merged
+
+
 def _count_brand_mentions(brand, all_responses):
     """Deterministic, case-insensitive, word-boundary count of how many responses
     mention the brand. Replaces the previous LLM-estimated count which was
@@ -3699,10 +3962,18 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
             continue
         if _domain_owned_by_competitor(domain):
             continue  # see comment above; not a pitchable outlet
-        citing_responses = [
-            r for r in all_responses
-            if any((c.get('domain') == domain) for c in (r.get('citations') or []))
-        ]
+        # Prefer the augmented citing-response set (URL OR name) attached by
+        # _augment_citations_with_named_outlets, so SoV agrees with the count
+        # shown on the card. Fall back to URL-only match for domains the
+        # registry doesn't know (unchanged behaviour).
+        citing_idx = d.get('_citing_idx')
+        if citing_idx is not None:
+            citing_responses = [all_responses[i] for i in citing_idx]
+        else:
+            citing_responses = [
+                r for r in all_responses
+                if any((c.get('domain') == domain) for c in (r.get('citations') or []))
+            ]
         n_at_outlet = len(citing_responses)
         if n_at_outlet < 1:
             continue  # outlet appears in no responses (shouldn't happen given upstream filter)
@@ -5203,6 +5474,11 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         emit("extract", "No URLs to verify", 0, extract_total)
 
     ranked_domains = aggregate_citations(all_responses)
+    # Promote outlets that are NAMED in responses (or cited via bare domain)
+    # but whose URLs were hallucinated/pruned — so search-grounded models' prose
+    # citations (WWD, Forbes, TechCrunch…) count instead of silently vanishing.
+    # Allowlist-gated, so it cannot introduce non-editorial noise.
+    ranked_domains = _augment_citations_with_named_outlets(ranked_domains, all_responses)
     total_citations = sum(d['count'] for d in ranked_domains)
     brand_mention_count = _count_brand_mentions(brand, all_responses)
     # Per-assistant visibility — computed here (before the analysis prompt) so
@@ -5608,6 +5884,19 @@ Respond with ONLY valid JSON:
         }
         for c in competitor_counts
     ]
+
+    # Deterministically reconcile each media target's `cited_by_llms` with the
+    # detected citing set (URL OR name). Claude estimates this field from the
+    # response excerpts and can drift; the augmented ranked_domains carries the
+    # authoritative per-outlet LLM set, so the "cited by …" chips match the data.
+    _dom_llms = {
+        (d.get('domain') or '').lower(): (d.get('llms') or [])
+        for d in ranked_domains
+    }
+    for _t in (analysis.get('media_targets') or []):
+        _dom = (_t.get('domain') or '').lower()
+        if _dom in _dom_llms and _dom_llms[_dom]:
+            _t['cited_by_llms'] = _dom_llms[_dom]
 
     analysis["prompts_used"] = prompts
     # Full ranked domains list (no cap). Each dict already carries:
@@ -6037,6 +6326,7 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
 
     out = dict(data)
     ranked_domains = aggregate_citations(all_responses)
+    ranked_domains = _augment_citations_with_named_outlets(ranked_domains, all_responses)
 
     editorial_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'editorial']
     editorial_domains = [d for d in editorial_domains if not _is_brand_own_domain(d['domain'], brand)]
@@ -6067,11 +6357,61 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
         out['per_llm_visibility'] = []
         out['per_llm_read'] = None
 
-    # Prune saved media_targets to drop anything no longer classified as
-    # editorial under the current rules. Re-rank survivors.
+    # Rebuild media_targets from the CURRENT editorial ranking so the refresh
+    # view can both PRUNE (drop domains no longer classified editorial) AND ADD
+    # outlets newly surfaced by name-aware detection (WWD, Forbes, TechCrunch…)
+    # that the original Claude pass never saw because their URLs had been pruned.
+    # Saved targets keep their bespoke Claude rationale; newly-surfaced outlets
+    # get a deterministic verdict-based rationale (a fresh audit regenerates the
+    # full per-target copy). Ordered by citation strength, capped at 10.
     editorial_set = {d['domain'].lower() for d in editorial_domains}
-    saved_media = data.get('media_targets') or []
-    new_media = [dict(t) for t in saved_media if (t.get('domain') or '').lower() in editorial_set]
+    saved_by_dom = {(t.get('domain') or '').lower(): dict(t)
+                    for t in (data.get('media_targets') or [])}
+    sov_by_dom = {(r.get('domain') or '').lower(): r for r in new_sov}
+    outlet_name_by_dom = {d: _outlet_patterns()[d]['name'] for d in EDITORIAL_OUTLETS}
+
+    def _synth_rationale(verdict):
+        if verdict == 'strength':
+            return f"{brand} already over-indexes here — defend and extend this relationship."
+        if verdict == 'opportunity':
+            return f"Competitors over-index here while {brand} is light — a priority pitch to close the gap."
+        if verdict == 'neutral':
+            return f"{brand} holds roughly even share here — steady-state coverage to maintain."
+        return "Named as a citation source in your category by AI assistants — an emerging outlet worth a relationship."
+
+    new_media = []
+    for d in editorial_domains:
+        dom = (d.get('domain') or '').lower()
+        if dom not in editorial_set:
+            continue
+        if dom in saved_by_dom:
+            t = saved_by_dom[dom]
+            # Reconcile the LLM chips with the detected citing set.
+            if d.get('llms'):
+                t['cited_by_llms'] = d['llms']
+        elif dom in EDITORIAL_OUTLETS:
+            # Auto-ADD a card ONLY for high-confidence allowlisted outlets that
+            # the original Claude pass never saw (their URLs had been pruned).
+            # We deliberately do NOT auto-add arbitrary URL-classified editorial
+            # domains Claude omitted by judgement (obscure blogs, brand sites
+            # that slip past the competitor filter) — those still require a fresh
+            # audit to be vetted. The registry is the precision gate.
+            sov = sov_by_dom.get(dom)
+            verdict = sov.get('verdict') if sov else None
+            t = {
+                'outlet': d.get('outlet_name') or outlet_name_by_dom.get(d.get('domain')) or d.get('domain'),
+                'domain': d.get('domain'),
+                'reporter': None,
+                'citation_frequency': d.get('count', 0),
+                'cited_by_llms': d.get('llms') or [],
+                'sample_urls': (d.get('specific_urls') or [])[:5],
+                'rationale': _synth_rationale(verdict),
+                'gap_insight': None,
+                '_synthesized': True,
+            }
+        new_media.append(t)
+        if len(new_media) >= 10:
+            break
     for i, t in enumerate(new_media):
         t['rank'] = i + 1
     out['media_targets'] = new_media
