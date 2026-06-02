@@ -4273,6 +4273,18 @@ def _compute_headline_move(brand, outlet_sov):
 # gap between the two is a core strategic signal for challenger brands.
 SEARCH_GROUNDED_LLMS = {'Gemini', 'Perplexity'}
 
+# ALL_GROUNDED mode — when enabled, Claude, ChatGPT, and Grok ALSO run live web
+# search (Claude web_search tool, ChatGPT gpt-4o-search-preview, Grok via
+# OpenRouter ":online"), so all 5 assistants answer in "search mode." This makes
+# the cross-model comparison apples-to-apples (no model penalised for being
+# parametric) and reflects the most recent web coverage. Each response carries a
+# per-call `grounded` flag (set False when a grounded call failed and fell back
+# to a parametric retry), so the report can still show which models actually
+# retrieved. Default OFF — flip ALL_GROUNDED=1 on Render after profiling memory/
+# latency (the earlier native-search attempt OOM'd on the 512MB Starter box;
+# we're on Standard/2GB now, with bounded searches + no double-call fallback).
+ALL_GROUNDED = os.environ.get("ALL_GROUNDED", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def _compute_per_llm_visibility(brand, all_responses):
     """Per-assistant brand visibility: for each LLM, how many of ITS responses
@@ -4298,12 +4310,21 @@ def _compute_per_llm_visibility(brand, all_responses):
         subset = [r for r in all_responses if r.get('llm') == l]
         n = len(subset)
         m = _count_brand_mentions(brand, subset)
+        # Prefer the per-response `grounded` flag (present on audits run after
+        # the grounded-retrieval change): an assistant is "grounded" here if a
+        # majority of its responses actually retrieved. Fall back to the static
+        # SEARCH_GROUNDED_LLMS set for older audits that lack the flag.
+        flagged = [r for r in subset if 'grounded' in r]
+        if flagged:
+            grounded = sum(1 for r in flagged if r.get('grounded')) >= (len(flagged) / 2)
+        else:
+            grounded = l in SEARCH_GROUNDED_LLMS
         out.append({
             'llm': l,
             'mentions': m,
             'total': n,
             'rate': round(m / n, 3) if n else 0.0,
-            'grounded': l in SEARCH_GROUNDED_LLMS,
+            'grounded': grounded,
         })
     out.sort(key=lambda x: x['rate'], reverse=True)
     return out
@@ -4673,8 +4694,101 @@ TIER_CONFIG = {
 }
 
 
+def _append_sources(text, urls):
+    """Append retrieved source URLs as a Sources block so extract_urls() picks
+    them up — mirrors the Gemini/Perplexity grounding-append pattern."""
+    urls = [u for u in dict.fromkeys(urls) if u]
+    if not urls:
+        return text or ''
+    return (text or '').rstrip() + "\n\nSources:\n" + "\n".join(f"- {u}" for u in urls)
+
+
+def _annotation_urls(msg):
+    """Harvest url_citation URLs from an OpenAI-compatible message.annotations
+    list (used by ChatGPT search-preview + OpenRouter ":online")."""
+    urls = []
+    for ann in (getattr(msg, 'annotations', None) or []):
+        atype = ann.get('type') if isinstance(ann, dict) else getattr(ann, 'type', None)
+        if atype != 'url_citation':
+            continue
+        uc = ann.get('url_citation') if isinstance(ann, dict) else getattr(ann, 'url_citation', None)
+        if not uc:
+            continue
+        u = uc.get('url') if isinstance(uc, dict) else getattr(uc, 'url', None)
+        if u:
+            urls.append(u)
+    return urls
+
+
+def _claude_grounded(prompt):
+    """Claude Sonnet 4 with the native web_search tool, bounded to 3 searches
+    (the bound is what keeps latency/memory sane — the reverted version ran
+    unbounded). Builds the answer from text blocks + harvests cited URLs."""
+    resp = anthropic.with_options(timeout=120.0).messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=2500,
+        system=CITATION_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+    )
+    parts, urls = [], []
+    for block in (resp.content or []):
+        btype = getattr(block, 'type', None)
+        if btype == 'text':
+            parts.append(getattr(block, 'text', '') or '')
+            for cit in (getattr(block, 'citations', None) or []):
+                u = getattr(cit, 'url', None)
+                if u:
+                    urls.append(u)
+        elif btype == 'web_search_tool_result':
+            for item in (getattr(block, 'content', None) or []):
+                u = getattr(item, 'url', None)
+                if u:
+                    urls.append(u)
+    return _append_sources("".join(parts), urls)
+
+
+def _chatgpt_grounded(prompt):
+    """ChatGPT via the single-pass gpt-4o-search-preview model (one search pass,
+    not the agentic Responses-API loop that OOM'd). Cited URLs come from
+    message.annotations."""
+    resp = openai_client.with_options(timeout=90.0).chat.completions.create(
+        model="gpt-4o-search-preview",
+        max_tokens=2500,
+        web_search_options={},
+        messages=[
+            {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    msg = resp.choices[0].message
+    return _append_sources(msg.content or '', _annotation_urls(msg))
+
+
+def _grok_grounded(prompt):
+    """Grok via OpenRouter's ":online" web plugin — adds live web search to the
+    model with no separate xAI key. Cited URLs come from message.annotations."""
+    base = os.environ.get("XAI_OPENROUTER_MODEL", "x-ai/grok-4")
+    model = base if base.endswith(":online") else base + ":online"
+    resp = openrouter_client.with_options(timeout=90.0).chat.completions.create(
+        model=model,
+        max_tokens=2000,
+        messages=[
+            {"role": "system", "content": CITATION_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    msg = resp.choices[0].message
+    return _append_sources(msg.content or '', _annotation_urls(msg))
+
+
 def _call_llm(provider, enriched_prompt):
-    """Send one citation-forcing prompt to one provider; return response text or raise.
+    """Send one citation-forcing prompt to one provider; return (text, grounded).
+
+    `grounded` is True when the response was produced with live web retrieval
+    (always for Gemini/Perplexity; for Claude/ChatGPT/Grok only when ALL_GROUNDED
+    is on AND the grounded call succeeded — a fallback to parametric sets it
+    False).
 
     Citation-extraction strategy by provider:
       - Claude:     plain messages.create — URLs extracted from response text via regex.
@@ -4697,16 +4811,26 @@ def _call_llm(provider, enriched_prompt):
     fallback.
     """
     if provider == "Claude":
+        if ALL_GROUNDED:
+            try:
+                return (_claude_grounded(enriched_prompt), True)
+            except Exception as e:
+                print("Claude web_search failed; parametric fallback:", str(e)[:160])
         resp = anthropic.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=2000,
             system=CITATION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": enriched_prompt}],
         )
-        return resp.content[0].text
+        return (resp.content[0].text, False)
     if provider == "ChatGPT":
         if not openai_client:
             raise RuntimeError("OPENAI_API_KEY not configured")
+        if ALL_GROUNDED:
+            try:
+                return (_chatgpt_grounded(enriched_prompt), True)
+            except Exception as e:
+                print("ChatGPT search-preview failed; parametric fallback:", str(e)[:160])
         resp = openai_client.chat.completions.create(
             model="gpt-4o",
             max_tokens=2000,
@@ -4715,7 +4839,7 @@ def _call_llm(provider, enriched_prompt):
                 {"role": "user", "content": enriched_prompt},
             ],
         )
-        return resp.choices[0].message.content
+        return (resp.choices[0].message.content, False)
     if provider == "Gemini":
         if not gemini_client:
             raise RuntimeError("GEMINI_API_KEY not configured")
@@ -4775,14 +4899,14 @@ def _call_llm(provider, enriched_prompt):
                             text += f"\nSource: {uri}"
             except Exception:
                 pass
-            return text
+            return (text, True)
         except Exception as e:
             print("Gemini grounding fallback:", e)
             resp = gemini_client.models.generate_content(
                 model="gemini-2.0-flash",
                 contents=gemini_prompt,
             )
-            return resp.text
+            return (resp.text, False)
     if provider == "Perplexity":
         if not perplexity_client:
             raise RuntimeError("PERPLEXITY_API_KEY not configured")
@@ -4819,10 +4943,15 @@ def _call_llm(provider, enriched_prompt):
         unique_urls = list(dict.fromkeys(structured_urls))
         if unique_urls:
             text = (text or '').rstrip() + "\n\nSources:\n" + "\n".join(f"- {u}" for u in unique_urls)
-        return text
+        return (text, True)
     if provider == "Grok":
         if not openrouter_client:
             raise RuntimeError("OPENROUTER_API_KEY not configured")
+        if ALL_GROUNDED:
+            try:
+                return (_grok_grounded(enriched_prompt), True)
+            except Exception as e:
+                print("Grok :online failed; parametric fallback:", str(e)[:160])
         resp = openrouter_client.chat.completions.create(
             model=os.environ.get("XAI_OPENROUTER_MODEL", "x-ai/grok-4"),
             max_tokens=2000,
@@ -4831,7 +4960,7 @@ def _call_llm(provider, enriched_prompt):
                 {"role": "user", "content": enriched_prompt},
             ],
         )
-        return resp.choices[0].message.content
+        return (resp.choices[0].message.content, False)
     raise ValueError(f"Unknown provider: {provider}")
 
 
@@ -5327,6 +5456,11 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     institutional_limit = cfg["institutional_target_count"]
     analyst_limit = cfg["analyst_target_count"]
     max_workers = cfg["max_workers"]
+    if ALL_GROUNDED:
+        # Grounded calls buffer larger structured payloads (search results +
+        # citations) in the SDKs; cap concurrency so peak memory stays bounded
+        # (concurrency × payload size was part of the original Starter OOM).
+        max_workers = min(max_workers, 8)
 
     def emit(step, detail, current=0, total=0):
         if on_progress:
@@ -5384,10 +5518,10 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     def run_one(provider, pi, prompt_text):
         enriched = prompt_text + CITATION_SUFFIX + time_note
         try:
-            resp_text = _call_llm(provider, enriched)
-            return {"llm": provider, "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text), "error": None}
+            resp_text, grounded = _call_llm(provider, enriched)
+            return {"llm": provider, "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text), "grounded": grounded, "error": None}
         except Exception as e:
-            return {"llm": provider, "prompt": prompt_text, "response": f"[Error: {e}]", "citations": [], "error": str(e)[:120]}
+            return {"llm": provider, "prompt": prompt_text, "response": f"[Error: {e}]", "citations": [], "grounded": False, "error": str(e)[:120]}
 
     all_responses = []
     completed = 0
@@ -5402,7 +5536,12 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     # audits still finish in 3-5 min; the higher ceiling only kicks in on slow
     # inference days. If one provider hangs, we still proceed to analysis with
     # the partial responses we've collected.
-    batch_deadline_seconds = 180 if tier == "free" else 900
+    if ALL_GROUNDED:
+        # Grounded calls run live web searches (slower: ~15-40s each), so the
+        # batch needs a longer wall-clock ceiling than the parametric path.
+        batch_deadline_seconds = 420 if tier == "free" else 1200
+    else:
+        batch_deadline_seconds = 180 if tier == "free" else 900
 
     emit("llm", f"Querying {len(llms)} LLMs × {len(prompts)} prompts ({total_calls} calls)...", 0, total_calls)
     executor = ThreadPoolExecutor(max_workers=max_workers)
