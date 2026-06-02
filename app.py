@@ -3021,6 +3021,15 @@ NON_EDITORIAL_VENDORS = {
     'slab.com', 'roam.com', 'workspace.google.com', 'docs.google.com',
     # Software-comparison / lead-gen / B2B-events sites (not editorial)
     'saascompared.com', 'unboundb2b.com', 'thesmarketers.com', 'marcusevans.com',
+    # Grounded-mode additions: native web search (ALL_GROUNDED) surfaces ~4x
+    # more URLs, so SaaS tool / vendor / software-review .com/.co/.st sites the
+    # productish-TLD rule can't catch leak into B2B targets. Observed polluting
+    # grounded Notion + Adobe re-runs. (Consumer/beauty/outdoor audits stay
+    # clean — this noise is B2B-specific.)
+    'ringcentral.com', 'process.st', 'gitbook.com', 'larksuite.com',
+    'trackingtime.co', 'waybook.com', 'cake.com', 'upflex.com', 'smartsuite.com',
+    'selecthub.com', 'research.com', 'peoplemanagingpeople.com',
+    'project-management.com', 'toools.design', 'softwarepundit.com',
 }
 
 # Top-level domains that, in the PR/marketing/consumer space, are ~entirely
