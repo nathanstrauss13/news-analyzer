@@ -4943,14 +4943,14 @@ Today's date is {_today_label()}. Frame the prompts as if a real person is searc
 Your job:
 1. Identify the BRAND from their statement (the company/product they want to promote).
 2. Identify the CATEGORY or PROBLEM SPACE.
-3. Generate exactly {prompt_count} prompts that a real person would type into ChatGPT, Claude, or Gemini when researching this problem space. These should be natural, varied prompts — some broad ("best X for Y"), some specific (the BRAND itself can be named, e.g. "{{brand}} reviews", "{{brand}} alternatives"), some question-based ("how do I solve Y?"), some recommendation-seeking ("what do experts recommend for Y?"). At higher prompt counts, cover adjacent angles: pricing, alternatives, troubleshooting, expert opinions, regulatory considerations, real-world reviews, integration questions, regional perspectives. Where appropriate, include time-current framing like "in {_today_label()}", "this year", or "the latest" — not year-specific shorthand.
+3. Generate exactly {prompt_count} prompts that a real person would type into ChatGPT, Claude, or Gemini when researching this problem space. These should be natural, varied prompts — some broad ("best X for Y"), some question-based ("how do I solve Y?"), some recommendation-seeking ("what do experts recommend for Y?"). At higher prompt counts, cover adjacent angles: pricing, alternatives, troubleshooting, expert opinions, regulatory considerations, real-world reviews, integration questions, regional perspectives. Where appropriate, include time-current framing like "in {_today_label()}", "this year", or "the latest" — not year-specific shorthand.
 
-CRITICAL — DO NOT PRE-NAME COMPETITORS:
-- You MAY reference the searched brand by name in some prompts (it's their own audit; that's natural).
-- You MUST NOT pre-name specific competitor brands. NEVER write "BrandA vs BrandB vs BrandC" — that pre-anchors the responses and biases the competitor discovery.
-- For comparison-style prompts, use OPEN framing: "{{brand}} alternatives", "{{brand}} vs competitors", "{{brand}} vs other leading brands in [category]", "how does {{brand}} compare to others in [category]".
-- The goal is to let each LLM organically surface ITS OWN top competitors so we measure the real AI-mindshare competitive landscape, not just confirm the brands the prompt fed in.
-- At most 30% of the prompts should reference the searched brand by name; the rest should be brand-agnostic category queries (e.g. "best [category] for [audience]"). This balances brand-specific recall with discovering the open competitive set.
+CRITICAL — EVERY PROMPT MUST BE BRAND-AGNOSTIC (name NO brands at all):
+- Do NOT name the searched brand ("{{brand}}") in ANY prompt. Not once. Every prompt is a neutral category query a person would type WITHOUT knowing the brand exists.
+- Do NOT name any competitor brand either. NEVER write "BrandA vs BrandB" — that pre-anchors the responses.
+- WHY: naming the brand in a prompt guarantees the AI mentions it back, which inflates the brand's measured visibility and makes the competitive comparison unfair (the brand gets prompted mentions while competitors are only ever organic). By keeping EVERY prompt brand-agnostic, we measure the TRUE unprompted mindshare — does AI surface this brand on its own merits when nobody named it? — and every brand (the client's and all competitors) is measured on identical footing.
+- So instead of "{{brand}} reviews" or "{{brand}} alternatives", write the underlying category question: "best [category] for [audience]", "most trusted [category] brands this year", "what do experts recommend for [problem]", "[category] with [the attribute the brand wants to own]".
+- The brand name is captured separately in the "brand" field below for the analysis step — it just never appears inside a prompt.
 
 Respond with ONLY valid JSON in this exact format:
 {{

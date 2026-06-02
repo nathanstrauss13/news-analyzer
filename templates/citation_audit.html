@@ -178,6 +178,14 @@
         .mention-count strong {
             color: #ff6b6b;
         }
+        .mention-method {
+            font-size: 11.5px;
+            color: #6a6a78;
+            margin-top: 5px;
+            line-height: 1.45;
+            max-width: 620px;
+        }
+        .mention-method em { color: #8a8a98; font-style: italic; }
         /* Audit completion badge — reflects share of planned LLM calls that
            actually returned a response before the wall-clock deadline. */
         .completion-badge {
@@ -1409,7 +1417,7 @@
             <div class="prompt-editor-header">
                 <div>
                     <div class="prompt-editor-title">Review &amp; revise your audit prompts</div>
-                    <div class="prompt-editor-desc">These are the prompts we'll run across all 5 AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). Edit any to match how your real audience actually asks. <strong>Don't pre-name your competitors</strong> — that biases the competitor discovery. Use brand-agnostic framing like "<em>top alternatives to {{ "{{ brand }}" }}</em>" instead.</div>
+                    <div class="prompt-editor-desc">These are the prompts we'll run across all 5 AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). Edit any to match how your real audience actually asks. <strong>Keep every prompt brand-agnostic — don't name your brand or your competitors.</strong> That's the point: we measure whether AI surfaces you <em>unprompted</em>, on the same footing as everyone else. Use neutral category questions like "<em>most trusted sustainable fashion brands this year</em>".</div>
                 </div>
                 <span class="prompt-editor-count" id="promptEditorCount">10 prompts</span>
             </div>
@@ -1873,6 +1881,7 @@
                     <div class="mention-count">
                         <strong>${mindsharePct}% AI mindshare</strong> — cited in ${data.brand_mention_count || 0} of ${data.total_responses || 30} responses across ${data.total_citations_extracted || 0} citations
                     </div>
+                    <div class="mention-method">Measured on neutral category queries — no brand named in any prompt — so this is true <em>unprompted</em> visibility, and every brand is compared on the same footing.</div>
                     ${completionBadge}
                     ${(shareUrl || pdfUrl) ? `
                         <div class="action-bar">
