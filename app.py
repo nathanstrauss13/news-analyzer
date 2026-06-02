@@ -6409,6 +6409,11 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
                 'gap_insight': None,
                 '_synthesized': True,
             }
+        else:
+            # Neither a saved target nor an allowlisted outlet — skip it.
+            # (Without this, `t` keeps the PREVIOUS iteration's value and gets
+            # appended again, duplicating the prior card.)
+            continue
         new_media.append(t)
         if len(new_media) >= 10:
             break
