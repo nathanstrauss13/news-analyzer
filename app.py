@@ -4632,6 +4632,104 @@ def _check_url_topic(url, brand_lower, category_keywords, timeout=4):
         return 'inaccessible'
 
 
+def _page_brand_mentions(url, brand, timeout=5):
+    """Fetch a URL and count how many times `brand` appears in its title+body
+    (word-boundary, case-insensitive, with the multi-word first-word fallback).
+    Returns the count, or -1 if the page couldn't be fetched/parsed.
+
+    This is what separates CONFIRMED COVERAGE (the brand is actually on the
+    cited page) from a CATEGORY OUTLET (the AI cited the outlet for the topic,
+    but the page is about a competitor or generic trends). The existing
+    topic-verify pass returns 'verified' on brand OR category-keyword match, so
+    a Rare-Beauty packaging article passes as "on-topic" without covering the
+    brand at all — this check closes that gap.
+    """
+    try:
+        if not _is_safe_url(url):
+            return -1
+        r = requests.get(url, timeout=timeout, allow_redirects=True,
+                         headers=_TOPIC_CHECK_HEADERS, stream=False)
+        if r.status_code >= 400:
+            return -1
+        raw = r.text or ''
+        if not raw.strip():
+            return -1
+        title_m = re.search(r'<title[^>]*>([^<]+)</title>', raw, re.IGNORECASE)
+        text = (title_m.group(1) if title_m else '') + ' ' + re.sub(r'<[^>]+>', ' ', raw[:200000])
+        if not brand:
+            return 0
+        cnt = len(re.findall(r'\b' + re.escape(brand) + r'\b', text, re.IGNORECASE))
+        parts = brand.split()
+        if cnt == 0 and len(parts) > 1 and len(parts[0]) > 5:
+            cnt = len(re.findall(r'\b' + re.escape(parts[0]) + r'\b', text, re.IGNORECASE))
+        return cnt
+    except Exception:
+        return -1
+
+
+def _verify_brand_coverage(brand, media_targets, ranked_domains=None,
+                           deadline_seconds=25, max_urls_per_target=2):
+    """For each media target, fetch its sample article URL(s) and check whether
+    the brand is ACTUALLY on the page. Mutates each target in place:
+      coverage = 'confirmed' (brand on a cited page)
+               | 'category'  (page(s) fetched, brand NOT present — pitch target,
+                              not current coverage)
+               | 'unverified'(no fetchable article URL — e.g. parametric
+                              hallucinated URLs, or homepage-only citations)
+      brand_confirmed (bool), brand_page_mentions (int, -1 if unverified).
+    Bounded by a wall-clock deadline so it never blows the audit budget.
+    """
+    if not media_targets or not brand:
+        return
+    dom_urls = {}
+    for d in (ranked_domains or []):
+        dom_urls[(d.get('domain') or '').lower()] = (d.get('specific_urls') or d.get('urls') or [])
+    jobs = []  # (target_index, url)
+    for i, t in enumerate(media_targets):
+        urls = [u for u in (t.get('sample_urls') or []) if _is_specific_article(u)]
+        if not urls:
+            urls = [u for u in dom_urls.get((t.get('domain') or '').lower(), []) if _is_specific_article(u)]
+        for u in list(dict.fromkeys(urls))[:max_urls_per_target]:
+            jobs.append((i, u))
+    results = {}
+    if jobs:
+        ex = ThreadPoolExecutor(max_workers=12)
+        try:
+            futs = {ex.submit(_page_brand_mentions, u, brand): u for (i, u) in jobs}
+            for fut in as_completed(list(futs.keys()), timeout=deadline_seconds):
+                try:
+                    results[futs[fut]] = fut.result()
+                except Exception:
+                    results[futs[fut]] = -1
+        except FuturesTimeoutError:
+            pass
+        except Exception as e:
+            print("brand-coverage verify error (continuing):", str(e)[:120])
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
+    for i, t in enumerate(media_targets):
+        urls = [u for (ti, u) in jobs if ti == i]
+        fetched = [results[u] for u in urls if results.get(u, -1) >= 0]
+        best = max(fetched) if fetched else -1
+        t['brand_page_mentions'] = best
+        if best >= 2:
+            # Brand named multiple times on the page = substantive coverage.
+            t['brand_confirmed'] = True
+            t['coverage'] = 'confirmed'
+        elif best == 1:
+            # A single passing mention — often the brand listed in a roundup or
+            # a competitor's article (e.g. Tilt named once in a Rare Beauty
+            # packaging story). Honest middle ground, not "they cover you."
+            t['brand_confirmed'] = False
+            t['coverage'] = 'mention'
+        elif fetched:
+            t['brand_confirmed'] = False
+            t['coverage'] = 'category'
+        else:
+            t['brand_confirmed'] = False
+            t['coverage'] = 'unverified'
+
+
 def _category_keywords(category):
     """Pull noun-ish tokens from the category string for substring matching in
     _check_url_topic. Drops common stopwords; lowercases; caps at 10 keywords.
@@ -6087,6 +6185,14 @@ Respond with ONLY valid JSON:
     except Exception as _sov_e:
         print("outlet share-of-voice computation failed (continuing without):", _sov_e)
         analysis["outlet_sov"] = []
+    # Brand-coverage verification: fetch each target's sample article URL(s) and
+    # check whether the brand is ACTUALLY on the page — separates confirmed
+    # coverage from "category outlet the AI cited but that doesn't cover you"
+    # (and surfaces that parametric/hallucinated URLs are unverifiable).
+    try:
+        _verify_brand_coverage(brand, analysis.get("media_targets") or [], ranked_domains)
+    except Exception as _bc_e:
+        print("brand-coverage verification failed (continuing without):", _bc_e)
     # Single highest-priority action — gives every dashboard one unmistakable
     # next step even when it's all-strength or all-emerging.
     try:
@@ -6587,6 +6693,13 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     for i, t in enumerate(new_media):
         t['rank'] = i + 1
     out['media_targets'] = new_media
+
+    # Brand-coverage verification (fetch sample URLs, check brand on page) — so
+    # a rerender/?refresh re-labels confirmed-coverage vs category outlets too.
+    try:
+        _verify_brand_coverage(brand, out.get("media_targets") or [], ranked_domains)
+    except Exception:
+        pass
 
     # Optionally refresh the 'What we found' executive summary with the
     # current prompt wording — the one piece the pure-Python pass can't

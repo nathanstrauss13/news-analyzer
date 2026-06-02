@@ -467,6 +467,18 @@
         .card-badge.opportunity { background: #1a1510; color: #ffb860; border: 1px solid #3a2a1a; }
         .card-badge.neutral { background: #0d141a; color: #7aa3cc; border: 1px solid #1a2a3a; }
         .card-badge.emerging { background: #14141a; color: #9a9acc; border: 1px solid #2a2a3a; }
+        /* Coverage chip — does the cited page ACTUALLY mention the brand?
+           confirmed = verified on the page; category = cited for the topic but
+           brand not on the page (pitch target, not current coverage);
+           unverified = no fetchable article URL (e.g. parametric/hallucinated). */
+        .cov-chip {
+            display: inline-block; font-size: 11px; font-weight: 600;
+            padding: 3px 9px; border-radius: 5px; margin: 6px 0 2px;
+        }
+        .cov-chip.confirmed { background: #0d1a0d; color: #7acc7a; border: 1px solid #1f4a1f; }
+        .cov-chip.mention   { background: #1a1505; color: #d8c060; border: 1px solid #3a3010; }
+        .cov-chip.category  { background: #1a1510; color: #ffb860; border: 1px solid #3a2a1a; }
+        .cov-chip.unverified{ background: #15151a; color: #8a8a9a; border: 1px solid #2a2a3a; }
         /* In-card SoV: stacked brand + top-competitor bars + context line */
         .media-sov-row {
             display: grid;
@@ -2013,6 +2025,19 @@
                 }[verdict];
                 const badge = badgeText ? `<span class="card-badge ${verdict}">${badgeText}</span>` : '';
 
+                // Coverage chip: did the cited page ACTUALLY mention the brand?
+                const cov = t.coverage;
+                const bm = t.brand_page_mentions;
+                const covChip = cov === 'confirmed'
+                    ? `<div class="cov-chip confirmed">✓ Confirmed coverage — ${esc(brandLabel)} on the cited page${(bm > 1) ? ` (${bm}×)` : ''}</div>`
+                    : cov === 'mention'
+                    ? `<div class="cov-chip mention">Mentioned in passing — ${esc(brandLabel)} appears once on the cited page</div>`
+                    : cov === 'category'
+                    ? `<div class="cov-chip category">Category outlet — cited for the topic, not yet covering ${esc(brandLabel)}</div>`
+                    : cov === 'unverified'
+                    ? `<div class="cov-chip unverified">Coverage unverified — no fetchable article cited</div>`
+                    : '';
+
                 // SoV bars: brand + the most-present competitors at this outlet.
                 // Capped at top 3 (a wall of 6 identical bars at low citation
                 // counts is noise, not insight). Extra competitors collapse to
@@ -2081,6 +2106,7 @@
                         ${badge}
                         <div class="media-outlet">${esc(t.outlet)}</div>
                         ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
+                        ${covChip}
                         ${t.reporter ? `<div class="media-reporter">${esc(t.reporter)}</div>` : ''}
                         <span class="media-stat">Cited ${t.citation_frequency}x across responses</span>
                         ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
