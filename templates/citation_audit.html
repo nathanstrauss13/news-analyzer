@@ -525,6 +525,14 @@
             color: #888;
             line-height: 1.5;
         }
+        .media-sov-head {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            color: #8a8a9a;
+            margin-bottom: 9px;
+            font-weight: 600;
+        }
         .media-sov-thin {
             font-size: 13px;
             color: #cfd2ff;
@@ -2029,19 +2037,6 @@
                 }[verdict];
                 const badge = badgeText ? `<span class="card-badge ${verdict}">${badgeText}</span>` : '';
 
-                // Coverage chip: did the cited page ACTUALLY mention the brand?
-                const cov = t.coverage;
-                const bm = t.brand_page_mentions;
-                const covChip = cov === 'confirmed'
-                    ? `<div class="cov-chip confirmed">✓ Confirmed coverage — ${esc(brandLabel)} on the cited page${(bm > 1) ? ` (${bm}×)` : ''}</div>`
-                    : cov === 'mention'
-                    ? `<div class="cov-chip mention">Mentioned in passing — ${esc(brandLabel)} appears once on the cited page</div>`
-                    : cov === 'category'
-                    ? `<div class="cov-chip category">Category outlet — cited for the topic, not yet covering ${esc(brandLabel)}</div>`
-                    : cov === 'unverified'
-                    ? `<div class="cov-chip unverified">Coverage unverified — no fetchable article cited</div>`
-                    : '';
-
                 // SoV bars: brand + the most-present competitors at this outlet.
                 // Capped at top 3 (a wall of 6 identical bars at low citation
                 // counts is noise, not insight). Extra competitors collapse to
@@ -2097,6 +2092,7 @@
                             : '';
                         sovBlock = `
                             <div class="media-sov">
+                                <div class="media-sov-head">Brands named when AI cites this outlet</div>
                                 ${rows}
                                 ${moreLine}
                                 ${contextLine}
@@ -2105,14 +2101,20 @@
                     }
                 }
 
+                // One consistent denominator: how many AI responses cited this
+                // outlet (matches the SoV bars below). Avoids the old card that
+                // said "cited 8×" (raw citations) over bars reading "/6"
+                // (responses). Falls back to raw frequency only if SoV is absent.
+                const citedStat = sov
+                    ? `Cited in ${sov.responses_citing} of ${data.total_responses || 0} AI responses`
+                    : `Cited ${t.citation_frequency}× across responses`;
                 return `
                     <div class="media-card ${verdict || ''}">
                         ${badge}
                         <div class="media-outlet">${esc(t.outlet)}</div>
                         ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
-                        ${covChip}
                         ${t.reporter ? `<div class="media-reporter">${esc(t.reporter)}</div>` : ''}
-                        <span class="media-stat">Cited ${t.citation_frequency}x across responses</span>
+                        <span class="media-stat">${citedStat}</span>
                         ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
                         <div class="media-rationale">${esc(t.rationale)}</div>
                         ${sovBlock}
@@ -2120,48 +2122,28 @@
                 `;
             }
 
-            // Group targets so the report LEADS WITH WHAT'S CREDIBLE. Newer
-            // audits carry a per-target `coverage` label (verified by fetching
-            // the cited page) — group by that so Confirmed coverage floats to
-            // the top and "category outlets the AI cited but that don't cover
-            // you" are honestly separated from real coverage. Older audits
-            // (no coverage data) fall back to the SoV verdict grouping.
-            const hasCoverage = targets.some(t => t.coverage);
+            // Group every outlet by its share-of-voice VERDICT — Strengths to
+            // defend, Opportunities to pitch, Holding steady, Emerging signals.
+            // (Brand-on-page coverage is still computed backstage for the CSV,
+            // but it no longer drives the report: PR teams already know their
+            // own clips — the signal they want is which brands each outlet's AI
+            // answers name, and where competitors out-cite them.)
             const buckets = {};
-            let groupDefs;
-            if (hasCoverage) {
-                groupDefs = [
-                    { key: 'confirmed', icon: '✅', title: 'Confirmed coverage',
-                      intro: `Outlets we verified actually write about ${esc(brandLabel)} (brand named on the cited page) — your real earned-media footprint. Defend these and pitch follow-ups.` },
-                    { key: 'mention', icon: '👋', title: 'Brief mentions',
-                      intro: `${esc(brandLabel)} is named once on the cited page — often in a roundup or a competitor's story. Deepen these into dedicated coverage.` },
-                    { key: 'category', icon: '🎯', title: 'Pitch opportunities',
-                      intro: `Outlets the AIs cite in your category but that don't yet cover ${esc(brandLabel)} — the clearest earned-media whitespace.` },
-                    { key: 'unverified', icon: '❓', title: 'Unverified citations',
-                      intro: `The AIs named these outlets but cited no fetchable article (homepage-level, or — in non-search mode — a hallucinated link). Treat as leads, not confirmed coverage.` },
-                ];
-                groupDefs.forEach(g => buckets[g.key] = []);
-                for (const t of targets) {
-                    const k = buckets[t.coverage] ? t.coverage : 'unverified';
-                    buckets[k].push(t);
-                }
-            } else {
-                groupDefs = [
-                    { key: 'strength', icon: '🛡️', title: 'Strengths to defend',
-                      intro: `Outlets where ${esc(brandLabel)} already over-indexes in the AI conversation. Protect these relationships and pitch follow-up coverage to extend the lead.` },
-                    { key: 'opportunity', icon: '🎯', title: 'Opportunities to pitch',
-                      intro: `Outlets where competitors out-cite ${esc(brandLabel)}. This is where earned media will move your AI mindshare the most.` },
-                    { key: 'neutral', icon: '⚖️', title: 'Holding steady',
-                      intro: `Outlets where ${esc(brandLabel)} performs in line with its overall mindshare. Maintain presence; no urgent action needed.` },
-                    { key: 'emerging', icon: '⚡', title: 'Emerging signals to watch',
-                      intro: `Outlets cited only once or twice — too thin to score yet, but worth cultivating early before competitors lock them in.` },
-                ];
-                groupDefs.forEach(g => buckets[g.key] = []);
-                for (const t of targets) {
-                    const sov = sovByDomain[(t.domain || '').toLowerCase()];
-                    const v = (sov && buckets[sov.verdict]) ? sov.verdict : 'emerging';
-                    buckets[v].push(t);
-                }
+            const groupDefs = [
+                { key: 'strength', icon: '🛡️', title: 'Strengths to defend',
+                  intro: `Outlets where ${esc(brandLabel)} over-indexes — when the AI cites them, it names ${esc(brandLabel)} more than its overall rate. Protect these relationships and pitch follow-ups to extend the lead.` },
+                { key: 'opportunity', icon: '🎯', title: 'Opportunities to pitch',
+                  intro: `Outlets where competitors out-cite ${esc(brandLabel)} — the AI names rivals, not you, when it cites them. This is where earned media will move your AI mindshare the most.` },
+                { key: 'neutral', icon: '⚖️', title: 'Holding steady',
+                  intro: `Outlets where ${esc(brandLabel)} performs in line with its overall mindshare. Maintain presence; no urgent action needed.` },
+                { key: 'emerging', icon: '⚡', title: 'Emerging signals to watch',
+                  intro: `Outlets cited only once or twice — too thin to score yet, but worth cultivating early before competitors lock them in.` },
+            ];
+            groupDefs.forEach(g => buckets[g.key] = []);
+            for (const t of targets) {
+                const sov = sovByDomain[(t.domain || '').toLowerCase()];
+                const v = (sov && buckets[sov.verdict]) ? sov.verdict : 'emerging';
+                buckets[v].push(t);
             }
 
             for (const g of groupDefs) {

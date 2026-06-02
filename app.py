@@ -4745,6 +4745,112 @@ def _sort_targets_by_coverage(targets):
         t['rank'] = i + 1
 
 
+# --- Outlet relevance filter -------------------------------------------------
+# Some publications are genuinely "editorial" (classify_citation_domain says so)
+# but are the WRONG AUDIENCE for the brand being audited: trade / industrial /
+# professional outlets the AI cited as a topical source, not pitchable earned
+# media. Surfacing them as "media targets" is noise — e.g. packagingeurope.com
+# cited on a beauty-packaging trend, or professionalbeauty.in for a consumer
+# brand that isn't sold there and isn't for salon pros. We drop them from
+# media_targets + share-of-voice but KEEP them in raw_citation_domains, so the
+# CSV/JSON backstage data stays complete and the call is reversible.
+
+# Supply-side / industrial trade — wrong for almost every brand unless the
+# brand's OWN category is in that industry (guarded against category below).
+_TRADE_INDUSTRIAL_SIGNALS = (
+    'packaging', 'supplychain', 'supply-chain', 'wholesale', 'logistics',
+    'procurement', 'manufacturing', 'plasticsnews', 'industryweek',
+)
+# Practitioner / professional trade — right for B2B / practitioner brands,
+# wrong for CONSUMER brands (a consumer makeup line doesn't earn coverage
+# pitching a salon-professional trade title).
+_PROFESSIONAL_TRADE_SIGNALS = ('professional', 'practitioner')
+# If the category reads as consumer-facing, the professional-trade filter turns
+# on. Enterprise / B2B categories (Adobe, a VC firm) keep professional outlets.
+_CONSUMER_CATEGORY_HINTS = (
+    'beauty', 'makeup', 'cosmetic', 'skincare', 'haircare', 'hair care',
+    'fragrance', 'perfume', 'fashion', 'apparel', 'clothing', 'footwear',
+    'jewelry', 'food', 'beverage', 'snack', 'grocery', 'consumer', 'retail',
+    'shopper', 'wellness', 'supplement', 'personal care', 'cpg', 'lifestyle',
+    'pet ', 'toy', 'baby',
+)
+
+
+def _category_is_consumer(category):
+    cat_l = (category or '').lower()
+    return any(h in cat_l for h in _CONSUMER_CATEGORY_HINTS)
+
+
+def _is_irrelevant_outlet(domain, outlet_name, is_consumer, category_l):
+    """True if this editorial outlet is the wrong audience for the brand — a
+    trade / industrial / professional publication, not pitchable consumer or
+    corporate earned media. `category_l` (lowercased category) guards against
+    dropping an outlet whose industry IS the brand's category (a packaging
+    company should keep packaging-trade press)."""
+    hay = f"{(domain or '').lower()} {(outlet_name or '').lower()}"
+    for sig in _TRADE_INDUSTRIAL_SIGNALS:
+        if sig in hay and sig not in category_l:
+            return True
+    if is_consumer:
+        for sig in _PROFESSIONAL_TRADE_SIGNALS:
+            if sig in hay and sig not in category_l:
+                return True
+    return False
+
+
+def _filter_relevant_editorial(editorial_domains, category, log_prefix=""):
+    """Drop off-audience trade / industrial / professional outlets from a list
+    of ranked-domain dicts. Returns the filtered list; logs what was dropped."""
+    cat_l = (category or '').lower()
+    is_consumer = _category_is_consumer(category)
+    kept, dropped = [], []
+    for d in (editorial_domains or []):
+        if _is_irrelevant_outlet(d.get('domain'), d.get('outlet_name'), is_consumer, cat_l):
+            dropped.append(d.get('domain'))
+        else:
+            kept.append(d)
+    if dropped:
+        print(f"{log_prefix}relevance filter dropped {len(dropped)} off-audience "
+              f"outlet(s): {', '.join(x for x in dropped[:12] if x)}")
+    return kept
+
+
+def _editorial_dicts_for_targets(ranked_domains, media_targets):
+    """Return the ranked-domain dicts (each carrying `_citing_idx`) for exactly
+    the media-target outlets, in target order. Share-of-voice is then computed
+    for WHAT THE REPORT SHOWS — so every card gets its competitor breakdown, and
+    the strength/opportunity verdicts aren't polluted by (or capped out in favor
+    of) obscure outlets that never become cards. Fixes the bug where a marquee
+    'neutral' outlet (NewBeauty, Allure) was dropped by the SoV top-N cap while
+    a one-off blog surfaced as a 'strength'."""
+    by = {(d.get('domain') or '').lower(): d for d in (ranked_domains or [])}
+    out, seen = [], set()
+    for t in (media_targets or []):
+        dom = (t.get('domain') or '').lower()
+        if dom and dom in by and dom not in seen:
+            out.append(by[dom])
+            seen.add(dom)
+    return out
+
+
+def _sort_targets_by_prominence(targets, outlet_sov=None):
+    """Rank media targets by how prominently the AI surfaces them — responses
+    citing the outlet first, then raw citation frequency. Replaces the old
+    coverage-tier sort: the report ranks by relevance + share-of-voice, not by
+    whether a single fetched page happened to name the brand."""
+    if not targets:
+        return
+    sov_by = {(r.get('domain') or '').lower(): r for r in (outlet_sov or [])}
+
+    def _key(t):
+        sov = sov_by.get((t.get('domain') or '').lower()) or {}
+        return (-(sov.get('responses_citing') or 0), -(t.get('citation_frequency') or 0))
+
+    targets.sort(key=_key)
+    for i, t in enumerate(targets):
+        t['rank'] = i + 1
+
+
 def _category_keywords(category):
     """Pull noun-ish tokens from the category string for substring matching in
     _check_url_topic. Drops common stopwords; lowercases; caps at 10 keywords.
@@ -6193,26 +6299,47 @@ Respond with ONLY valid JSON:
     # IMPORTANT: scoped to editorial_domains only (not all ranked_domains).
     # PR opportunities/strengths only apply to pitchable media outlets, not
     # .gov pages, .edu pages, brand-own domains, trade associations, etc.
+    # Relevance filter: drop off-audience trade/industrial/professional outlets
+    # (kept in raw_citation_domains for the CSV) so they don't surface as
+    # media targets or share-of-voice rows.
+    _cat = analysis.get("category") or ""
+    _cat_l = _cat.lower()
+    _is_cons = _category_is_consumer(_cat)
+    editorial_domains = _filter_relevant_editorial(editorial_domains, _cat)
+    analysis["media_targets"] = [
+        t for t in (analysis.get("media_targets") or [])
+        if not _is_irrelevant_outlet(t.get("domain"), t.get("outlet"), _is_cons, _cat_l)
+    ]
+    # Scope SoV to exactly the media-target outlets the report shows, so every
+    # card carries its competitor breakdown and the verdicts aren't capped out
+    # by obscure non-target outlets. Fall back to the full editorial list only
+    # if no targets map to cited domains.
     try:
+        _sov_eds = _editorial_dicts_for_targets(ranked_domains, analysis.get("media_targets")) or editorial_domains
         analysis["outlet_sov"] = _compute_outlet_share_of_voice(
-            brand, competitor_counts, all_responses, editorial_domains
+            brand, competitor_counts, all_responses, _sov_eds,
+            max_outlets=max(10, len(_sov_eds))
         )
     except Exception as _sov_e:
         print("outlet share-of-voice computation failed (continuing without):", _sov_e)
         analysis["outlet_sov"] = []
-    # Brand-coverage verification: fetch each target's sample article URL(s) and
-    # check whether the brand is ACTUALLY on the page — separates confirmed
-    # coverage from "category outlet the AI cited but that doesn't cover you"
-    # (and surfaces that parametric/hallucinated URLs are unverifiable).
-    # Only when the audit retrieved live (grounded) — parametric citations are
-    # hallucinated URLs that can't be fetched/verified, so coverage labels would
-    # all be 'unverified'. Grounded mode (real URLs) is where this is meaningful.
+    # Brand-coverage verification (BACKSTAGE ONLY): fetch each target's sample
+    # article URL(s) and record whether the brand is actually named on the page.
+    # Kept in the saved payload / CSV for diagnostics, but it no longer drives
+    # the report — PR teams know their own clips, and a single page-fetch was
+    # under-crediting marquee outlets (Fast Company, Allure) that block bots or
+    # run list pages. Only meaningful when grounded (real URLs).
     if any(r.get("grounded") for r in all_responses):
         try:
             _verify_brand_coverage(brand, analysis.get("media_targets") or [], ranked_domains)
-            _sort_targets_by_coverage(analysis.get("media_targets"))
         except Exception as _bc_e:
             print("brand-coverage verification failed (continuing without):", _bc_e)
+    # Rank targets by how prominently the AI surfaces them (responses citing +
+    # citation frequency) — relevance + share-of-voice, not coverage tiers.
+    try:
+        _sort_targets_by_prominence(analysis.get("media_targets"), analysis.get("outlet_sov"))
+    except Exception as _st_e:
+        print("target prominence sort failed (continuing):", _st_e)
     # Single highest-priority action — gives every dashboard one unmistakable
     # next step even when it's all-strength or all-emerging.
     try:
@@ -6228,17 +6355,17 @@ Respond with ONLY valid JSON:
         print("per-LLM visibility computation failed (continuing without):", _pv_e)
         analysis["per_llm_visibility"] = []
         analysis["per_llm_read"] = None
-    # Regenerate the executive summary now that brand-coverage is known, so it
-    # LEADS WITH CONFIRMED COVERAGE (the main analysis call ran before the
-    # coverage verification, so its summary couldn't see which outlets actually
-    # cover the brand). One extra Claude call (~$0.01).
-    if any(t.get("coverage") for t in (analysis.get("media_targets") or [])):
+    # Regenerate the executive summary now that share-of-voice is known, so it
+    # LEADS WITH STRENGTHS / OPPORTUNITIES (the main analysis call ran before SoV
+    # was computed, so its summary couldn't see where the brand over- or under-
+    # indexes per outlet). One extra Claude call (~$0.01).
+    if analysis.get("outlet_sov"):
         try:
             _regen = _regenerate_executive_summary(analysis)
             if _regen:
                 analysis["executive_summary"] = _regen
         except Exception as _es_e:
-            print("coverage-aware summary regen failed (keeping original):", _es_e)
+            print("SoV-aware summary regen failed (keeping original):", _es_e)
     # Surface to the frontend so it can offer a "Download raw data" affordance.
     analysis["full_responses_available"] = True
     # Per-provider error counts (consumed by the debug-email summary). Leading
@@ -6562,20 +6689,9 @@ def _regenerate_executive_summary(data):
             for x in per_llm
         ) or "  (not available)"
         per_llm_read = data.get('per_llm_read') or ""
-
-        # Coverage tiers (verified by fetching the cited pages) — the summary
-        # must only call an outlet "coverage" if it's CONFIRMED.
-        mts = data.get('media_targets') or []
-        confirmed = [t for t in mts if t.get('coverage') == 'confirmed']
-        category = [t for t in mts if t.get('coverage') == 'category']
-        conf_block = "\n".join(
-            f"  - {t.get('outlet') or t.get('domain')} ({t.get('domain')}): {brand} named {t.get('brand_page_mentions')}x on the cited page"
-            for t in confirmed[:6]
-        ) or "  (NONE — no outlet was verified to actually cover the brand)"
-        cat_block = "\n".join(
-            f"  - {t.get('outlet') or t.get('domain')} ({t.get('domain')})"
-            for t in category[:6]
-        ) or "  (none)"
+        hm = data.get('headline_move') or {}
+        hm_block = (f"{hm.get('outlet') or ''} — {hm.get('text') or ''}".strip(" —")
+                    or "(none — build the move around the strongest opportunity above)")
 
         prompt = f"""You are an AI citation intelligence analyst writing the headline finding of a brand's AI Mindshare Briefing. The reader is a comms director who will paste your 3 sentences into a CMO briefing.
 
@@ -6590,26 +6706,23 @@ Read: {per_llm_read}
 TOP COMPETITORS (by mentions across all responses):
 {comp_block}
 
-STRENGTHS — outlets where {brand} over-indexes:
+STRENGTHS — outlets where {brand} over-indexes (when the AI cites this outlet, it names {brand} more than its overall rate — defend / extend):
 {strengths_block}
 
-OPPORTUNITIES — outlets where a competitor out-cites {brand}:
+OPPORTUNITIES — outlets where a competitor out-cites {brand} (when the AI cites this outlet, it names the competitor, not {brand} — pitch whitespace):
 {opps_block}
-
-CONFIRMED COVERAGE — outlets VERIFIED to actually write about {brand} (brand named on the cited page). This is {brand}'s REAL earned-media footprint:
-{conf_block}
-
-CATEGORY OUTLETS — the AIs cite these in the category but they do NOT mention {brand} on the page (pitch whitespace — NOT current coverage):
-{cat_block}
 
 MOST-CITED SOURCE DOMAINS (all types — note if analyst firms like Gartner/Forrester/McKinsey/IDC dominate over editorial press):
 {raw_block}
 
+THE #1 MOVE (already computed from this data — Sentence 3 MUST be about THIS outlet so the summary agrees with the report's headline action):
+{hm_block}
+
 Write EXACTLY 3 sentences. Lead with the single most important insight, no preamble.
   Sentence 1 — THE POSITION: {brand}'s mindshare framed against the top competitor's count. If {brand} >= top competitor, lead with strength; if behind, lead with the gap. NEVER say 'lacks authority' if {brand} out-mentions competitors.
-  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. STRONGLY PREFER the per-assistant concentration when it's lopsided — e.g. "{brand}'s visibility is almost entirely one assistant (Gemini 9/10) and absent from ChatGPT, Claude, and Grok". Otherwise a strong candidate is the COVERAGE REALITY: if CONFIRMED COVERAGE is empty or tiny, that's the headline surprise ("despite N citations, only X outlets actually mention {brand} — the rest cite it in passing or for competitors"). Name the specific entity + number.
-  Sentence 3 — THE MOVE: the one highest-leverage action. Lead it with a CONFIRMED-COVERAGE outlet (defend/amplify it) or, if confirmed coverage is thin, the strongest CATEGORY outlet to pitch the whitespace. Use action verbs: defend, displace, cultivate, pitch.
-COVERAGE RULE (critical): only describe an outlet as covering / writing about / featuring {brand} if it appears in CONFIRMED COVERAGE above. Outlets in CATEGORY or not listed there are pitch targets, NOT current coverage — never imply they cover {brand}.
+  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. STRONGLY PREFER the per-assistant concentration when it's lopsided — e.g. "{brand}'s visibility is almost entirely one assistant (Gemini 9/10) and absent from ChatGPT, Claude, and Grok". Otherwise surface the sharpest share-of-voice gap — name a specific OUTLET and the competitor out-citing {brand} there (but NOT the #1-move outlet — save that for Sentence 3).
+  Sentence 3 — THE MOVE: build this around THE #1 MOVE outlet above — name it and the competitor to displace there. Use action verbs: pitch, displace, defend, cultivate.
+FRAMING RULE (critical): these are AI-citation SHARE-OF-VOICE signals — how often each AI names {brand} vs competitors when it cites an outlet — NOT press clips. Never say an outlet "covers", "features", or "wrote about" {brand}; say {brand} "over-indexes at", "is out-cited at", or "is absent from" the outlet.
 BANNED: filler like 'this audit reveals', 'in today's landscape'. Discuss analysts only if they actually dominate the source domains above. Respond with ONLY the 3 sentences — no preamble, no JSON, no labels."""
 
         resp = anthropic.messages.create(
@@ -6661,18 +6774,12 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     if competitor_stems:
         editorial_domains = [d for d in editorial_domains if not _is_competitor_owned_domain(d['domain'], competitor_stems)]
 
-    try:
-        new_sov = _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, editorial_domains)
-    except Exception as e:
-        print(f"[rerender] SoV failed: {e}")
-        new_sov = data.get('outlet_sov') or []
+    # Relevance filter: drop off-audience trade/industrial/professional outlets.
+    # editorial_set (built below from editorial_domains) prunes them from
+    # media_targets too, so SoV + cards stay consistent.
+    editorial_domains = _filter_relevant_editorial(editorial_domains, data.get('category'), log_prefix="[rerender] ")
 
     out['raw_citation_domains'] = ranked_domains
-    out['outlet_sov'] = new_sov
-    try:
-        out['headline_move'] = _compute_headline_move(brand, new_sov)
-    except Exception:
-        out['headline_move'] = None
     # Per-assistant visibility — pure-python over cached responses, so the
     # ?fresh/?refresh rerender surfaces it on existing audits too.
     try:
@@ -6692,7 +6799,6 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     editorial_set = {d['domain'].lower() for d in editorial_domains}
     saved_by_dom = {(t.get('domain') or '').lower(): dict(t)
                     for t in (data.get('media_targets') or [])}
-    sov_by_dom = {(r.get('domain') or '').lower(): r for r in new_sov}
     outlet_name_by_dom = {d: _outlet_patterns()[d]['name'] for d in EDITORIAL_OUTLETS}
 
     def _synth_rationale(verdict):
@@ -6721,8 +6827,6 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
             # domains Claude omitted by judgement (obscure blogs, brand sites
             # that slip past the competitor filter) — those still require a fresh
             # audit to be vetted. The registry is the precision gate.
-            sov = sov_by_dom.get(dom)
-            verdict = sov.get('verdict') if sov else None
             t = {
                 'outlet': d.get('outlet_name') or outlet_name_by_dom.get(d.get('domain')) or d.get('domain'),
                 'domain': d.get('domain'),
@@ -6730,7 +6834,7 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
                 'citation_frequency': d.get('count', 0),
                 'cited_by_llms': d.get('llms') or [],
                 'sample_urls': (d.get('specific_urls') or [])[:5],
-                'rationale': _synth_rationale(verdict),
+                'rationale': _synth_rationale(None),  # patched once SoV is known
                 'gap_insight': None,
                 '_synthesized': True,
             }
@@ -6746,14 +6850,43 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
         t['rank'] = i + 1
     out['media_targets'] = new_media
 
-    # Brand-coverage verification (fetch sample URLs, check brand on page) — so
-    # a rerender/?refresh re-labels confirmed-coverage vs category outlets too.
+    # Compute SoV for EXACTLY the media-target outlets the report shows, so every
+    # card gets its competitor breakdown and the verdicts aren't capped out by
+    # obscure non-target outlets.
+    try:
+        _sov_eds = _editorial_dicts_for_targets(ranked_domains, new_media) or editorial_domains
+        new_sov = _compute_outlet_share_of_voice(
+            brand, competitor_counts, all_responses, _sov_eds,
+            max_outlets=max(10, len(_sov_eds)))
+    except Exception as e:
+        print(f"[rerender] SoV failed: {e}")
+        new_sov = data.get('outlet_sov') or []
+    out['outlet_sov'] = new_sov
+
+    # Patch synthesized rationales now that each outlet's verdict is known.
+    sov_by_dom = {(r.get('domain') or '').lower(): r for r in new_sov}
+    for t in new_media:
+        if t.get('_synthesized'):
+            t['rationale'] = _synth_rationale(
+                (sov_by_dom.get((t.get('domain') or '').lower()) or {}).get('verdict'))
+
+    try:
+        out['headline_move'] = _compute_headline_move(brand, new_sov)
+    except Exception:
+        out['headline_move'] = None
+
+    # Brand-coverage verification (BACKSTAGE ONLY — saved for the CSV, not shown
+    # as a coverage tier). Only meaningful when grounded (real URLs).
     if any(r.get("grounded") for r in all_responses):
         try:
             _verify_brand_coverage(brand, out.get("media_targets") or [], ranked_domains)
-            _sort_targets_by_coverage(out.get("media_targets"))
         except Exception:
             pass
+    # Rank by AI prominence (responses citing + citation frequency), not coverage.
+    try:
+        _sort_targets_by_prominence(out.get("media_targets"), new_sov)
+    except Exception:
+        pass
 
     # Optionally refresh the 'What we found' executive summary with the
     # current prompt wording — the one piece the pure-Python pass can't
