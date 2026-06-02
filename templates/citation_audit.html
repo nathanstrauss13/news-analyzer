@@ -373,6 +373,10 @@
         .verdict-group-icon.opportunity { background: #1f1505; border: 1px solid #4a3210; }
         .verdict-group-icon.neutral { background: #0d141f; border: 1px solid #1a2a4a; }
         .verdict-group-icon.emerging { background: #15151f; border: 1px solid #2a2a4a; }
+        .verdict-group-icon.confirmed { background: #0d1f0d; border: 1px solid #1f4a1f; }
+        .verdict-group-icon.mention { background: #1a1505; border: 1px solid #3a3010; }
+        .verdict-group-icon.category { background: #1f1505; border: 1px solid #4a3210; }
+        .verdict-group-icon.unverified { background: #15151f; border: 1px solid #2a2a4a; }
         .verdict-group-title {
             font-size: 17px;
             font-weight: 700;
@@ -2116,27 +2120,48 @@
                 `;
             }
 
-            // Group targets by verdict so the report leads with the INSIGHT
-            // (what to defend / pitch / watch), not a flat ranked list. This
-            // is the core repositioning: strengths + opportunities are the
-            // headline; the outlets are supporting evidence.
-            const groupDefs = [
-                { key: 'strength', icon: '🛡️', title: 'Strengths to defend',
-                  intro: `Outlets where ${esc(brandLabel)} already over-indexes in the AI conversation. Protect these relationships and pitch follow-up coverage to extend the lead.` },
-                { key: 'opportunity', icon: '🎯', title: 'Opportunities to pitch',
-                  intro: `Outlets where competitors out-cite ${esc(brandLabel)}. This is where earned media will move your AI mindshare the most.` },
-                { key: 'neutral', icon: '⚖️', title: 'Holding steady',
-                  intro: `Outlets where ${esc(brandLabel)} performs in line with its overall mindshare. Maintain presence; no urgent action needed.` },
-                { key: 'emerging', icon: '⚡', title: 'Emerging signals to watch',
-                  intro: `Outlets cited only once or twice — too thin to score yet, but worth cultivating early before competitors lock them in.` },
-            ];
-            // Bucket each target (verdict from its SoV row; null verdicts and
-            // anything unmatched fall into 'emerging').
-            const buckets = { strength: [], opportunity: [], neutral: [], emerging: [] };
-            for (const t of targets) {
-                const sov = sovByDomain[(t.domain || '').toLowerCase()];
-                const v = (sov && buckets[sov.verdict]) ? sov.verdict : 'emerging';
-                buckets[v].push(t);
+            // Group targets so the report LEADS WITH WHAT'S CREDIBLE. Newer
+            // audits carry a per-target `coverage` label (verified by fetching
+            // the cited page) — group by that so Confirmed coverage floats to
+            // the top and "category outlets the AI cited but that don't cover
+            // you" are honestly separated from real coverage. Older audits
+            // (no coverage data) fall back to the SoV verdict grouping.
+            const hasCoverage = targets.some(t => t.coverage);
+            const buckets = {};
+            let groupDefs;
+            if (hasCoverage) {
+                groupDefs = [
+                    { key: 'confirmed', icon: '✅', title: 'Confirmed coverage',
+                      intro: `Outlets we verified actually write about ${esc(brandLabel)} (brand named on the cited page) — your real earned-media footprint. Defend these and pitch follow-ups.` },
+                    { key: 'mention', icon: '👋', title: 'Brief mentions',
+                      intro: `${esc(brandLabel)} is named once on the cited page — often in a roundup or a competitor's story. Deepen these into dedicated coverage.` },
+                    { key: 'category', icon: '🎯', title: 'Pitch opportunities',
+                      intro: `Outlets the AIs cite in your category but that don't yet cover ${esc(brandLabel)} — the clearest earned-media whitespace.` },
+                    { key: 'unverified', icon: '❓', title: 'Unverified citations',
+                      intro: `The AIs named these outlets but cited no fetchable article (homepage-level, or — in non-search mode — a hallucinated link). Treat as leads, not confirmed coverage.` },
+                ];
+                groupDefs.forEach(g => buckets[g.key] = []);
+                for (const t of targets) {
+                    const k = buckets[t.coverage] ? t.coverage : 'unverified';
+                    buckets[k].push(t);
+                }
+            } else {
+                groupDefs = [
+                    { key: 'strength', icon: '🛡️', title: 'Strengths to defend',
+                      intro: `Outlets where ${esc(brandLabel)} already over-indexes in the AI conversation. Protect these relationships and pitch follow-up coverage to extend the lead.` },
+                    { key: 'opportunity', icon: '🎯', title: 'Opportunities to pitch',
+                      intro: `Outlets where competitors out-cite ${esc(brandLabel)}. This is where earned media will move your AI mindshare the most.` },
+                    { key: 'neutral', icon: '⚖️', title: 'Holding steady',
+                      intro: `Outlets where ${esc(brandLabel)} performs in line with its overall mindshare. Maintain presence; no urgent action needed.` },
+                    { key: 'emerging', icon: '⚡', title: 'Emerging signals to watch',
+                      intro: `Outlets cited only once or twice — too thin to score yet, but worth cultivating early before competitors lock them in.` },
+                ];
+                groupDefs.forEach(g => buckets[g.key] = []);
+                for (const t of targets) {
+                    const sov = sovByDomain[(t.domain || '').toLowerCase()];
+                    const v = (sov && buckets[sov.verdict]) ? sov.verdict : 'emerging';
+                    buckets[v].push(t);
+                }
             }
 
             for (const g of groupDefs) {

@@ -4730,6 +4730,21 @@ def _verify_brand_coverage(brand, media_targets, ranked_domains=None,
             t['coverage'] = 'unverified'
 
 
+_COVERAGE_ORDER = {'confirmed': 0, 'mention': 1, 'category': 2, 'unverified': 3}
+
+
+def _sort_targets_by_coverage(targets):
+    """Float CONFIRMED coverage to the top of the report, then passing mentions,
+    then category pitch-targets, then unverified — and re-rank in place. Makes
+    the most credible, verifiable outlets lead every report."""
+    if not targets:
+        return
+    targets.sort(key=lambda t: (_COVERAGE_ORDER.get(t.get('coverage'), 4),
+                                -(t.get('brand_page_mentions') or 0)))
+    for i, t in enumerate(targets):
+        t['rank'] = i + 1
+
+
 def _category_keywords(category):
     """Pull noun-ish tokens from the category string for substring matching in
     _check_url_topic. Drops common stopwords; lowercases; caps at 10 keywords.
@@ -6189,10 +6204,15 @@ Respond with ONLY valid JSON:
     # check whether the brand is ACTUALLY on the page — separates confirmed
     # coverage from "category outlet the AI cited but that doesn't cover you"
     # (and surfaces that parametric/hallucinated URLs are unverifiable).
-    try:
-        _verify_brand_coverage(brand, analysis.get("media_targets") or [], ranked_domains)
-    except Exception as _bc_e:
-        print("brand-coverage verification failed (continuing without):", _bc_e)
+    # Only when the audit retrieved live (grounded) — parametric citations are
+    # hallucinated URLs that can't be fetched/verified, so coverage labels would
+    # all be 'unverified'. Grounded mode (real URLs) is where this is meaningful.
+    if any(r.get("grounded") for r in all_responses):
+        try:
+            _verify_brand_coverage(brand, analysis.get("media_targets") or [], ranked_domains)
+            _sort_targets_by_coverage(analysis.get("media_targets"))
+        except Exception as _bc_e:
+            print("brand-coverage verification failed (continuing without):", _bc_e)
     # Single highest-priority action — gives every dashboard one unmistakable
     # next step even when it's all-strength or all-emerging.
     try:
@@ -6208,6 +6228,17 @@ Respond with ONLY valid JSON:
         print("per-LLM visibility computation failed (continuing without):", _pv_e)
         analysis["per_llm_visibility"] = []
         analysis["per_llm_read"] = None
+    # Regenerate the executive summary now that brand-coverage is known, so it
+    # LEADS WITH CONFIRMED COVERAGE (the main analysis call ran before the
+    # coverage verification, so its summary couldn't see which outlets actually
+    # cover the brand). One extra Claude call (~$0.01).
+    if any(t.get("coverage") for t in (analysis.get("media_targets") or [])):
+        try:
+            _regen = _regenerate_executive_summary(analysis)
+            if _regen:
+                analysis["executive_summary"] = _regen
+        except Exception as _es_e:
+            print("coverage-aware summary regen failed (keeping original):", _es_e)
     # Surface to the frontend so it can offer a "Download raw data" affordance.
     analysis["full_responses_available"] = True
     # Per-provider error counts (consumed by the debug-email summary). Leading
@@ -6532,6 +6563,20 @@ def _regenerate_executive_summary(data):
         ) or "  (not available)"
         per_llm_read = data.get('per_llm_read') or ""
 
+        # Coverage tiers (verified by fetching the cited pages) — the summary
+        # must only call an outlet "coverage" if it's CONFIRMED.
+        mts = data.get('media_targets') or []
+        confirmed = [t for t in mts if t.get('coverage') == 'confirmed']
+        category = [t for t in mts if t.get('coverage') == 'category']
+        conf_block = "\n".join(
+            f"  - {t.get('outlet') or t.get('domain')} ({t.get('domain')}): {brand} named {t.get('brand_page_mentions')}x on the cited page"
+            for t in confirmed[:6]
+        ) or "  (NONE — no outlet was verified to actually cover the brand)"
+        cat_block = "\n".join(
+            f"  - {t.get('outlet') or t.get('domain')} ({t.get('domain')})"
+            for t in category[:6]
+        ) or "  (none)"
+
         prompt = f"""You are an AI citation intelligence analyst writing the headline finding of a brand's AI Mindshare Briefing. The reader is a comms director who will paste your 3 sentences into a CMO briefing.
 
 Brand: {brand}
@@ -6551,13 +6596,20 @@ STRENGTHS — outlets where {brand} over-indexes:
 OPPORTUNITIES — outlets where a competitor out-cites {brand}:
 {opps_block}
 
+CONFIRMED COVERAGE — outlets VERIFIED to actually write about {brand} (brand named on the cited page). This is {brand}'s REAL earned-media footprint:
+{conf_block}
+
+CATEGORY OUTLETS — the AIs cite these in the category but they do NOT mention {brand} on the page (pitch whitespace — NOT current coverage):
+{cat_block}
+
 MOST-CITED SOURCE DOMAINS (all types — note if analyst firms like Gartner/Forrester/McKinsey/IDC dominate over editorial press):
 {raw_block}
 
 Write EXACTLY 3 sentences. Lead with the single most important insight, no preamble.
   Sentence 1 — THE POSITION: {brand}'s mindshare framed against the top competitor's count. If {brand} >= top competitor, lead with strength; if behind, lead with the gap. NEVER say 'lacks authority' if {brand} out-mentions competitors.
-  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. STRONGLY PREFER the per-assistant concentration when it's lopsided — e.g. "{brand}'s visibility is almost entirely one assistant (Gemini 9/10) and absent from ChatGPT, Claude, and Grok" is a more important finding than an outlet detail, because it means the brand is search-surfaced but not embedded in the models people use most. Otherwise: an outlet a competitor owns where {brand} is absent; analyst-firm dominance; an unexpected competitor leader. Name the specific entity + number.
-  Sentence 3 — THE MOVE: the one highest-leverage action, tied to a named outlet or competitive dynamic. Use action verbs: defend, displace, cultivate, pitch.
+  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. STRONGLY PREFER the per-assistant concentration when it's lopsided — e.g. "{brand}'s visibility is almost entirely one assistant (Gemini 9/10) and absent from ChatGPT, Claude, and Grok". Otherwise a strong candidate is the COVERAGE REALITY: if CONFIRMED COVERAGE is empty or tiny, that's the headline surprise ("despite N citations, only X outlets actually mention {brand} — the rest cite it in passing or for competitors"). Name the specific entity + number.
+  Sentence 3 — THE MOVE: the one highest-leverage action. Lead it with a CONFIRMED-COVERAGE outlet (defend/amplify it) or, if confirmed coverage is thin, the strongest CATEGORY outlet to pitch the whitespace. Use action verbs: defend, displace, cultivate, pitch.
+COVERAGE RULE (critical): only describe an outlet as covering / writing about / featuring {brand} if it appears in CONFIRMED COVERAGE above. Outlets in CATEGORY or not listed there are pitch targets, NOT current coverage — never imply they cover {brand}.
 BANNED: filler like 'this audit reveals', 'in today's landscape'. Discuss analysts only if they actually dominate the source domains above. Respond with ONLY the 3 sentences — no preamble, no JSON, no labels."""
 
         resp = anthropic.messages.create(
@@ -6696,10 +6748,12 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
 
     # Brand-coverage verification (fetch sample URLs, check brand on page) — so
     # a rerender/?refresh re-labels confirmed-coverage vs category outlets too.
-    try:
-        _verify_brand_coverage(brand, out.get("media_targets") or [], ranked_domains)
-    except Exception:
-        pass
+    if any(r.get("grounded") for r in all_responses):
+        try:
+            _verify_brand_coverage(brand, out.get("media_targets") or [], ranked_domains)
+            _sort_targets_by_coverage(out.get("media_targets"))
+        except Exception:
+            pass
 
     # Optionally refresh the 'What we found' executive summary with the
     # current prompt wording — the one piece the pure-Python pass can't
