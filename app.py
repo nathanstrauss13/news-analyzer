@@ -4349,6 +4349,25 @@ def _llm_visibility_read(brand, per_llm):
     absent = [x['llm'] for x in per_llm if (x.get('mentions') or 0) == 0]
     present_names = [x['llm'] for x in present]
 
+    # GROUNDED MODE (ALL_GROUNDED): every assistant answered with live web
+    # search, so the spread reflects DISCOVERABILITY — what AI finds when it
+    # searches the current web — NOT what's embedded in the model's memory. The
+    # "search-grounded vs parametric" framing below doesn't apply when all 5
+    # retrieve, so reframe around live-search reach.
+    if all(x.get('grounded') for x in per_llm):
+        if not present:
+            return (f"{b} is absent from all {total} assistants even in live-search mode — "
+                    f"no discoverable web presence in this category yet.")
+        if len(present) == total:
+            return (f"{b} surfaces across all {total} assistants in live-search mode — strong, "
+                    f"consistent discoverability when AI searches the web for your category.")
+        if len(present) >= max(2, total - 2):
+            return (f"{b} surfaces on {len(present)} of {total} assistants in live-search mode; "
+                    f"thinner on {', '.join(absent)}. Solid discoverability with room to broaden.")
+        return (f"{b} surfaces on only {len(present)} of {total} assistants "
+                f"({', '.join(present_names)}) even with live search — limited discoverability; "
+                f"the underlying web coverage AI can find is thin.")
+
     if not present:
         return (f"{b} doesn't surface on any of the {total} assistants for unbranded "
                 f"category queries — effectively invisible in AI today.")
