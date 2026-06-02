@@ -120,6 +120,18 @@
             margin-right: 5pt;
         }
         .headline-move-label { font-weight: 700; color: #1f5a1f; }
+        .ai-vis-row {
+            display: table; table-layout: fixed; width: 100%;
+            margin-bottom: 3pt; font-size: 9.5pt; color: #1a1a1a;
+        }
+        .ai-vis-row > * { display: table-cell; vertical-align: middle; }
+        .ai-vis-row.zero { color: #999; }
+        .ai-vis-name { width: 95pt; padding-right: 6pt; white-space: nowrap; }
+        .ai-vis-bar-wrap { padding: 0 6pt; }
+        .ai-vis-bar { display: block; width: 100%; height: 6pt; background: #ececec; border-radius: 3pt; overflow: hidden; }
+        .ai-vis-bar .ai-vis-fill { display: block; height: 100%; background: #2a7ac0; }
+        .ai-vis-num { width: 42pt; text-align: right; font-weight: 600; font-size: 8.5pt; white-space: nowrap; }
+        .ai-vis-read { font-size: 9pt; color: #444; line-height: 1.45; margin-top: 5pt; margin-bottom: 6pt; }
         .competitors {
             margin: 6pt 0 14pt;
         }
@@ -347,6 +359,20 @@
         <span class="headline-move-label">Your #1 move:</span>
         {{ data.headline_move.text }}
     </div>
+    {% endif %}
+
+    {% if data.per_llm_visibility %}
+    <h2>Where AI sees you</h2>
+    <div class="section-note">{{ data.brand }} mention rate by assistant — across the same unbranded category queries.</div>
+    {% for x in data.per_llm_visibility %}
+    {% set pct = (x.rate * 100) | round | int %}
+    <div class="ai-vis-row{% if x.mentions == 0 %} zero{% endif %}">
+        <span class="ai-vis-name">{{ x.llm }}{% if x.grounded %} (search){% endif %}</span>
+        <span class="ai-vis-bar-wrap"><span class="ai-vis-bar"><span class="ai-vis-fill" style="width:{{ pct }}%"></span></span></span>
+        <span class="ai-vis-num">{{ x.mentions }}/{{ x.total }}</span>
+    </div>
+    {% endfor %}
+    {% if data.per_llm_read %}<div class="ai-vis-read">{{ data.per_llm_read }}</div>{% endif %}
     {% endif %}
 
     {% if data.competitors %}

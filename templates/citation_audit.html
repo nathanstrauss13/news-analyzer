@@ -186,6 +186,51 @@
             max-width: 620px;
         }
         .mention-method em { color: #8a8a98; font-style: italic; }
+        /* Where AI sees you — per-assistant visibility */
+        .ai-visibility {
+            margin: 0 0 36px;
+            padding: 18px 22px;
+            background: #0e0e18;
+            border: 1px solid #22223a;
+            border-radius: 12px;
+        }
+        .ai-visibility-label {
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            font-size: 11px;
+            font-weight: 700;
+            color: #7a8aff;
+            margin-bottom: 12px;
+        }
+        .ai-visibility-rows { display: flex; flex-direction: column; gap: 7px; }
+        .ai-vis-row {
+            display: grid;
+            grid-template-columns: 130px 1fr 44px;
+            align-items: center;
+            gap: 12px;
+            font-size: 13px;
+        }
+        .ai-vis-name { color: #e8e8f0; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+        .ai-vis-row.zero .ai-vis-name { color: #6a6a78; }
+        .ai-vis-tag {
+            font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px;
+            color: #7a8aff; background: #16162a; border: 1px solid #2a2a4a;
+            padding: 1px 5px; border-radius: 4px; font-weight: 600;
+        }
+        .ai-vis-track { height: 9px; background: #1a1a26; border-radius: 5px; overflow: hidden; }
+        .ai-vis-fill { height: 100%; background: #4a9eff; border-radius: 5px; }
+        .ai-vis-fill.zero { background: transparent; }
+        .ai-vis-row.zero .ai-vis-track { border: 1px dashed #33334a; height: 7px; }
+        .ai-vis-num { color: #cfd2ff; font-weight: 600; font-size: 12px; text-align: right; }
+        .ai-vis-row.zero .ai-vis-num { color: #6a6a78; }
+        .ai-visibility-read {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #b8b8c8;
+            line-height: 1.55;
+            border-top: 1px solid #1c1c2e;
+            padding-top: 11px;
+        }
         /* Audit completion badge — reflects share of planned LLM calls that
            actually returned a response before the wall-clock deadline. */
         .completion-badge {
@@ -1899,6 +1944,25 @@
                     <div class="briefing-summary">
                         <div class="briefing-summary-label">What we found</div>
                         <div class="briefing-summary-text">${esc(data.executive_summary)}</div>
+                    </div>
+                ` : ''}
+                ${(data.per_llm_visibility && data.per_llm_visibility.length) ? `
+                    <div class="ai-visibility">
+                        <div class="ai-visibility-label">Where AI sees you — ${esc(data.brand || 'your brand')} mention rate by assistant</div>
+                        <div class="ai-visibility-rows">
+                            ${data.per_llm_visibility.map(x => {
+                                const pct = Math.round((x.rate || 0) * 100);
+                                const zero = (x.mentions || 0) === 0;
+                                return `
+                                    <div class="ai-vis-row ${zero ? 'zero' : ''}">
+                                        <span class="ai-vis-name">${esc(x.llm)}${x.grounded ? '<span class="ai-vis-tag">search</span>' : ''}</span>
+                                        <div class="ai-vis-track"><div class="ai-vis-fill ${zero ? 'zero' : ''}" style="width:${pct}%"></div></div>
+                                        <span class="ai-vis-num">${x.mentions}/${x.total}</span>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                        ${data.per_llm_read ? `<div class="ai-visibility-read">${esc(data.per_llm_read)}</div>` : ''}
                     </div>
                 ` : ''}
                 ${data.headline_move ? `

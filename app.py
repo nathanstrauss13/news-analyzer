@@ -3995,6 +3995,75 @@ def _compute_headline_move(brand, outlet_sov):
     return None
 
 
+# Assistants whose answers are grounded in live web search (so a brand can
+# surface there from RECENT press / its own site even if the base model has
+# never "heard of" it). The others answer mostly from parametric knowledge, so
+# a mention there means the brand has reached real cultural saturation. The
+# gap between the two is a core strategic signal for challenger brands.
+SEARCH_GROUNDED_LLMS = {'Gemini', 'Perplexity'}
+
+
+def _compute_per_llm_visibility(brand, all_responses):
+    """Per-assistant brand visibility: for each LLM, how many of ITS responses
+    mention the brand. A headline "20% mindshare" can hide the real story —
+    e.g. a brand cited in 9/10 Gemini responses but 0/10 on ChatGPT/Claude/Grok
+    is concentrated in one (search-grounded) assistant, not broadly embedded.
+
+    Returns a list of {llm, mentions, total, rate, grounded} sorted by rate
+    desc. Reuses _count_brand_mentions per-LLM so the counting matches the
+    headline number exactly.
+    """
+    if not brand or not all_responses:
+        return []
+    order = []
+    seen = set()
+    for r in all_responses:
+        l = r.get('llm')
+        if l and l not in seen:
+            seen.add(l)
+            order.append(l)
+    out = []
+    for l in order:
+        subset = [r for r in all_responses if r.get('llm') == l]
+        n = len(subset)
+        m = _count_brand_mentions(brand, subset)
+        out.append({
+            'llm': l,
+            'mentions': m,
+            'total': n,
+            'rate': round(m / n, 3) if n else 0.0,
+            'grounded': l in SEARCH_GROUNDED_LLMS,
+        })
+    out.sort(key=lambda x: x['rate'], reverse=True)
+    return out
+
+
+def _llm_visibility_read(brand, per_llm):
+    """One-line strategic read of the per-assistant visibility spread."""
+    if not per_llm:
+        return None
+    b = brand or 'Your brand'
+    total = len(per_llm)
+    present = [x for x in per_llm if (x.get('mentions') or 0) > 0]
+    absent = [x['llm'] for x in per_llm if (x.get('mentions') or 0) == 0]
+    present_names = [x['llm'] for x in present]
+
+    if not present:
+        return (f"{b} doesn't surface on any of the {total} assistants for unbranded "
+                f"category queries — effectively invisible in AI today.")
+    if len(present) == total:
+        return f"{b} surfaces across all {total} assistants — broad, embedded AI visibility."
+    # Concentrated only in the search-grounded assistants, absent from the
+    # parametric ones = recent-press visibility, not yet model-embedded.
+    if set(present_names) <= SEARCH_GROUNDED_LLMS and absent:
+        return (f"{b} surfaces mainly on search-grounded assistants "
+                f"({', '.join(present_names)}) but is absent from {', '.join(absent)} — "
+                f"visibility is search-driven (recent press / your own site), not yet "
+                f"embedded in the models people use most.")
+    return (f"{b} surfaces on {len(present)} of {total} assistants "
+            f"({', '.join(present_names)}); absent from {', '.join(absent)}.")
+
+
 _URL_VALIDATION_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
                   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -5136,6 +5205,12 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     ranked_domains = aggregate_citations(all_responses)
     total_citations = sum(d['count'] for d in ranked_domains)
     brand_mention_count = _count_brand_mentions(brand, all_responses)
+    # Per-assistant visibility — computed here (before the analysis prompt) so
+    # the summary can call out lopsided concentration. (Re-stored on the
+    # analysis dict below for the UI.)
+    _per_llm_vis = _compute_per_llm_visibility(brand, all_responses)
+    _per_llm_read = _llm_visibility_read(brand, _per_llm_vis)
+    _per_llm_facts = "; ".join(f"{x['llm']} {x['mentions']}/{x['total']}" for x in _per_llm_vis) or "(n/a)"
     emit("extract", f"Found {total_citations} citations across {len(ranked_domains)} domains · brand cited in {brand_mention_count}/{len(all_responses)} responses", extract_total, extract_total)
 
     emit("analysis", "Identifying competitor brands...", 0, 1)
@@ -5385,6 +5460,7 @@ The client's brand is "{brand}". Their goal: "{problem_statement}"
 
 DETERMINISTIC FACTS (pre-computed from raw response text — use these EXACTLY, do not re-estimate):
 - Brand mention count: {brand_mention_count} of {len(all_responses)} responses mention "{brand}" (deterministic substring count over full response text — authoritative).
+- PER-ASSISTANT VISIBILITY (how many of EACH AI's responses mention the brand): {_per_llm_facts}. Read: {_per_llm_read}. If this is lopsided (the brand surfaces on one or two assistants and is absent from the rest), that is a CRITICAL finding for the executive_summary — it means the brand is search-surfaced but not embedded in the models people use most.
 - TOP COMPETITOR MENTION COUNTS (pre-computed deterministically — these are the AUTHORITATIVE counts for the `competitors` array. Do NOT re-estimate, do NOT add competitors not in this list, do NOT change the counts):
 {top_competitor_block}
 
@@ -5483,7 +5559,7 @@ Respond with ONLY valid JSON:
       "analyst_play": "One sentence on the specific analyst relations move: which evaluation to target, briefing cadence to establish, sponsored research, or client subscription that would shift citations"
     }}
   ],
-  "executive_summary": "EXACTLY 3 sentences — this is the 'What we found' headline a comms director will paste into a CMO briefing. Each sentence must carry a specific, non-obvious finding tied to the actual numbers. Lead with the single most important insight, not a throat-clearing preamble. STRUCTURE:\n  Sentence 1 — THE POSITION: {brand}'s AI mindshare ({brand_mention_count} of {len(all_responses)} responses) framed against the top competitor's count. If {brand} >= top competitor, lead with strength ('{brand} leads/holds the AI conversation in [category]…'); if behind, lead with the gap. NEVER say 'lacks authority' if the brand out-mentions competitors.\n  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. Examples: a specific outlet where the brand is absent but a competitor owns it; the fact that analyst firms (Gartner/Forrester/etc.) dominate the citations over editorial press in B2B categories; a competitor you'd expect to lead that doesn't, or vice versa. Name the specific entity + number.\n  Sentence 3 — THE MOVE: the one highest-leverage action this data points to. Tie it to a named outlet or a named competitive dynamic from the strengths/opportunities lists. Use action verbs: defend, displace, cultivate, pitch.\n  RULES: No filler ('this audit reveals…', 'in today's landscape…'). No generic 'competitors dominate' unless the per-outlet data supports it (empty competitors_citing = open whitespace, not a bloodbath). Discuss analysts ONLY if analyst_targets has entries OR analyst firms appear heavily in the citation data; silence is fine for consumer categories. Write it so a CMO who reads ONLY these 3 sentences still walks away with the strategic takeaway."
+  "executive_summary": "EXACTLY 3 sentences — this is the 'What we found' headline a comms director will paste into a CMO briefing. Each sentence must carry a specific, non-obvious finding tied to the actual numbers. Lead with the single most important insight, not a throat-clearing preamble. STRUCTURE:\n  Sentence 1 — THE POSITION: {brand}'s AI mindshare ({brand_mention_count} of {len(all_responses)} responses) framed against the top competitor's count. If {brand} >= top competitor, lead with strength ('{brand} leads/holds the AI conversation in [category]…'); if behind, lead with the gap. NEVER say 'lacks authority' if the brand out-mentions competitors.\n  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. STRONGLY PREFER the PER-ASSISTANT VISIBILITY finding when it's lopsided — if the brand surfaces on only one or two of the five assistants and is absent from the rest, lead the surprise with that (e.g. 'almost all of {brand}'s visibility is Gemini; it's absent from ChatGPT, Claude, and Grok'), because it means the brand is search-surfaced but not embedded in the models people use most. Otherwise: a specific outlet where the brand is absent but a competitor owns it; analyst firms (Gartner/Forrester/etc.) dominating citations over editorial press; a competitor you'd expect to lead that doesn't. Name the specific entity + number.\n  Sentence 3 — THE MOVE: the one highest-leverage action this data points to. Tie it to a named outlet or a named competitive dynamic from the strengths/opportunities lists. Use action verbs: defend, displace, cultivate, pitch.\n  RULES: No filler ('this audit reveals…', 'in today's landscape…'). No generic 'competitors dominate' unless the per-outlet data supports it (empty competitors_citing = open whitespace, not a bloodbath). Discuss analysts ONLY if analyst_targets has entries OR analyst firms appear heavily in the citation data; silence is fine for consumer categories. Write it so a CMO who reads ONLY these 3 sentences still walks away with the strategic takeaway."
 }}"""
 
     # Retry once with reduced output budget on APITimeoutError. The most common
@@ -5562,6 +5638,14 @@ Respond with ONLY valid JSON:
     except Exception as _hm_e:
         print("headline-move computation failed (continuing without):", _hm_e)
         analysis["headline_move"] = None
+    # Per-assistant visibility — which of the 5 AIs actually surface the brand.
+    try:
+        analysis["per_llm_visibility"] = _compute_per_llm_visibility(brand, all_responses)
+        analysis["per_llm_read"] = _llm_visibility_read(brand, analysis["per_llm_visibility"])
+    except Exception as _pv_e:
+        print("per-LLM visibility computation failed (continuing without):", _pv_e)
+        analysis["per_llm_visibility"] = []
+        analysis["per_llm_read"] = None
     # Surface to the frontend so it can offer a "Download raw data" affordance.
     analysis["full_responses_available"] = True
     # Per-provider error counts (consumed by the debug-email summary). Leading
@@ -5878,11 +5962,23 @@ def _regenerate_executive_summary(data):
         raw = data.get('raw_citation_domains') or []
         raw_block = "\n".join(f"  - {d.get('domain')}: {d.get('count')}x" for d in raw[:12]) or "  (none)"
 
+        per_llm = data.get('per_llm_visibility') or []
+        per_llm_block = "\n".join(
+            f"  - {x.get('llm')}: {x.get('mentions')}/{x.get('total')} responses"
+            f"{' (search-grounded)' if x.get('grounded') else ''}"
+            for x in per_llm
+        ) or "  (not available)"
+        per_llm_read = data.get('per_llm_read') or ""
+
         prompt = f"""You are an AI citation intelligence analyst writing the headline finding of a brand's AI Mindshare Briefing. The reader is a comms director who will paste your 3 sentences into a CMO briefing.
 
 Brand: {brand}
 Category: {category}
 {brand}'s AI mindshare: {mindshare}% (cited in {brand_mentions} of {total} AI responses)
+
+PER-ASSISTANT VISIBILITY (how many of EACH AI's responses mention {brand}):
+{per_llm_block}
+Read: {per_llm_read}
 
 TOP COMPETITORS (by mentions across all responses):
 {comp_block}
@@ -5898,7 +5994,7 @@ MOST-CITED SOURCE DOMAINS (all types — note if analyst firms like Gartner/Forr
 
 Write EXACTLY 3 sentences. Lead with the single most important insight, no preamble.
   Sentence 1 — THE POSITION: {brand}'s mindshare framed against the top competitor's count. If {brand} >= top competitor, lead with strength; if behind, lead with the gap. NEVER say 'lacks authority' if {brand} out-mentions competitors.
-  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data (an outlet a competitor owns where {brand} is absent; analyst-firm dominance over editorial press; an unexpected competitor leader). Name the specific entity + number.
+  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. STRONGLY PREFER the per-assistant concentration when it's lopsided — e.g. "{brand}'s visibility is almost entirely one assistant (Gemini 9/10) and absent from ChatGPT, Claude, and Grok" is a more important finding than an outlet detail, because it means the brand is search-surfaced but not embedded in the models people use most. Otherwise: an outlet a competitor owns where {brand} is absent; analyst-firm dominance; an unexpected competitor leader. Name the specific entity + number.
   Sentence 3 — THE MOVE: the one highest-leverage action, tied to a named outlet or competitive dynamic. Use action verbs: defend, displace, cultivate, pitch.
 BANNED: filler like 'this audit reveals', 'in today's landscape'. Discuss analysts only if they actually dominate the source domains above. Respond with ONLY the 3 sentences — no preamble, no JSON, no labels."""
 
@@ -5962,6 +6058,14 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
         out['headline_move'] = _compute_headline_move(brand, new_sov)
     except Exception:
         out['headline_move'] = None
+    # Per-assistant visibility — pure-python over cached responses, so the
+    # ?fresh/?refresh rerender surfaces it on existing audits too.
+    try:
+        out['per_llm_visibility'] = _compute_per_llm_visibility(brand, all_responses)
+        out['per_llm_read'] = _llm_visibility_read(brand, out['per_llm_visibility'])
+    except Exception:
+        out['per_llm_visibility'] = []
+        out['per_llm_read'] = None
 
     # Prune saved media_targets to drop anything no longer classified as
     # editorial under the current rules. Re-rank survivors.
