@@ -3125,7 +3125,9 @@ def classify_citation_domain(domain):
         return 'editorial'
     if any(d.endswith(tld) for tld in INSTITUTIONAL_TLDS):
         return 'institutional'
-    if d.endswith('.org'):
+    # .org and country-coded advocacy orgs (.org.uk, .org.au, …): patient /
+    # disability / advocacy orgs are institutional partners, not media targets.
+    if d.endswith('.org') or re.search(r'\.org\.[a-z]{2,3}$', d):
         return 'institutional'
     # Productish-TLD vendor sites (.ai/.io/.so/.md/.cx/.dev/.app...) — not
     # pitchable media. Checked AFTER the editorial allowlist so a deliberately
@@ -4442,40 +4444,28 @@ def _compute_media_landscape(brand, category, all_responses, ranked_domains):
         print("media-landscape watchlist failed (skipping):", str(e)[:160])
         return {}
 
-    # Index cited registrable-ish domain -> citing response indices.
-    cited = {}
-    for i, r in enumerate(all_responses):
-        seen = set()
-        for c in (r.get('citations') or []):
-            d = (c.get('domain') or '').lower().replace('www.', '')
-            if d and d not in seen:
-                seen.add(d)
-                cited.setdefault(d, []).append(i)
+    # Cited domains + their sample article URLs (from the ranked-domain list).
+    cited_urls = {}
     for d in (ranked_domains or []):
         dom = (d.get('domain') or '').lower().replace('www.', '')
-        ci = d.get('_citing_idx')
-        if dom and ci:
-            cited[dom] = sorted(set(cited.get(dom, [])) | set(ci))
+        if dom:
+            cited_urls[dom] = [u for u in (d.get('specific_urls') or d.get('urls') or [])
+                               if _is_specific_article(u)]
+    for r in all_responses:
+        for c in (r.get('citations') or []):
+            dd = (c.get('domain') or '').lower().replace('www.', '')
+            if dd:
+                cited_urls.setdefault(dd, [])
 
-    bpats = _ml_brand_patterns(brand)
+    def _cited_key(dom):
+        if dom in cited_urls:
+            return dom
+        for k in cited_urls:
+            if k.endswith('.' + dom) or dom.endswith('.' + k):
+                return k
+        return None
 
-    def _status(domain):
-        dom = (domain or '').lower().replace('www.', '').strip('/')
-        idxs = cited.get(dom)
-        if idxs is None:
-            for k, v in cited.items():
-                if k.endswith('.' + dom) or dom.endswith('.' + k):
-                    idxs = v
-                    break
-        if not idxs:
-            return 'off_radar'
-        for i in idxs:
-            t = all_responses[i].get('response', '') or ''
-            if any(p.search(t) for p in bpats):
-                return 'driving'
-        return 'open_lane'
-
-    out, seen_dom = {}, set()
+    rows, seen_dom = [], set()
     for w in (watch or []):
         if not isinstance(w, dict):
             continue
@@ -4487,7 +4477,44 @@ def _compute_media_landscape(brand, category, all_responses, ranked_domains):
         if not name or not dom or dom in seen_dom:
             continue
         seen_dom.add(dom)
-        out.setdefault(typ, []).append({'name': name, 'domain': dom, 'type': typ, 'status': _status(dom)})
+        rows.append({'name': name, 'domain': dom, 'type': typ, 'cited': _cited_key(dom)})
+
+    # Fetch-verify cited outlets so 'driving' means the brand is ACTUALLY on the
+    # outlet's cited page — not just co-occurring in an answer that cites it
+    # (the "cited in a roundup that also names you" false positive). Bounded.
+    page_hit = {}
+    fjobs = []
+    for ri, row in enumerate(rows):
+        if row['cited']:
+            for u in (cited_urls.get(row['cited']) or [])[:1]:
+                fjobs.append((ri, u))
+    if fjobs and brand:
+        ex = ThreadPoolExecutor(max_workers=10)
+        try:
+            futs = {ex.submit(_page_brand_mentions, u, brand): ri for (ri, u) in fjobs}
+            for fut in as_completed(list(futs.keys()), timeout=22):
+                try:
+                    if (fut.result() or 0) >= 1:
+                        page_hit[futs[fut]] = True
+                except Exception:
+                    pass
+        except FuturesTimeoutError:
+            pass
+        except Exception:
+            pass
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
+
+    out = {}
+    for ri, row in enumerate(rows):
+        if not row['cited']:
+            status = 'off_radar'
+        elif page_hit.get(ri):
+            status = 'driving'
+        else:
+            status = 'open_lane'
+        out.setdefault(row['type'], []).append(
+            {'name': row['name'], 'domain': row['domain'], 'type': row['type'], 'status': status})
     order = {'driving': 0, 'open_lane': 1, 'off_radar': 2}
     for typ in out:
         out[typ].sort(key=lambda o: order.get(o['status'], 3))
