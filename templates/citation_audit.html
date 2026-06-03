@@ -533,6 +533,32 @@
             margin-bottom: 9px;
             font-weight: 600;
         }
+        /* Media Landscape */
+        .ml-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+        .ml-tab { background: #15151f; border: 1px solid #2a2a3a; color: #cfd2ff;
+            padding: 8px 15px; border-radius: 8px; font-size: 13px; cursor: pointer;
+            font-family: inherit; transition: all .15s; }
+        .ml-tab:hover { border-color: #3a3a4a; }
+        .ml-tab.active { background: #16243f; border-color: #3a5a8a; color: #fff; }
+        .ml-tab-n { color: #8a8a9a; font-size: 11px; margin-left: 3px; }
+        .ml-panel { display: none; }
+        .ml-panel.active { display: block; }
+        .ml-row { display: flex; align-items: center; gap: 12px; padding: 11px 4px;
+            border-bottom: 1px solid #1a1a26; }
+        .ml-status { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+        .ml-status.driving { background: #7acc7a; }
+        .ml-status.openlane { background: #ffb860; }
+        .ml-status.offradar { background: #55556a; }
+        .ml-name { font-weight: 600; color: #e8e8f0; min-width: 140px; font-size: 14px; }
+        .ml-domain { color: #6a6a7a; font-size: 12px; font-family: ui-monospace, monospace; flex: 1; }
+        .ml-statlabel { font-size: 12px; white-space: nowrap; }
+        .ml-statlabel.driving { color: #7acc7a; }
+        .ml-statlabel.openlane { color: #ffb860; }
+        .ml-statlabel.offradar { color: #8a8a9a; }
+        @media (max-width: 640px) {
+            .ml-domain { display: none; }
+            .ml-name { min-width: 0; }
+        }
         .media-sov-thin {
             font-size: 13px;
             color: #cfd2ff;
@@ -2166,6 +2192,44 @@
             // editorial map, reframed as proof behind the insights above.
             html += `<div class="section-note" style="margin-top:-8px">All ${targets.length} outlets above are drawn from actual AI citations about ${esc(data.category || 'your category')} — the editorial publications shaping how AI describes your brand. Each card shows ${esc(brandLabel)}'s share of voice versus competitors at that outlet.</div>`;
 
+            // MEDIA LANDSCAPE — the client's essential outlet list by type, each
+            // with its AI presence status. Solves "where are MY outlets?" — they
+            // all appear, with an honest driving / open-lane / off-radar status.
+            const ml = data.media_landscape || {};
+            const mlTypes = [
+                { key: 'consumer', label: 'Consumer' },
+                { key: 'trade', label: 'Trade' },
+                { key: 'business', label: 'Business' },
+                { key: 'advocacy', label: 'Advocacy' },
+            ].filter(t => (ml[t.key] || []).length);  // 4th+ tab only when populated
+            if (mlTypes.length) {
+                const sMeta = {
+                    driving:   { cls: 'driving',  label: 'Driving your visibility' },
+                    open_lane: { cls: 'openlane', label: 'Open lane — pitch' },
+                    off_radar: { cls: 'offradar', label: "Off the AI's radar" },
+                };
+                let tabsHtml = '', panelsHtml = '';
+                mlTypes.forEach((t, ti) => {
+                    tabsHtml += `<button class="ml-tab${ti === 0 ? ' active' : ''}" data-ml="${t.key}" onclick="switchMlTab('${t.key}')">${t.label} <span class="ml-tab-n">${ml[t.key].length}</span></button>`;
+                    const rows = (ml[t.key] || []).map(o => {
+                        const sm = sMeta[o.status] || sMeta.off_radar;
+                        return `<div class="ml-row">
+                            <span class="ml-status ${sm.cls}"></span>
+                            <span class="ml-name">${esc(o.name)}</span>
+                            <span class="ml-domain">${esc(o.domain)}</span>
+                            <span class="ml-statlabel ${sm.cls}">${sm.label}</span>
+                        </div>`;
+                    }).join('');
+                    panelsHtml += `<div class="ml-panel${ti === 0 ? ' active' : ''}" data-ml-panel="${t.key}">${rows}</div>`;
+                });
+                html += `
+                    <div class="section-title" style="margin-top:44px">Media landscape — your outlet list, through the AI's eyes</div>
+                    <div class="section-note" style="margin-top:-6px;margin-bottom:18px">The publications a ${esc(data.category || 'category')} PR team lives by — and what each is doing for ${esc(brandLabel)} in AI answers right now. <strong style="color:#7acc7a">Driving</strong> = AI cites it and names you · <strong style="color:#ffb860">Open lane</strong> = AI cites it for your category but not you (pitch) · <strong style="color:#8a8a9a">Off the AI's radar</strong> = not cited for your category yet (brand-equity / early-mover play).</div>
+                    <div class="ml-tabs">${tabsHtml}</div>
+                    <div class="ml-panels">${panelsHtml}</div>
+                `;
+            }
+
             if (shareUrl || pdfUrl) {
                 html += `
                     <div class="save-panel">
@@ -2356,6 +2420,11 @@
             t.classList.add('active');
             clearTimeout(showToast._timer);
             showToast._timer = setTimeout(() => t.classList.remove('active'), 2200);
+        }
+
+        function switchMlTab(key) {
+            document.querySelectorAll('.ml-tab').forEach(b => b.classList.toggle('active', b.dataset.ml === key));
+            document.querySelectorAll('.ml-panel').forEach(p => p.classList.toggle('active', p.dataset.mlPanel === key));
         }
 
         async function copyShareLink(url) {

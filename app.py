@@ -4388,6 +4388,112 @@ def _llm_visibility_read(brand, per_llm):
             f"({', '.join(present_names)}); absent from {', '.join(absent)}.")
 
 
+def _ml_brand_patterns(brand):
+    """Word-boundary, case-insensitive brand matcher for the coarse media-
+    landscape presence check (multi-form, no corpus guardrail)."""
+    if not brand:
+        return []
+    pats = [re.compile(r'\b' + re.escape(brand) + r'\b', re.IGNORECASE)]
+    parts = brand.split()
+    if len(parts) > 1 and len(parts[0]) > 5:
+        pats.append(re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE))
+    return pats
+
+
+def _compute_media_landscape(brand, category, all_responses, ranked_domains):
+    """The client's MEDIA WATCHLIST — the outlets a PR team in this category
+    considers essential REGARDLESS of whether AI currently cites them — each
+    cross-referenced against the citation data and tagged with a presence
+    status the way a PR buyer thinks about their list:
+
+      'driving'   — AI cites this outlet AND names the brand in those answers.
+      'open_lane' — AI cites this outlet for the category but NOT the brand
+                    (pitch target: the outlet is in the AI's picture, you're not).
+      'off_radar' — AI doesn't cite this outlet for the category at all
+                    (brand-equity / early-mover play, not an AI-visibility move).
+
+    One Claude call builds the watchlist (tagged consumer/trade/business/
+    advocacy); status is deterministic. This is the answer to "why isn't WWD in
+    my report" — it appears, with an honest reason. Returns {} on any failure so
+    the report simply omits the section.
+    """
+    if not all_responses:
+        return {}
+    try:
+        prompt = (
+            f"You are a senior PR strategist building the media list for a brand in this category:\n"
+            f"\"{category or 'this category'}\".\n\n"
+            f"List the 18 publications/outlets a PR team for such a brand would consider ESSENTIAL "
+            f"to its media list — the outlets that matter to them regardless of AI. Span marquee "
+            f"CONSUMER titles, the key TRADE/industry press, relevant BUSINESS/mainstream press, and "
+            f"(only if genuinely central to this category) ADVOCACY/institutional orgs.\n\n"
+            f"Return ONLY a JSON array of objects, each exactly: "
+            f'{{"name":"Outlet Name","domain":"outlet.com","type":"consumer|trade|business|advocacy"}}. '
+            f"Real primary domains only (no www, no paths). No prose, no markdown."
+        )
+        resp = anthropic.messages.create(
+            model="claude-sonnet-4-20250514", max_tokens=1400, timeout=45.0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        txt = (resp.content[0].text or "").strip()
+        m = re.search(r'\[.*\]', txt, re.DOTALL)
+        watch = json.loads(m.group(0) if m else txt)
+    except Exception as e:
+        print("media-landscape watchlist failed (skipping):", str(e)[:160])
+        return {}
+
+    # Index cited registrable-ish domain -> citing response indices.
+    cited = {}
+    for i, r in enumerate(all_responses):
+        seen = set()
+        for c in (r.get('citations') or []):
+            d = (c.get('domain') or '').lower().replace('www.', '')
+            if d and d not in seen:
+                seen.add(d)
+                cited.setdefault(d, []).append(i)
+    for d in (ranked_domains or []):
+        dom = (d.get('domain') or '').lower().replace('www.', '')
+        ci = d.get('_citing_idx')
+        if dom and ci:
+            cited[dom] = sorted(set(cited.get(dom, [])) | set(ci))
+
+    bpats = _ml_brand_patterns(brand)
+
+    def _status(domain):
+        dom = (domain or '').lower().replace('www.', '').strip('/')
+        idxs = cited.get(dom)
+        if idxs is None:
+            for k, v in cited.items():
+                if k.endswith('.' + dom) or dom.endswith('.' + k):
+                    idxs = v
+                    break
+        if not idxs:
+            return 'off_radar'
+        for i in idxs:
+            t = all_responses[i].get('response', '') or ''
+            if any(p.search(t) for p in bpats):
+                return 'driving'
+        return 'open_lane'
+
+    out, seen_dom = {}, set()
+    for w in (watch or []):
+        if not isinstance(w, dict):
+            continue
+        name = (w.get('name') or '').strip()
+        dom = (w.get('domain') or '').lower().replace('www.', '').strip('/')
+        typ = (w.get('type') or 'consumer').strip().lower()
+        if typ not in ('consumer', 'trade', 'business', 'advocacy'):
+            typ = 'consumer'
+        if not name or not dom or dom in seen_dom:
+            continue
+        seen_dom.add(dom)
+        out.setdefault(typ, []).append({'name': name, 'domain': dom, 'type': typ, 'status': _status(dom)})
+    order = {'driving': 0, 'open_lane': 1, 'off_radar': 2}
+    for typ in out:
+        out[typ].sort(key=lambda o: order.get(o['status'], 3))
+    return out
+
+
 _URL_VALIDATION_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
                   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -5019,7 +5125,7 @@ def _chatgpt_grounded(prompt):
 def _grok_grounded(prompt):
     """Grok via OpenRouter's ":online" web plugin — adds live web search to the
     model with no separate xAI key. Cited URLs come from message.annotations."""
-    base = os.environ.get("XAI_OPENROUTER_MODEL", "x-ai/grok-4")
+    base = os.environ.get("XAI_OPENROUTER_MODEL", "x-ai/grok-4.3")
     model = base if base.endswith(":online") else base + ":online"
     resp = openrouter_client.with_options(timeout=90.0).chat.completions.create(
         model=model,
@@ -5204,7 +5310,7 @@ def _call_llm(provider, enriched_prompt):
             except Exception as e:
                 print("Grok :online failed; parametric fallback:", str(e)[:160])
         resp = openrouter_client.chat.completions.create(
-            model=os.environ.get("XAI_OPENROUTER_MODEL", "x-ai/grok-4"),
+            model=os.environ.get("XAI_OPENROUTER_MODEL", "x-ai/grok-4.3"),
             max_tokens=2000,
             messages=[
                 {"role": "system", "content": CITATION_SYSTEM_PROMPT},
@@ -6364,6 +6470,15 @@ Respond with ONLY valid JSON:
         print("per-LLM visibility computation failed (continuing without):", _pv_e)
         analysis["per_llm_visibility"] = []
         analysis["per_llm_read"] = None
+    # Media Landscape — the client's essential outlet list (consumer/trade/
+    # business/advocacy) with each outlet's AI presence status (driving / open
+    # lane / off radar). Answers "why isn't WWD here?" honestly. One Claude call.
+    try:
+        analysis["media_landscape"] = _compute_media_landscape(
+            brand, analysis.get("category"), all_responses, ranked_domains)
+    except Exception as _ml_e:
+        print("media-landscape computation failed (continuing without):", _ml_e)
+        analysis["media_landscape"] = {}
     # Regenerate the executive summary now that share-of-voice is known, so it
     # LEADS WITH STRENGTHS / OPPORTUNITIES (the main analysis call ran before SoV
     # was computed, so its summary couldn't see where the brand over- or under-
@@ -6797,6 +6912,14 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     except Exception:
         out['per_llm_visibility'] = []
         out['per_llm_read'] = None
+    # Media Landscape (watchlist × AI-presence status). One Claude call; only on
+    # ?refresh (the summary-regen path) to keep ?fresh a zero-API pure rerender.
+    if regenerate_summary:
+        try:
+            out['media_landscape'] = _compute_media_landscape(
+                brand, data.get('category'), all_responses, ranked_domains)
+        except Exception:
+            out['media_landscape'] = out.get('media_landscape') or {}
 
     # Rebuild media_targets from the CURRENT editorial ranking so the refresh
     # view can both PRUNE (drop domains no longer classified editorial) AND ADD
