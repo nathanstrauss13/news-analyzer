@@ -3028,6 +3028,14 @@ NON_EDITORIAL_VENDORS = {
     'adobe.com', 'microsoft.com', 'aws.amazon.com', 'cloud.google.com',
     'shopify.com', 'wordpress.com', 'wix.com', 'squarespace.com',
     'zendesk.com', 'intercom.com', 'mailchimp.com', 'sendgrid.com',
+    # DXP / CMS / martech vendors whose .com surfaces "vs" comparison content
+    # for the enterprise marketing audits but isn't pitchable editorial.
+    'dotcms.com', 'ingeniux.com', 'coredna.com', 'acquia.com', 'sitecore.com',
+    'optimizely.com', 'contentful.com', 'contentstack.com', 'bloomreach.com',
+    # Design / no-code / website-builder vendors (Canva-tier audits).
+    'desygner.com', 'lucidchart.com', 'sketch.com', 'jimdo.com', 'vibe.us',
+    # Boutique digital / design agencies that show up via their comparison blogs.
+    'cleardigital.com', 'awesomic.com', 'branded.agency', 'brandedagency.com',
     # E-commerce / OTA aggregators
     'expedia.com', 'booking.com', 'kayak.com', 'tripadvisor.com', 'yelp.com',
     'glassdoor.com', 'indeed.com',

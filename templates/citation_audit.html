@@ -2214,9 +2214,12 @@
             // editorial map, reframed as proof behind the insights above.
             html += `<div class="section-note" style="margin-top:-8px">All ${targets.length} outlets above are drawn from actual AI citations about ${esc(data.category || 'your category')} — the editorial publications shaping how AI describes your brand. Each card shows ${esc(brandLabel)}'s share of voice versus competitors at that outlet.</div>`;
 
-            // MEDIA LANDSCAPE — the client's essential outlet list by type, each
-            // with its AI presence status. Solves "where are MY outlets?" — they
-            // all appear, with an honest driving / open-lane / off-radar status.
+            // MEDIA LANDSCAPE — PARKED. Backend still computes + saves
+            // `media_landscape` in the payload (so the data is there for the
+            // CSV / future revivals), but the UI render is gated off because
+            // it wasn't adding enough strategic value above the SoV cards.
+            // Flip MEDIA_LANDSCAPE_ENABLED to true to bring it back.
+            const MEDIA_LANDSCAPE_ENABLED = false;
             const ml = data.media_landscape || {};
             const mlTypes = [
                 { key: 'consumer', label: 'Consumer' },
@@ -2224,7 +2227,7 @@
                 { key: 'business', label: 'Business' },
                 { key: 'advocacy', label: 'Advocacy' },
             ].filter(t => (ml[t.key] || []).length);  // 4th+ tab only when populated
-            if (mlTypes.length) {
+            if (MEDIA_LANDSCAPE_ENABLED && mlTypes.length) {
                 const sMeta = {
                     driving:   { cls: 'driving',  label: 'Driving your visibility' },
                     open_lane: { cls: 'openlane', label: 'Open lane — pitch' },
