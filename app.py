@@ -233,6 +233,26 @@ class FreeAuditUse(db.Model):
     __table_args__ = (db.UniqueConstraint('ip', 'day', name='uniq_ip_day'),)
 
 
+class AuditLead(db.Model):
+    """Per-email lead capture + hard cap on free audits per email. Each audit
+    costs real LLM API spend; without this, a single shared link could blow up
+    into hundreds of dollars in casual self-serve runs. Doubles as the lead-
+    capture for follow-up (we know who's running audits and on what brand).
+    Cap is set by EMAIL_AUDIT_CAP env var (default 1). IPs in
+    FREE_AUDIT_BYPASS_IPS skip the email gate entirely — for the operator's
+    own testing without polluting the lead table.
+    """
+    __tablename__ = 'audit_leads'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(254), unique=True, nullable=False, index=True)
+    audit_count = db.Column(db.Integer, default=0, nullable=False)
+    first_seen = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    last_seen = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    last_ip = db.Column(db.String(64), nullable=True)
+    last_slug = db.Column(db.String(32), nullable=True, index=True)
+    last_problem_statement = db.Column(db.Text, nullable=True)
+
+
 class AuditFeedback(db.Model):
     __tablename__ = 'audit_feedback'
     id = db.Column(db.Integer, primary_key=True)
@@ -6628,6 +6648,21 @@ def _ip_is_exempt_from_cap(ip):
     return bool(ip) and ip in _FREE_AUDIT_BYPASS_IPS
 
 
+# Per-email hard cap on free audits. Each audit costs real money in LLM calls;
+# uncapped self-serve becomes a billing risk on any viral share. Default 1 free
+# audit per email; raise via EMAIL_AUDIT_CAP env var.
+_EMAIL_AUDIT_CAP = max(1, int(os.environ.get("EMAIL_AUDIT_CAP", "1") or "1"))
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$")
+
+
+def _normalize_email(s):
+    """Strip + lowercase + bounds-check. Returns None if obviously invalid."""
+    s = (s or "").strip().lower()
+    if not s or len(s) > 254 or not _EMAIL_RE.match(s):
+        return None
+    return s
+
+
 @app.route('/citation-audit', methods=['GET', 'POST'])
 def citation_audit():
     # MVP branch: audits are always anonymous + free tier. We still pass
@@ -6672,17 +6707,49 @@ def citation_audit():
         except Exception:
             prompts_override = None
 
-    # Per-IP per-day cap. Pre-decrement before kicking off the audit so a
-    # buggy/abusive client can't burst-spawn 30 audits in parallel. We do not
-    # refund on failure: the cap is abuse protection, not a credit ledger.
-    # IPs listed in FREE_AUDIT_BYPASS_IPS env var skip BOTH the cap check AND
-    # the recording — they get unlimited audits and don't pollute the
-    # free_audit_use table. Used for the operator's own IP + trusted demos.
+    # Two-layer cap on free audits:
+    #   1. Email gate (primary): required email, with a hard lifetime cap per
+    #      email (EMAIL_AUDIT_CAP, default 1). This is the main control against
+    #      runaway LLM spend on shared links — each audit costs real money.
+    #      Also doubles as our lead capture (we know who's running audits and
+    #      what brand they're investigating).
+    #   2. Per-IP per-day cap (secondary): abuse protection on top of the email
+    #      gate, so one browser can't burn through dozens of fake emails.
+    # IPs in FREE_AUDIT_BYPASS_IPS skip BOTH gates — operator self-testing +
+    # close-partner walkthroughs don't pollute the lead table.
     today = date.today()
     ip = _client_ip()
+    lead_email = None
     if _ip_is_exempt_from_cap(ip):
         print(f"[audit] FREE_AUDIT_BYPASS_IPS hit: {ip} (unlimited)")
     else:
+        # Email gate — captures the lead before any LLM call.
+        lead_email = _normalize_email(request.form.get('email', ''))
+        if not lead_email:
+            return jsonify({
+                "error": "Please enter a valid email so we can send you the report and any updates.",
+                "code": "email_required",
+            }), 400
+        lead = AuditLead.query.filter_by(email=lead_email).first()
+        if lead and lead.audit_count >= _EMAIL_AUDIT_CAP:
+            return jsonify({
+                "error": ("You've already used your free audit. For more, talk to us about a bespoke "
+                          "audit — we'll cover your category in depth and walk through the findings live."),
+                "code": "email_rate_limited",
+            }), 429
+        if lead:
+            lead.audit_count += 1
+            lead.last_seen = datetime.utcnow()
+            lead.last_ip = ip
+            lead.last_problem_statement = problem_statement[:1000]
+        else:
+            lead = AuditLead(
+                email=lead_email, audit_count=1,
+                first_seen=datetime.utcnow(), last_seen=datetime.utcnow(),
+                last_ip=ip, last_problem_statement=problem_statement[:1000],
+            )
+            db.session.add(lead)
+        # Per-IP per-day abuse cap.
         use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
         if use and use.count >= FREE_DAILY_CAP:
             return jsonify({
@@ -6695,6 +6762,7 @@ def citation_audit():
             use = FreeAuditUse(ip=ip, day=today, count=1)
             db.session.add(use)
         db.session.commit()
+        print(f"[audit] lead capture: {lead_email} (audit #{lead.audit_count})")
 
     user_id = user.id if user else None
     cfg = TIER_CONFIG[tier]
@@ -6736,6 +6804,16 @@ def citation_audit():
                     credits_consumed=(1 if credit_charged else 0),
                     problem_statement=problem_statement,
                 ))
+                # Stamp the slug back on the lead row so we can match emails to
+                # the reports they ran (lead follow-up). Failure here is fine —
+                # the audit itself already succeeded.
+                if lead_email:
+                    try:
+                        _lead = AuditLead.query.filter_by(email=lead_email).first()
+                        if _lead:
+                            _lead.last_slug = slug
+                    except Exception as _le:
+                        print("lead slug stamp failed (continuing):", str(_le)[:120])
                 db.session.commit()
             q.put(json.dumps({"type": "result", "data": result}))
             # Fire the owner debug email AFTER the result is pushed to the
