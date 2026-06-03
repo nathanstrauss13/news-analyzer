@@ -3106,6 +3106,10 @@ def classify_citation_domain(domain):
         return 'non_editorial'
     if d in NON_EDITORIAL_VENDORS or d_stripped in NON_EDITORIAL_VENDORS or reg in NON_EDITORIAL_VENDORS:
         return 'non_editorial'
+    # Wire services / PR distribution (Business Wire, PR Newswire, …) — the AI is
+    # citing a press release (often the brand's own), not pitchable editorial.
+    if d in PR_DOMAINS or d_stripped in PR_DOMAINS or reg in PR_DOMAINS:
+        return 'non_editorial'
     if d_stripped in RETAILER_DOMAINS or reg in RETAILER_DOMAINS:
         return 'retail'
     # Certification / standards bodies → institutional (partner/certify, don't
@@ -6306,9 +6310,14 @@ Respond with ONLY valid JSON:
     _cat_l = _cat.lower()
     _is_cons = _category_is_consumer(_cat)
     editorial_domains = _filter_relevant_editorial(editorial_domains, _cat)
+    # Also gate Claude-named targets through the editorial classifier (the
+    # editorial_domains list is already gated this way, but the analysis call can
+    # name a wire service / retailer / analyst / vendor as a "media target").
+    # Keeps fresh-audit media_targets consistent with the rerender path.
     analysis["media_targets"] = [
         t for t in (analysis.get("media_targets") or [])
         if not _is_irrelevant_outlet(t.get("domain"), t.get("outlet"), _is_cons, _cat_l)
+        and (not t.get("domain") or classify_citation_domain(t.get("domain")) == "editorial")
     ]
     # Scope SoV to exactly the media-target outlets the report shows, so every
     # card carries its competitor breakdown and the verdicts aren't capped out
