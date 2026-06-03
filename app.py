@@ -4988,6 +4988,57 @@ def _sort_targets_by_prominence(targets, outlet_sov=None):
         t['rank'] = i + 1
 
 
+def _coverage_guard_verdicts(media_targets, outlet_sov, brand):
+    """An outlet can only be a STRENGTH TO DEFEND if the brand is VERIFIED on
+    its cited page (coverage='confirmed'). Without that, the share-of-voice
+    'strength' is only AI co-occurrence — the AI mentions you alongside an
+    outlet that doesn't actually cover you. That's a pitch target, not a
+    relationship to defend.
+
+    Downgrades any verdict='strength' row to 'opportunity' when the matched
+    media target's `coverage` is 'category', 'mention', or 'unverified'.
+    Rewrites the verdict_label to be honest about why. Makes Media Targets
+    agree with Media Landscape so 'strength' = 'they cover you and you lead.'
+
+    Only runs when coverage data is present (grounded audits). Non-grounded
+    audits leave verdicts untouched (no page-fetch evidence to guard against).
+    """
+    if not media_targets or not outlet_sov:
+        return
+    cov_by_dom = {}
+    for t in media_targets:
+        dom = (t.get('domain') or '').lower()
+        if dom and t.get('coverage'):
+            cov_by_dom[dom] = t.get('coverage')
+    if not cov_by_dom:
+        return  # non-grounded audit; nothing to guard against
+    b = brand or 'this brand'
+    downgraded = []
+    for row in outlet_sov:
+        dom = (row.get('domain') or '').lower()
+        cov = cov_by_dom.get(dom)
+        if row.get('verdict') == 'strength' and cov and cov != 'confirmed':
+            row['_pre_guard_verdict'] = 'strength'  # diagnostic
+            row['verdict'] = 'opportunity'
+            tc = row.get('top_competitor_at_outlet') or {}
+            comp = tc.get('name') if isinstance(tc, dict) else None
+            if comp:
+                row['verdict_label'] = (
+                    f"AI co-mentions {b} alongside {comp} when it cites this "
+                    f"outlet, but the cited page doesn't actually cover {b}. "
+                    f"Pitch to convert co-mention into coverage."
+                )
+            else:
+                row['verdict_label'] = (
+                    f"AI co-mentions {b} when it cites this outlet, but the "
+                    f"cited page doesn't actually cover {b}. Pitch coverage."
+                )
+            downgraded.append(dom)
+    if downgraded:
+        print(f"_coverage_guard_verdicts: downgraded {len(downgraded)} 'strength' -> "
+              f"'opportunity' (no on-page coverage): {', '.join(downgraded[:10])}")
+
+
 def _category_keywords(category):
     """Pull noun-ish tokens from the category string for substring matching in
     _check_url_topic. Drops common stopwords; lowercases; caps at 10 keywords.
@@ -6476,6 +6527,14 @@ Respond with ONLY valid JSON:
             _verify_brand_coverage(brand, analysis.get("media_targets") or [], ranked_domains)
         except Exception as _bc_e:
             print("brand-coverage verification failed (continuing without):", _bc_e)
+    # Coverage-guard the SoV verdicts: an outlet can only be 'strength' if the
+    # brand is on the cited page. Otherwise it's 'opportunity'. Keeps Media
+    # Targets agreeing with Media Landscape so 'strength' honestly means 'they
+    # cover you and you lead.'
+    try:
+        _coverage_guard_verdicts(analysis.get("media_targets"), analysis.get("outlet_sov"), brand)
+    except Exception as _cg_e:
+        print("coverage-guard failed (continuing without):", _cg_e)
     # Rank targets by how prominently the AI surfaces them (responses citing +
     # citation frequency) — relevance + share-of-voice, not coverage tiers.
     try:
@@ -7041,6 +7100,11 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
             _verify_brand_coverage(brand, out.get("media_targets") or [], ranked_domains)
         except Exception:
             pass
+    # Coverage-guard: 'strength' requires on-page coverage; otherwise -> opportunity.
+    try:
+        _coverage_guard_verdicts(out.get("media_targets"), new_sov, brand)
+    except Exception:
+        pass
     # Rank by AI prominence (responses citing + citation frequency), not coverage.
     try:
         _sort_targets_by_prominence(out.get("media_targets"), new_sov)
