@@ -3036,6 +3036,14 @@ NON_EDITORIAL_VENDORS = {
     'desygner.com', 'lucidchart.com', 'sketch.com', 'jimdo.com', 'vibe.us',
     # Boutique digital / design agencies that show up via their comparison blogs.
     'cleardigital.com', 'awesomic.com', 'branded.agency', 'brandedagency.com',
+    # Startup / VC data + SaaS sites (not editorial media — surface in BCV /
+    # VC-category audits with vendor-comparison or directory pages).
+    'tracxn.com', 'aifundingtracker.com', 'foundershield.com',
+    'switchpitch.com', 'growthlist.co', 'startupsavant.com', 'openvc.app',
+    'qubit.capital', 'visible.vc', 'failory.com', 'everythingstartups.com',
+    'rho.co', 'ellty.com', 'vcsheet.com', 'dealroom.net', 'seedtable.com',
+    'earthianai.com', 'affinity.co', 'basetemplates.com', 'startupsavant.com',
+    'firstparty.io',
     # E-commerce / OTA aggregators
     'expedia.com', 'booking.com', 'kayak.com', 'tripadvisor.com', 'yelp.com',
     'glassdoor.com', 'indeed.com',
@@ -6707,6 +6715,13 @@ Respond with ONLY valid JSON:
         _sort_targets_by_prominence(analysis.get("media_targets"), analysis.get("outlet_sov"))
     except Exception as _st_e:
         print("target prominence sort failed (continuing):", _st_e)
+    # Cap to top 5 pitch opportunities — fewer, sharper picks > a long list of
+    # noisy options. The full ranked editorial set is still in
+    # raw_citation_domains for the CSV.
+    _mt = analysis.get("media_targets") or []
+    if len(_mt) > 5:
+        analysis["media_targets"] = _mt[:5]
+        print(f"capped media_targets {len(_mt)} -> 5 (raw set kept in CSV)")
     # Single highest-priority action — gives every dashboard one unmistakable
     # next step even when it's all-strength or all-emerging.
     try:
@@ -7327,7 +7342,7 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
             # appended again, duplicating the prior card.)
             continue
         new_media.append(t)
-        if len(new_media) >= 10:
+        if len(new_media) >= 5:
             break
     for i, t in enumerate(new_media):
         t['rank'] = i + 1
