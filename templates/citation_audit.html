@@ -2049,11 +2049,27 @@
             `;
 
             if (competitors.length) {
-                html += `<div class="section-title">The competitive landscape — who else AI names in your category</div><div class="competitors">`;
-                for (const c of competitors) {
-                    html += `<span class="competitor-chip">${esc(c.name)}<span class="count">${c.mention_count}x</span></span>`;
+                // Split competitors by type — brand peers are the real
+                // competitive set; retailers/marketplaces are distribution
+                // channels (often partners, not rivals). Pre-classifier
+                // payloads have no 'type' — treat them all as peers.
+                const peers = competitors.filter(c => !c.type || c.type === 'brand_peer');
+                const channels = competitors.filter(c => c.type === 'retailer' || c.type === 'marketplace');
+                html += `<div class="section-title">The competitive landscape — who else AI names in your category</div>`;
+                if (peers.length) {
+                    html += `<div class="competitors">`;
+                    for (const c of peers) {
+                        html += `<span class="competitor-chip">${esc(c.name)}<span class="count">${c.mention_count}x</span></span>`;
+                    }
+                    html += `</div>`;
                 }
-                html += `</div>`;
+                if (channels.length) {
+                    html += `<div style="font-size:12px;color:#8a8a9a;margin:14px 0 8px;letter-spacing:.03em;">Also surfaced — retail / distribution channels (not direct competitors):</div><div class="competitors">`;
+                    for (const c of channels) {
+                        html += `<span class="competitor-chip" style="opacity:.65;">${esc(c.name)}<span class="count">${c.mention_count}x</span></span>`;
+                    }
+                    html += `</div>`;
+                }
             }
 
             // Top 10 media targets with each card's share-of-voice merged

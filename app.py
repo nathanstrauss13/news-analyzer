@@ -3847,6 +3847,71 @@ def _count_brand_mentions(brand, all_responses):
     return full_count
 
 
+def _classify_competitor_types(brand, category, competitor_counts):
+    """Classify each extracted competitor as a brand peer, retailer, or
+    marketplace so the report treats them differently.
+
+    Why: when an audit's category mixes brands and channels (e.g. "athletic
+    retailer for men's running"), the AI surfaces BOTH brand peers (Nike,
+    Tracksmith) and multi-brand retailers (Running Warehouse, REI). Framing a
+    single-brand company like Lululemon as "trailing Running Warehouse" is
+    apples-to-oranges — Running Warehouse SELLS Lululemon and Nike alongside
+    each other, it doesn't compete with them. PR competitive analysis needs
+    only the brand peers.
+
+    Adds a 'type' field to each competitor dict:
+      'brand_peer'  — direct brand/DTC competitor (Nike, Tracksmith)
+      'retailer'    — multi-brand retail channel (Running Warehouse, REI)
+      'marketplace' — general marketplace (Amazon, eBay)
+    On any failure, defaults all to 'brand_peer' (fail-safe — keeps current
+    behaviour of treating everyone as competitors).
+    """
+    if not competitor_counts:
+        return competitor_counts
+    names = [c.get('name') for c in competitor_counts if c.get('name')]
+    if not names:
+        return competitor_counts
+    try:
+        prompt = (
+            f'You are classifying competitors for a PR competitive audit of "{brand}" '
+            f'in the category: "{category or "general"}".\n\n'
+            f'For each name, classify as exactly one of:\n'
+            f'- brand_peer: a direct BRAND competitor that makes or sells its own products '
+            f'in the same category (e.g. for Lululemon: Nike, Adidas, Tracksmith, Patagonia). '
+            f'Use this for brands and DTC vendors.\n'
+            f'- retailer: a multi-brand retail channel that distributes other companies\' '
+            f'products (e.g. Running Warehouse, REI, Dick\'s Sporting Goods, Sephora, '
+            f'Fleet Feet, Road Runner Sports, Best Buy, Nordstrom). They sell brands, '
+            f'they don\'t compete with them.\n'
+            f'- marketplace: a general marketplace (Amazon, eBay, Etsy, Walmart).\n\n'
+            f'Names:\n' + '\n'.join(f'- {n}' for n in names) + '\n\n'
+            f'Return ONLY a JSON object mapping name -> type. Use the EXACT names from '
+            f'the list. No prose, no markdown, just the JSON.'
+        )
+        resp = anthropic.messages.create(
+            model="claude-sonnet-4-20250514", max_tokens=600, timeout=30.0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        txt = (resp.content[0].text or "").strip()
+        m = re.search(r'\{.*\}', txt, re.DOTALL)
+        types = json.loads(m.group(0) if m else txt)
+        n_retail = n_market = n_peer = 0
+        for c in competitor_counts:
+            t = (types.get(c.get('name')) or 'brand_peer').strip().lower()
+            if t not in ('brand_peer', 'retailer', 'marketplace'):
+                t = 'brand_peer'
+            c['type'] = t
+            if t == 'retailer': n_retail += 1
+            elif t == 'marketplace': n_market += 1
+            else: n_peer += 1
+        print(f"competitor type classification: peers={n_peer} retailers={n_retail} marketplaces={n_market}")
+    except Exception as e:
+        print("competitor type classification failed (defaulting all to brand_peer):", str(e)[:160])
+        for c in competitor_counts:
+            c.setdefault('type', 'brand_peer')
+    return competitor_counts
+
+
 def _extract_competitor_candidates(brand, category, all_responses, max_candidates=15):
     """Ask Claude to extract a CANDIDATE LIST of competitor brand names from
     the actual response text. Returns just names — counts come from
@@ -6170,9 +6235,12 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
             competitor_counts.append({"name": name, "mention_count": cnt})
     competitor_counts.sort(key=lambda c: c["mention_count"], reverse=True)
     competitor_counts = competitor_counts[:10]
+    # Classify each as brand_peer / retailer / marketplace so the SoV math and
+    # the UI can treat them differently — retailers aren't real PR competitors.
+    competitor_counts = _classify_competitor_types(brand, category, competitor_counts)
     top_competitor_block = "\n".join(
         f"  - {c['name']}: cited in {c['mention_count']} of {len(all_responses)} responses"
-        for c in competitor_counts
+        for c in competitor_counts if c.get('type', 'brand_peer') == 'brand_peer'
     ) or "  (no clear competitor brands surfaced)"
 
     emit("analysis", "Verifying editorial sources...", 0, 1)
@@ -6602,8 +6670,13 @@ Respond with ONLY valid JSON:
     # if no targets map to cited domains.
     try:
         _sov_eds = _editorial_dicts_for_targets(ranked_domains, analysis.get("media_targets")) or editorial_domains
+        # SoV compares the brand against PEER BRANDS only — retailers and
+        # marketplaces are distribution channels, not direct competitors. They
+        # still show in the report's "Also surfaced" chip row, just not in the
+        # per-outlet 'vs' math.
+        _peer_competitors = [c for c in competitor_counts if c.get('type', 'brand_peer') == 'brand_peer']
         analysis["outlet_sov"] = _compute_outlet_share_of_voice(
-            brand, competitor_counts, all_responses, _sov_eds,
+            brand, _peer_competitors, all_responses, _sov_eds,
             max_outlets=max(10, len(_sov_eds))
         )
     except Exception as _sov_e:
@@ -7165,6 +7238,13 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
                   ", ".join(f"{n}: {a}->{b}" for n, a, b in deltas[:10]))
         competitor_counts = rebuilt
         out['competitors'] = competitor_counts
+    # Re-classify competitor types so existing audits (saved before the
+    # classifier existed) also get the brand_peer / retailer split applied.
+    # Skip if every competitor is already classified — saves a Claude call.
+    if competitor_counts and not all(c.get('type') for c in competitor_counts):
+        competitor_counts = _classify_competitor_types(
+            brand, data.get('category'), competitor_counts)
+        out['competitors'] = competitor_counts
     competitor_stems = _competitor_domain_stems(competitor_counts)
     if competitor_stems:
         editorial_domains = [d for d in editorial_domains if not _is_competitor_owned_domain(d['domain'], competitor_stems)]
@@ -7258,8 +7338,11 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     # obscure non-target outlets.
     try:
         _sov_eds = _editorial_dicts_for_targets(ranked_domains, new_media) or editorial_domains
+        # SoV: compare only against brand peers (retailers aren't direct
+        # competitors; they sell the brand's products alongside others).
+        _peer_competitors = [c for c in competitor_counts if c.get('type', 'brand_peer') == 'brand_peer']
         new_sov = _compute_outlet_share_of_voice(
-            brand, competitor_counts, all_responses, _sov_eds,
+            brand, _peer_competitors, all_responses, _sov_eds,
             max_outlets=max(10, len(_sov_eds)))
     except Exception as e:
         print(f"[rerender] SoV failed: {e}")
