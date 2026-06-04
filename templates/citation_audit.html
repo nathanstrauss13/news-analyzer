@@ -689,8 +689,15 @@
         .bib-verdict {
             color: #6a6a7a;
             font-size: 11px;
-            font-weight: 400;
+            font-weight: 500;
         }
+        /* Verdict color on the label text so the verdict is visible even when
+           the colored brand fill has zero width (brands with 0% mindshare).
+           Otherwise rows just look uniformly gray, losing the verdict story. */
+        .bib-verdict.strength    { color: #22c55e; }
+        .bib-verdict.opportunity { color: #f59e0b; }
+        .bib-verdict.neutral     { color: #94a3b8; }
+        .bib-verdict.emerging    { color: #a855f7; }
         .bib-outer {
             height: 22px;
             background: #14141c;
@@ -2302,7 +2309,7 @@
                     const brandPct = (brand_n / maxN) * 100;
                     bibRows += `
                         <div class="bib-row">
-                            <div class="bib-name">${esc(t.outlet || t.domain || '')}<br><span class="bib-verdict">${verdictLbl(v)}</span></div>
+                            <div class="bib-name">${esc(t.outlet || t.domain || '')}<br><span class="bib-verdict ${v}">${verdictLbl(v)}</span></div>
                             <div class="bib-outer">
                                 <div class="bib-authority" style="width:${authPct.toFixed(1)}%"></div>
                                 <div class="bib-brand ${verdictClass(v)}" style="width:${brandPct.toFixed(1)}%"></div>
