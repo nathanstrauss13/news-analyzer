@@ -3804,6 +3804,29 @@ def _count_brand_mentions(brand, all_responses):
         if full_pat.search(r.get('response', '') or '')
     )
     parts = brand.split()
+
+    # SINGLE-WORD COMMON-WORD GUARDRAIL — symmetric to the multi-word case.
+    # Short single-word brands ("On", "Apple", "Notion", "Tilt") collide with
+    # common English words ("on the market", "apple pie", "the notion that").
+    # The case-insensitive \bOn\b regex matches everywhere — "On" the brand at
+    # 47/50 vs the real On Running mention count of ~17. Fix: also compute the
+    # CASE-SENSITIVE count; if the lowercase form dominates the count, that's
+    # the English-word collision and we should fall back to case-sensitive
+    # (which matches the brand's proper-noun form only).
+    #
+    # Examples (CI / CS / final):
+    #   - "On"      → 47 / 17 / 17   (CI > 2×CS=34 → collision; use CS)
+    #   - "Tilt"    → e.g. 6 / 6 / 6 (CI == CS → no collision; CI)
+    #   - "Patagonia" → 24 / 24 / 24 (always capitalized → no change)
+    if len(parts) == 1 and len(brand) <= 6:
+        cs_pat = re.compile(r'\b' + re.escape(brand) + r'\b')
+        cs_count = sum(
+            1 for r in all_responses
+            if cs_pat.search(r.get('response', '') or '')
+        )
+        if full_count > max(cs_count * 2, 3):
+            return cs_count
+
     if len(parts) > 1 and len(parts[0]) > 5:
         first_pat = re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE)
         first_count = sum(
@@ -3951,6 +3974,24 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
             return []
         full_pat = re.compile(r'\b' + re.escape(name) + r'\b', re.IGNORECASE)
         parts = name.split()
+
+        # Single-word common-word guardrail (same logic as _count_brand_mentions):
+        # short single-word brands ("On", "Apple", "Notion") collide with the
+        # English word. If the case-insensitive match count dominates the
+        # case-sensitive one, swap to the proper-noun-only case-sensitive pattern.
+        if len(parts) == 1 and len(name) <= 6:
+            cs_pat = re.compile(r'\b' + re.escape(name) + r'\b')
+            ci_count = sum(
+                1 for r in all_responses
+                if full_pat.search(r.get('response', '') or '')
+            )
+            cs_count = sum(
+                1 for r in all_responses
+                if cs_pat.search(r.get('response', '') or '')
+            )
+            if ci_count > max(cs_count * 2, 3):
+                return [cs_pat]
+
         if not (len(parts) > 1 and len(parts[0]) > 5):
             return [full_pat]
         first_pat = re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE)
@@ -4393,8 +4434,22 @@ def _llm_visibility_read(brand, per_llm):
             return (f"{b} is absent from all {total} assistants even in live-search mode — "
                     f"no discoverable web presence in this category yet.")
         if len(present) == total:
-            return (f"{b} surfaces across all {total} assistants in live-search mode — strong, "
-                    f"consistent discoverability when AI searches the web for your category.")
+            # "All 5 surfacing" doesn't always mean balanced — Lululemon hit all 5
+            # but ranged 1-5 (ChatGPT 1 vs Grok 5). Calling that "consistent" is
+            # misleading. Only claim consistency when the spread is genuinely
+            # tight; otherwise name the strongest + weakest honestly.
+            mentions = [x.get('mentions') or 0 for x in per_llm]
+            mn, mx = min(mentions), max(mentions)
+            is_balanced = mn >= 2 and mx <= mn * 3
+            if is_balanced:
+                return (f"{b} surfaces across all {total} assistants in live-search mode — strong, "
+                        f"consistent discoverability when AI searches the web for your category.")
+            leader = max(per_llm, key=lambda x: x.get('mentions') or 0)
+            weakest = min(per_llm, key=lambda x: x.get('mentions') or 0)
+            return (f"{b} surfaces across all {total} assistants but unevenly — strongest on "
+                    f"{leader.get('llm')} ({leader.get('mentions')}/{leader.get('total')}), "
+                    f"thinnest on {weakest.get('llm')} ({weakest.get('mentions')}/{weakest.get('total')}). "
+                    f"Broad reach but uneven recommendation depth.")
         if len(present) >= max(2, total - 2):
             return (f"{b} surfaces on {len(present)} of {total} assistants in live-search mode; "
                     f"thinner on {', '.join(absent)}. Solid discoverability with room to broaden.")
@@ -4825,6 +4880,16 @@ def _page_brand_mentions(url, brand, timeout=5):
             return 0
         cnt = len(re.findall(r'\b' + re.escape(brand) + r'\b', text, re.IGNORECASE))
         parts = brand.split()
+        # Single-word common-word guardrail (same logic as _count_brand_mentions):
+        # short single-word brands ("On", "Apple") collide with English words on
+        # the page. If the case-insensitive count dominates the case-sensitive
+        # one, the brand is colliding with the lowercase common word — use the
+        # case-sensitive (proper-noun-only) count instead. Otherwise a page about
+        # something unrelated could falsely register as confirmed brand coverage.
+        if len(parts) == 1 and len(brand) <= 6:
+            cs_cnt = len(re.findall(r'\b' + re.escape(brand) + r'\b', text))
+            if cnt > max(cs_cnt * 2, 3):
+                cnt = cs_cnt
         if cnt == 0 and len(parts) > 1 and len(parts[0]) > 5:
             cnt = len(re.findall(r'\b' + re.escape(parts[0]) + r'\b', text, re.IGNORECASE))
         return cnt
