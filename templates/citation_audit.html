@@ -669,67 +669,37 @@
             word-break: break-all;
         }
         .media-example-url a:hover { text-decoration: underline; }
-        /* Outlet map — bar-in-bar overview rendered above the cards */
-        .bib-grid { margin: 12px 0 36px; }
-        .bib-row {
-            display: grid;
-            grid-template-columns: 220px 1fr 110px;
-            gap: 16px;
-            align-items: center;
-            padding: 11px 0;
-            border-bottom: 1px solid #181826;
-        }
-        .bib-row:last-child { border-bottom: 0; }
-        .bib-name {
-            font-weight: 500;
-            font-size: 14px;
-            color: #e8e8f0;
-            line-height: 1.3;
-        }
-        .bib-verdict {
-            color: #6a6a7a;
-            font-size: 11px;
-            font-weight: 500;
-        }
-        /* Verdict color on the label text so the verdict is visible even when
-           the colored brand fill has zero width (brands with 0% mindshare).
-           Otherwise rows just look uniformly gray, losing the verdict story. */
-        .bib-verdict.strength    { color: #22c55e; }
-        .bib-verdict.opportunity { color: #f59e0b; }
-        .bib-verdict.neutral     { color: #94a3b8; }
-        .bib-verdict.emerging    { color: #a855f7; }
-        .bib-outer {
-            height: 22px;
-            background: #14141c;
-            border-radius: 4px;
+        /* Per-card outlet-authority bar — a tiny gray track that shows this
+           outlet's citation volume relative to the most-cited outlet in the
+           audit, with a thin verdict-colored cap at the right edge of the
+           fill so verdict reads at a glance. Replaces the standalone "Outlet
+           map" section we previously rendered above the cards. */
+        .card-authority-bar {
             position: relative;
+            height: 8px;
+            background: #14141c;
+            border-radius: 2px;
             overflow: hidden;
+            margin: 12px 0 8px;
         }
-        .bib-authority {
-            height: 100%;
-            background: #2a2a3a;
-        }
-        .bib-brand {
+        .card-authority-fill {
             position: absolute;
             left: 0;
             top: 0;
             height: 100%;
+            background: #2a2a3a;
         }
-        .bib-meta {
-            color: #6a6a7a;
-            font-size: 11px;
-            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-            text-align: right;
-            line-height: 1.4;
+        .card-authority-cap {
+            position: absolute;
+            right: 0;
+            top: 0;
+            height: 100%;
+            width: 5px;
         }
         .verdict-strength    { background: #22c55e; }
         .verdict-opportunity { background: #f59e0b; }
         .verdict-neutral     { background: #94a3b8; }
         .verdict-emerging    { background: #a855f7; }
-        @media (max-width: 640px) {
-            .bib-row { grid-template-columns: 1fr; gap: 8px; padding: 14px 0; }
-            .bib-meta { text-align: left; }
-        }
         .media-gap {
             font-size: 13px;
             color: #e8a04c;
@@ -2160,6 +2130,13 @@
 
             const brandLabel = data.brand || 'Brand';
             const overallPctTop = Math.round((data.brand_mention_count || 0) / (data.total_responses || 1) * 100);
+            // Pre-compute the max responses_citing across all targets in this
+            // audit so each card's authority bar scales consistently — the
+            // most-cited outlet's bar fills the full track; others shrink.
+            const maxOutletN = Math.max(1, ...(data.media_targets || []).map(t => {
+                const s = sovByDomain[(t.domain || '').toLowerCase()];
+                return (s && s.responses_citing) || 0;
+            }));
 
             // Render one outlet card. Pulled out of the loop so we can call it
             // inside each verdict-grouped section below.
@@ -2262,12 +2239,27 @@
                     if (label.length > 70) label = label.slice(0, 67) + '…';
                     exUrlBlock = `<div class="media-example-url">Example cited page: <a href="${esc(exUrl)}" target="_blank" rel="noopener">${esc(label)} ↗</a></div>`;
                 }
+                // Authority bar: a tiny gray track showing this outlet's citation
+                // volume vs. the most-cited outlet in this audit. Verdict color
+                // appears as a thin cap at the right edge of the fill — so
+                // verdict reads even when the outlet has low volume or zero
+                // brand presence. Replaces the old standalone "Outlet map"
+                // section above the cards (consolidated into the card itself).
+                const _authN = (sov && sov.responses_citing) || 0;
+                const _authPct = Math.min(100, (_authN / maxOutletN) * 100);
+                const authBlock = _authN > 0 ? `
+                    <div class="card-authority-bar" title="Outlet citation volume vs the most-cited outlet in this audit">
+                        <div class="card-authority-fill" style="width:${_authPct.toFixed(1)}%">
+                            <div class="card-authority-cap verdict-${verdict || 'neutral'}"></div>
+                        </div>
+                    </div>` : '';
                 return `
                     <div class="media-card ${verdict || ''}">
                         ${badge}
                         <div class="media-outlet">${esc(t.outlet)}</div>
                         ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
                         ${t.reporter ? `<div class="media-reporter">${esc(t.reporter)}</div>` : ''}
+                        ${authBlock}
                         <span class="media-stat">${citedStat}</span>
                         ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
                         ${exUrlBlock}
@@ -2277,53 +2269,9 @@
                 `;
             }
 
-            // OUTLET MAP — compact bar-in-bar overview of all media targets at
-            // once. Outer (gray) track = outlet authority scaled to the most-
-            // cited outlet; colored fill = your brand mentions within those
-            // responses, colored by verdict. Lets the reader see the whole
-            // landscape at a glance before drilling into the cards below.
-            if (targets.length) {
-                const maxN = Math.max(1, ...targets.map(t => {
-                    const s = sovByDomain[(t.domain || '').toLowerCase()];
-                    return (s && s.responses_citing) || 0;
-                }));
-                const verdictClass = v => ({
-                    strength: 'verdict-strength',
-                    opportunity: 'verdict-opportunity',
-                    neutral: 'verdict-neutral',
-                    emerging: 'verdict-emerging',
-                }[v] || 'verdict-neutral');
-                const verdictLbl = v => ({
-                    strength: 'strength · defend',
-                    opportunity: 'opportunity · pitch',
-                    neutral: 'neutral · steady',
-                    emerging: 'emerging · watch',
-                }[v] || '');
-                let bibRows = '';
-                for (const t of targets) {
-                    const s = sovByDomain[(t.domain || '').toLowerCase()] || {};
-                    const n = s.responses_citing || 0;
-                    const brand_n = s.brand_mentions_at_outlet || 0;
-                    const v = s.verdict || 'neutral';
-                    const authPct = (n / maxN) * 100;
-                    const brandPct = (brand_n / maxN) * 100;
-                    bibRows += `
-                        <div class="bib-row">
-                            <div class="bib-name">${esc(t.outlet || t.domain || '')}<br><span class="bib-verdict ${v}">${verdictLbl(v)}</span></div>
-                            <div class="bib-outer">
-                                <div class="bib-authority" style="width:${authPct.toFixed(1)}%"></div>
-                                <div class="bib-brand ${verdictClass(v)}" style="width:${brandPct.toFixed(1)}%"></div>
-                            </div>
-                            <div class="bib-meta">${brand_n} of ${n}<br>cited × ${data.total_responses || 0}</div>
-                        </div>
-                    `;
-                }
-                html += `
-                    <div class="section-title" style="margin-top:40px">Outlet map — your share of each AI conversation</div>
-                    <div class="section-note">The gray track shows how often the AI cites each outlet for your category; the colored fill shows your share within those AI conversations. Scaled to the most-cited outlet so you can compare shape across outlets.</div>
-                    <div class="bib-grid">${bibRows}</div>
-                `;
-            }
+            // (Outlet map consolidated INTO each card as a small authority bar
+            // with verdict cap — see renderTargetCard. The previous standalone
+            // "Outlet map" section was duplicating what cards already show.)
 
             // Group every outlet by its share-of-voice VERDICT — Strengths to
             // defend, Opportunities to pitch, Holding steady, Emerging signals.
