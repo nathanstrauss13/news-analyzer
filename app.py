@@ -7130,7 +7130,41 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     editorial_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'editorial']
     editorial_domains = [d for d in editorial_domains if not _is_brand_own_domain(d['domain'], brand)]
 
+    # Recount the brand's own mention total so the headline number reflects
+    # the current guardrails (e.g. a brand named "On" was previously inflated
+    # to 47/50 by the common-word collision; now correctly 17/50).
+    if all_responses and brand:
+        new_brand_count = _count_brand_mentions(brand, all_responses)
+        if new_brand_count != (data.get('brand_mention_count') or 0):
+            print(f"[rerender] brand_mention_count recount: "
+                  f"{data.get('brand_mention_count')} -> {new_brand_count}")
+        out['brand_mention_count'] = new_brand_count
+
     competitor_counts = data.get('competitors') or []
+    # Recount competitor mention totals against the cached responses so the
+    # current code's guardrails (common-word, first-word) apply. Names come
+    # from the cached pick; counts are recomputed. Drops anything that
+    # recounts to 0 (e.g. a name that was only counted via a fixed bug).
+    if competitor_counts and all_responses:
+        before = {c.get('name'): c.get('mention_count') for c in competitor_counts}
+        rebuilt = []
+        for c in competitor_counts:
+            name = (c.get('name') or '').strip()
+            if not name:
+                continue
+            cnt = _count_brand_mentions(name, all_responses)
+            if cnt > 0:
+                cc = dict(c)
+                cc['mention_count'] = cnt
+                rebuilt.append(cc)
+        rebuilt.sort(key=lambda c: c['mention_count'], reverse=True)
+        deltas = [(c['name'], before.get(c['name'], 0), c['mention_count'])
+                  for c in rebuilt if before.get(c['name'], 0) != c['mention_count']]
+        if deltas:
+            print(f"[rerender] competitor recount deltas: " +
+                  ", ".join(f"{n}: {a}->{b}" for n, a, b in deltas[:10]))
+        competitor_counts = rebuilt
+        out['competitors'] = competitor_counts
     competitor_stems = _competitor_domain_stems(competitor_counts)
     if competitor_stems:
         editorial_domains = [d for d in editorial_domains if not _is_competitor_owned_domain(d['domain'], competitor_stems)]
