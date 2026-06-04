@@ -669,11 +669,11 @@
             word-break: break-all;
         }
         .media-example-url a:hover { text-decoration: underline; }
-        /* Per-card outlet-authority bar — a tiny gray track that shows this
-           outlet's citation volume relative to the most-cited outlet in the
-           audit, with a thin verdict-colored cap at the right edge of the
-           fill so verdict reads at a glance. Replaces the standalone "Outlet
-           map" section we previously rendered above the cards. */
+        /* Per-card outlet-authority bar — bar length = outlet citation volume
+           relative to the most-cited outlet in this audit; bar COLOR = verdict
+           (the action). One encoding, two dimensions. Length tells you "is
+           this outlet a big deal?"; color tells you "do I defend, pitch, or
+           watch?" Cleaner than the cap-on-gray version. */
         .card-authority-bar {
             position: relative;
             height: 8px;
@@ -687,14 +687,7 @@
             left: 0;
             top: 0;
             height: 100%;
-            background: #2a2a3a;
-        }
-        .card-authority-cap {
-            position: absolute;
-            right: 0;
-            top: 0;
-            height: 100%;
-            width: 5px;
+            /* background set by .verdict-* class */
         }
         .verdict-strength    { background: #22c55e; }
         .verdict-opportunity { background: #f59e0b; }
@@ -2248,10 +2241,8 @@
                 const _authN = (sov && sov.responses_citing) || 0;
                 const _authPct = Math.min(100, (_authN / maxOutletN) * 100);
                 const authBlock = _authN > 0 ? `
-                    <div class="card-authority-bar" title="Outlet citation volume vs the most-cited outlet in this audit">
-                        <div class="card-authority-fill" style="width:${_authPct.toFixed(1)}%">
-                            <div class="card-authority-cap verdict-${verdict || 'neutral'}"></div>
-                        </div>
+                    <div class="card-authority-bar" title="Outlet citation volume vs the most-cited outlet in this audit (bar length); verdict (bar color)">
+                        <div class="card-authority-fill verdict-${verdict || 'neutral'}" style="width:${_authPct.toFixed(1)}%"></div>
                     </div>` : '';
                 return `
                     <div class="media-card ${verdict || ''}">

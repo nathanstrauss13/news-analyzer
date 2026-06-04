@@ -135,10 +135,9 @@
         .competitors {
             margin: 6pt 0 14pt;
         }
-        /* Per-card outlet-authority bar — a gray track inside each card showing
-           this outlet's citation volume vs the most-cited outlet in the audit.
-           A thin verdict-colored cap at the right edge of the fill makes the
-           verdict visible at a glance. Print-friendly colors. */
+        /* Per-card outlet-authority bar — bar length = outlet citation volume
+           vs the most-cited outlet in this audit; bar COLOR = verdict (action).
+           One encoding, two dimensions. Print-friendly colors. */
         .card-authority-bar {
             position: relative;
             height: 6pt;
@@ -147,12 +146,14 @@
             overflow: hidden;
             margin: 4pt 0 2pt;
         }
-        .card-authority-fill { position: absolute; left: 0; top: 0; height: 100%; background: #c8c8d0; }
-        .card-authority-cap  { position: absolute; right: 0; top: 0; height: 100%; width: 3.5pt; }
+        .card-authority-fill { position: absolute; left: 0; top: 0; height: 100%; }
         .verdict-strength    { background: #2d8a2d; }
         .verdict-opportunity { background: #c08040; }
         .verdict-neutral     { background: #94a3b8; }
         .verdict-emerging    { background: #7a5aaa; }
+        /* print uses -webkit-print-color-adjust for WeasyPrint to keep
+           fills colored rather than auto-converted to gray. */
+        .card-authority-fill { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
         .competitor-chip {
             display: inline-block;
             background: #f0f0f5;
@@ -449,15 +450,12 @@
             {% if t.domain %}<div class="target-domain">{{ t.domain }}</div>{% endif %}
             {% if t.reporter %}<div class="target-domain">Reporter: {{ t.reporter }}</div>{% endif %}
             {# Authority bar: outlet's citation volume vs the most-cited
-               outlet in this audit, with a thin verdict-colored cap at
-               the right edge of the fill. #}
+               outlet in this audit. Length = authority. Color = verdict. #}
             {% if sov and sov.responses_citing %}
                 {% set auth_pct = ((sov.responses_citing | int) * 100.0 / ns.max_n) %}
                 {% if auth_pct > 100 %}{% set auth_pct = 100 %}{% endif %}
                 <div class="card-authority-bar">
-                    <div class="card-authority-fill" style="width: {{ '%.1f' | format(auth_pct) }}%">
-                        <div class="card-authority-cap verdict-{{ sov.verdict or 'neutral' }}"></div>
-                    </div>
+                    <div class="card-authority-fill verdict-{{ sov.verdict or 'neutral' }}" style="width: {{ '%.1f' | format(auth_pct) }}%"></div>
                 </div>
             {% endif %}
             <span class="target-stat">Cited {{ t.citation_frequency }}x</span>
