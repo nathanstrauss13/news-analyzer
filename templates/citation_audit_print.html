@@ -224,6 +224,10 @@
         .target-sov-context { color: #555; font-size: 8.5pt; line-height: 1.4; margin-top: 4pt; }
         .target-sov-thin { color: #1a1a1a; font-size: 9.5pt; line-height: 1.45; }
         .target-sov-more { color: #777; font-size: 8.5pt; margin-top: 2pt; }
+        .target-sov-head { color: #555; font-size: 8pt; text-transform: uppercase;
+            letter-spacing: 0.04em; font-weight: 600; margin-bottom: 5pt; }
+        .target-sov-small { text-transform: none; letter-spacing: 0; color: #888;
+            font-weight: 400; font-style: italic; }
         .target-sov-emerging { color: #1a1a1a; font-size: 9pt; }
         .target-rank {
             font-size: 9pt;
@@ -466,25 +470,24 @@
                 {% set n = sov.responses_citing %}
                 {% set comps = sov.all_competitors_at_outlet or [] %}
                 <div class="target-sov">
-                    {% if n <= 2 %}
-                        {# Coarse sample — one honest line, no bar wall #}
-                        <div class="target-sov-thin">{{ data.brand }} in {{ sov.brand_mentions_at_outlet }}/{{ n }} responses citing this outlet{% if comps %} &middot; also mentioned: {{ comps[:4] | map(attribute='name') | join(', ') }}{% if comps | length > 4 %} +{{ comps|length - 4 }} more{% endif %}{% endif %}</div>
-                    {% else %}
-                        <div class="target-sov-row">
-                            <span class="target-sov-label brand"><strong>{{ data.brand }}</strong></span>
-                            <span class="target-sov-bar-wrap"><span class="target-sov-bar"><span class="fill brand" style="width:{{ brand_pct }}%"></span></span></span>
-                            <span class="target-sov-num">{{ sov.brand_mentions_at_outlet }}/{{ n }} ({{ brand_pct }}%)</span>
-                        </div>
-                        {% for c in comps[:3] %}
-                        {% set comp_pct = (c.sov_at_outlet * 100) | round | int %}
-                        <div class="target-sov-row">
-                            <span class="target-sov-label">{{ c.name }}</span>
-                            <span class="target-sov-bar-wrap"><span class="target-sov-bar"><span class="fill comp" style="width:{{ comp_pct }}%"></span></span></span>
-                            <span class="target-sov-num">{{ c.mentions_at_outlet }}/{{ n }} ({{ comp_pct }}%)</span>
-                        </div>
-                        {% endfor %}
-                        {% if comps | length > 3 %}<div class="target-sov-more">+{{ comps|length - 3 }} more competitor{{ 's' if (comps|length - 3) > 1 else '' }} mentioned at this outlet</div>{% endif %}
-                    {% endif %}
+                    {# Always render bars for visual consistency. At n<=2 the percentages
+                       collapse to 0/50/100 — flag with a "(small sample)" caption so
+                       readers don't over-interpret. #}
+                    <div class="target-sov-head">Brands named when AI cites this outlet{% if n <= 2 %} <span class="target-sov-small">(small sample — only {{ n }} response{{ 's' if n != 1 else '' }})</span>{% endif %}</div>
+                    <div class="target-sov-row">
+                        <span class="target-sov-label brand"><strong>{{ data.brand }}</strong></span>
+                        <span class="target-sov-bar-wrap"><span class="target-sov-bar"><span class="fill brand" style="width:{{ brand_pct }}%"></span></span></span>
+                        <span class="target-sov-num">{{ sov.brand_mentions_at_outlet }}/{{ n }} ({{ brand_pct }}%)</span>
+                    </div>
+                    {% for c in comps[:3] %}
+                    {% set comp_pct = (c.sov_at_outlet * 100) | round | int %}
+                    <div class="target-sov-row">
+                        <span class="target-sov-label">{{ c.name }}</span>
+                        <span class="target-sov-bar-wrap"><span class="target-sov-bar"><span class="fill comp" style="width:{{ comp_pct }}%"></span></span></span>
+                        <span class="target-sov-num">{{ c.mentions_at_outlet }}/{{ n }} ({{ comp_pct }}%)</span>
+                    </div>
+                    {% endfor %}
+                    {% if comps | length > 3 %}<div class="target-sov-more">+{{ comps|length - 3 }} more competitor{{ 's' if (comps|length - 3) > 1 else '' }} mentioned at this outlet</div>{% endif %}
                     <div class="target-sov-context">{{ data.brand }} overall: {{ overall_pct }}% across {{ data.total_responses or 0 }} responses</div>
                 </div>
             {% endif %}
