@@ -3057,6 +3057,12 @@ NON_EDITORIAL_VENDORS = {
     'slab.com', 'roam.com', 'workspace.google.com', 'docs.google.com',
     # Software-comparison / lead-gen / B2B-events sites (not editorial)
     'saascompared.com', 'unboundb2b.com', 'thesmarketers.com', 'marcusevans.com',
+    # Social-listening / CXM / marketing-agency vendor sites — observed
+    # surfacing as "outlets" in martech/CXM audits (Adobe-class brands).
+    # Sprinklr is a public CXM SaaS; Konnect Insights is a social listening
+    # tool; 42DM and Prometheus Agency are B2B marketing agencies whose
+    # comparison blogs get cited but aren't pitchable editorial.
+    'sprinklr.com', 'konnectinsights.com', '42dm.net', 'prometheusagency.co',
     # Grounded-mode additions: native web search (ALL_GROUNDED) surfaces ~4x
     # more URLs, so SaaS tool / vendor / software-review .com/.co/.st sites the
     # productish-TLD rule can't catch leak into B2B targets. Observed polluting
@@ -4339,7 +4345,7 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
     return out[:max_outlets]
 
 
-def _compute_headline_move(brand, outlet_sov):
+def _compute_headline_move(brand, outlet_sov, media_targets=None):
     """Pick THE single highest-priority action from the outlet share-of-voice
     data and return a {verb, outlet, text} dict (or None).
 
@@ -4353,10 +4359,22 @@ def _compute_headline_move(brand, outlet_sov):
       4. (all emerging / thin) the most-cited outlet you're not established at
          → cultivate it early.
     Deterministic, no API call — works on the rerender path too.
+
+    When `media_targets` is supplied, the candidate pool is constrained to
+    outlets that actually appear as cards on the page. Without this filter the
+    headline can point at an outlet that got capped out of media_targets (or
+    one that's vendor noise lurking in outlet_sov), leaving the reader with a
+    "Pitch X" action and no corresponding card to learn more about X.
     """
     sov = outlet_sov or []
     if not sov:
         return None
+    if media_targets:
+        _target_doms = {(t.get('domain') or '').lower() for t in media_targets if t.get('domain')}
+        if _target_doms:
+            sov = [r for r in sov if (r.get('domain') or '').lower() in _target_doms]
+            if not sov:
+                return None
     b = brand or "Your brand"
 
     def _n(r):
@@ -6725,7 +6743,8 @@ Respond with ONLY valid JSON:
     # Single highest-priority action — gives every dashboard one unmistakable
     # next step even when it's all-strength or all-emerging.
     try:
-        analysis["headline_move"] = _compute_headline_move(brand, analysis.get("outlet_sov"))
+        analysis["headline_move"] = _compute_headline_move(
+            brand, analysis.get("outlet_sov"), analysis.get("media_targets"))
     except Exception as _hm_e:
         print("headline-move computation failed (continuing without):", _hm_e)
         analysis["headline_move"] = None
@@ -7372,7 +7391,7 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
                 (sov_by_dom.get((t.get('domain') or '').lower()) or {}).get('verdict'))
 
     try:
-        out['headline_move'] = _compute_headline_move(brand, new_sov)
+        out['headline_move'] = _compute_headline_move(brand, new_sov, new_media)
     except Exception:
         out['headline_move'] = None
 
