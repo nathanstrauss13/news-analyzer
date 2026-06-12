@@ -6288,7 +6288,8 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     # the UI can treat them differently — retailers aren't real PR competitors.
     competitor_counts = _classify_competitor_types(brand, category, competitor_counts)
     top_competitor_block = "\n".join(
-        f"  - {c['name']}: cited in {c['mention_count']} of {len(all_responses)} responses"
+        f"  - {c['name']}: cited in {c['mention_count']} of {len(all_responses)} responses "
+        f"({round(c['mention_count'] / len(all_responses) * 100) if all_responses else 0}%)"
         for c in competitor_counts if c.get('type', 'brand_peer') == 'brand_peer'
     ) or "  (no clear competitor brands surfaced)"
 
@@ -7150,10 +7151,30 @@ def _regenerate_executive_summary(data):
         brand_mentions = data.get('brand_mention_count') or 0
         mindshare = round(brand_mentions / total * 100) if total else 0
         competitors = data.get('competitors') or []
+
+        def _pct(n):
+            return round((n or 0) / total * 100) if total else 0
+
         comp_block = "\n".join(
-            f"  - {c.get('name')}: cited in {c.get('mention_count')} of {total} responses"
+            f"  - {c.get('name')}: cited in {c.get('mention_count')} of {total} responses "
+            f"({_pct(c.get('mention_count'))}%)"
             for c in competitors[:8]
         ) or "  (none surfaced)"
+
+        # Precompute the position math — models reliably garble count-vs-percent
+        # arithmetic (observed: "trails by 5" when the real gap was 32 points),
+        # so sentence 1's facts are handed over verbatim, not derived.
+        position_facts = "(no competitor data)"
+        if competitors:
+            top = max(competitors, key=lambda c: c.get('mention_count') or 0)
+            tn, tp = top.get('mention_count') or 0, _pct(top.get('mention_count'))
+            delta = mindshare - tp
+            rel = "LEADS" if delta > 0 else ("TRAILS" if delta < 0 else "TIES")
+            position_facts = (
+                f"{brand}: {mindshare}% ({brand_mentions} of {total} responses). "
+                f"Top competitor {top.get('name')}: {tp}% ({tn} of {total}). "
+                f"{brand} {rel} {top.get('name')} by {abs(delta)} percentage points."
+            )
 
         sov = data.get('outlet_sov') or []
 
@@ -7189,6 +7210,9 @@ def _regenerate_executive_summary(data):
 Brand: {brand}
 Category: {category}
 {brand}'s AI mindshare: {mindshare}% (cited in {brand_mentions} of {total} AI responses)
+
+POSITION FACTS (pre-computed — use these EXACT numbers in Sentence 1; do NOT derive your own deltas or percentages):
+{position_facts}
 
 PER-ASSISTANT VISIBILITY (how many of EACH AI's responses mention {brand}):
 {per_llm_block}
