@@ -225,6 +225,9 @@
         .target-sov-more { color: #777; font-size: 8.5pt; margin-top: 2pt; }
         .target-sov-head { color: #555; font-size: 8pt; text-transform: uppercase;
             letter-spacing: 0.04em; font-weight: 600; margin-bottom: 5pt; }
+        .target-sov-pages { color: #555; font-size: 8.5pt; line-height: 1.45;
+            margin-top: 4pt; padding-top: 3pt; border-top: 0.5pt dashed #ccc; }
+        .target-sov-pages strong { color: #111; }
         .target-sov-small { text-transform: none; letter-spacing: 0; color: #888;
             font-weight: 400; font-style: italic; }
         .target-sov-emerging { color: #1a1a1a; font-size: 9pt; }
@@ -487,6 +490,11 @@
                     </div>
                     {% endfor %}
                     {% if comps | length > 3 %}<div class="target-sov-more">+{{ comps|length - 3 }} more competitor{{ 's' if (comps|length - 3) > 1 else '' }} mentioned at this outlet</div>{% endif %}
+                    {% set pe = sov.page_evidence %}
+                    {% if pe and pe.pages_ok %}
+                        {% set tc_name = (sov.top_competitor_at_outlet or {}).get('name') %}
+                        <div class="target-sov-pages">Source-page check ({{ pe.pages_ok }} cited page{{ '' if pe.pages_ok == 1 else 's' }} read): <strong>{{ data.brand }}</strong> on {{ pe.brand_pages }} of {{ pe.pages_ok }}{% if tc_name and tc_name in (pe.competitors or {}) %} &middot; {{ tc_name }} on {{ pe.competitors[tc_name] }} of {{ pe.pages_ok }}{% endif %}</div>
+                    {% endif %}
                     <div class="target-sov-context">{{ data.brand }} overall: {{ overall_pct }}% across {{ data.total_responses or 0 }} responses</div>
                 </div>
             {% endif %}

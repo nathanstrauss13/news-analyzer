@@ -158,6 +158,26 @@ class LeadCapture(db.Model):
     extra = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
+class CitedPage(db.Model):
+    """Cross-audit cache of scraped citation pages. One row per URL: which
+    brand names appear on the page (JSON {name: count}), plus title/author/
+    published metadata. Audits in the same category reuse each other's
+    fetches, and over time this becomes a map of the specific pages AI
+    relies on per category."""
+    __tablename__ = 'cited_pages'
+    id = db.Column(db.Integer, primary_key=True)
+    url_hash = db.Column(db.String(40), unique=True, index=True, nullable=False)
+    url = db.Column(db.Text, nullable=False)
+    domain = db.Column(db.String(255), index=True)
+    status = db.Column(db.String(16))   # 'ok' | 'blocked' | 'error'
+    via = db.Column(db.String(16))      # 'direct' | 'reader'
+    title = db.Column(db.Text)
+    author = db.Column(db.String(255))
+    published = db.Column(db.String(64))
+    content_len = db.Column(db.Integer)
+    name_counts = db.Column(db.Text)    # JSON {brand_or_competitor_name: count}
+    fetched_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
 class Subscription(db.Model):
     __tablename__ = 'subscriptions'
     id = db.Column(db.Integer, primary_key=True)
@@ -5087,6 +5107,213 @@ def _verify_brand_coverage(brand, media_targets, ranked_domains=None,
             t['coverage'] = 'unverified'
 
 
+# --- Citation-page scraping (page-evidence layer) ----------------------------
+# Fetches the actual pages AI cited and counts EVERY tracked brand name on
+# each, producing per-outlet "on-page share of voice" alongside the in-answer
+# SoV. The divergence between the two is the insight: a competitor named in
+# AI answers but absent from the cited pages is FREE-RIDING on the outlet's
+# coverage; a brand on the pages but missing from answers has coverage that
+# ISN'T CONVERTING. Results are cached cross-audit in CitedPage.
+
+_PAGE_CACHE_TTL_DAYS = 30
+_READER_PREFIX = "https://r.jina.ai/"  # plain-text reader fallback for bot-blocked sites
+
+
+def _count_names_in_text(text, names):
+    """Word-boundary, case-insensitive count for each name, with the same
+    common-word guardrail as _page_brand_mentions (short single-word brands
+    like 'Gap' or 'On' collide with English words — when the case-insensitive
+    count dwarfs the case-sensitive one, trust the proper-noun count)."""
+    out = {}
+    for name in names:
+        if not name:
+            continue
+        cnt = len(re.findall(r'\b' + re.escape(name) + r'\b', text, re.IGNORECASE))
+        parts = name.split()
+        if len(parts) == 1 and len(name) <= 6:
+            cs = len(re.findall(r'\b' + re.escape(name) + r'\b', text))
+            if cnt > max(cs * 2, 3):
+                cnt = cs
+        out[name] = cnt
+    return out
+
+
+def _extract_page_meta(raw):
+    """Pull title / author / published from raw HTML via meta tags. Cheap
+    regexes, no parsing dependencies; absent fields come back as ''."""
+    def _meta(*patterns):
+        for p in patterns:
+            m = re.search(p, raw, re.IGNORECASE)
+            if m:
+                return (m.group(1) or '').strip()[:255]
+        return ''
+    title_m = re.search(r'<title[^>]*>([^<]+)</title>', raw, re.IGNORECASE)
+    return {
+        'title': (title_m.group(1).strip()[:300] if title_m else ''),
+        'author': _meta(
+            r'<meta\s+name=["\']author["\']\s+content=["\']([^"\']+)',
+            r'<meta\s+name=["\']parsely-author["\']\s+content=["\']([^"\']+)',
+            r'<meta\s+property=["\']article:author["\']\s+content=["\']([^"\']+)'),
+        'published': _meta(
+            r'<meta\s+property=["\']article:published_time["\']\s+content=["\']([^"\']+)',
+            r'<meta\s+name=["\']parsely-pub-date["\']\s+content=["\']([^"\']+)',
+            r'<meta\s+name=["\']date["\']\s+content=["\']([^"\']+)',
+            r'<time[^>]+datetime=["\']([^"\']+)'),
+    }
+
+
+def _scrape_cited_page(url, names, timeout=10):
+    """Fetch one cited page (direct first, reader-proxy fallback for
+    bot-blocked sites) and count every tracked name on it. Returns a dict
+    shaped like a CitedPage row, never raises."""
+    result = {'status': 'error', 'via': 'direct', 'title': '', 'author': '',
+              'published': '', 'content_len': 0, 'counts': {}}
+    raw = None
+    try:
+        if _is_safe_url(url):
+            r = requests.get(url, timeout=timeout, allow_redirects=True,
+                             headers=_TOPIC_CHECK_HEADERS, stream=False)
+            if r.status_code < 400 and (r.text or '').strip():
+                raw = r.text[:3_000_000]
+    except Exception:
+        raw = None
+    # Bot-stub heuristic: blocked publishers (Hearst et al.) serve tiny husk
+    # pages with a 200. Anything under ~15KB from a major-publisher article
+    # URL is suspect — try the reader proxy, which fetches from its own infra.
+    if raw is None or len(raw) < 15000:
+        try:
+            rr = requests.get(_READER_PREFIX + url, timeout=timeout + 10,
+                              headers={'User-Agent': _TOPIC_CHECK_HEADERS.get('User-Agent', '')})
+            if rr.status_code < 400 and len(rr.text or '') > len(raw or ''):
+                text = rr.text[:3_000_000]
+                result.update(status='ok', via='reader', content_len=len(text),
+                              counts=_count_names_in_text(text, names))
+                tm = re.match(r'\s*Title:\s*(.+)', text)
+                if tm:
+                    result['title'] = tm.group(1).strip()[:300]
+                return result
+        except Exception:
+            pass
+    if raw is None:
+        result['status'] = 'blocked'
+        return result
+    meta = _extract_page_meta(raw)
+    body = re.sub(r'(?is)<(script|style)\b[^>]*>.*?</\1>', ' ', raw)
+    text = meta['title'] + ' ' + re.sub(r'<[^>]+>', ' ', body)
+    result.update(status='ok', content_len=len(raw),
+                  counts=_count_names_in_text(text, names), **meta)
+    return result
+
+
+def _attach_page_evidence(outlet_sov, ranked_domains, brand, competitor_counts,
+                          max_urls_per_outlet=6, deadline_seconds=75):
+    """For each SoV outlet, scrape its cited article URLs (cache-first) and
+    attach `page_evidence` to the row:
+      {pages_checked, pages_ok, brand_pages, brand_mentions,
+       competitors: {name: pages_containing}, pages: [{url,title,published}]}
+    Mutates rows in place; safe no-op on any failure."""
+    if not outlet_sov or not brand:
+        return
+    names = [brand] + [c.get('name') for c in (competitor_counts or [])
+                       if c.get('name') and c.get('type', 'brand_peer') == 'brand_peer'][:8]
+    dom_urls = {}
+    for d in (ranked_domains or []):
+        dom = (d.get('domain') or '').lower()
+        urls = [u for u in (d.get('specific_urls') or d.get('urls') or [])
+                if _is_specific_article(u)]
+        if urls:
+            dom_urls[dom] = list(dict.fromkeys(urls))[:max_urls_per_outlet]
+    jobs = []  # (domain, url)
+    for row in outlet_sov:
+        dom = (row.get('domain') or '').lower()
+        for u in dom_urls.get(dom, []):
+            jobs.append((dom, u))
+    if not jobs:
+        return
+    # Cache pass (main thread — SQLAlchemy sessions aren't thread-safe).
+    import hashlib as _hl
+    by_url = {}
+    hashes = {u: _hl.sha1(u.encode()).hexdigest() for (_, u) in jobs}
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=_PAGE_CACHE_TTL_DAYS)
+        cached = CitedPage.query.filter(CitedPage.url_hash.in_(list(hashes.values()))).all()
+        for c in cached:
+            if c.fetched_at and c.fetched_at >= cutoff and c.status == 'ok':
+                counts = json.loads(c.name_counts or '{}')
+                if all(n in counts for n in names):
+                    by_url[c.url] = {'status': c.status, 'via': c.via,
+                                     'title': c.title or '', 'author': c.author or '',
+                                     'published': c.published or '',
+                                     'content_len': c.content_len or 0, 'counts': counts}
+    except Exception as e:
+        print("page-evidence cache read failed (continuing):", str(e)[:120])
+    to_fetch = [(d, u) for (d, u) in jobs if u not in by_url]
+    if to_fetch:
+        ex = ThreadPoolExecutor(max_workers=12)
+        try:
+            futs = {ex.submit(_scrape_cited_page, u, names): u for (_, u) in to_fetch}
+            for fut in as_completed(list(futs.keys()), timeout=deadline_seconds):
+                try:
+                    by_url[futs[fut]] = fut.result()
+                except Exception:
+                    pass
+        except FuturesTimeoutError:
+            print(f"page-evidence: deadline hit with {len(jobs) - len(by_url)} pages unfetched")
+        except Exception as e:
+            print("page-evidence scrape error (continuing):", str(e)[:120])
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
+        # Cache write-back (main thread).
+        try:
+            for (_, u) in to_fetch:
+                res = by_url.get(u)
+                if not res:
+                    continue
+                h = hashes[u]
+                rec = CitedPage.query.filter_by(url_hash=h).first()
+                if rec is None:
+                    rec = CitedPage(url_hash=h, url=u)
+                    db.session.add(rec)
+                rec.domain = u.split('/')[2].lower() if '://' in u else ''
+                rec.status, rec.via = res['status'], res['via']
+                rec.title, rec.author = res['title'], res['author']
+                rec.published, rec.content_len = res['published'], res['content_len']
+                rec.name_counts = json.dumps(res['counts'])
+                rec.fetched_at = datetime.utcnow()
+            db.session.commit()
+        except Exception as e:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            print("page-evidence cache write failed (continuing):", str(e)[:120])
+    # Aggregate per outlet.
+    scraped = 0
+    for row in outlet_sov:
+        dom = (row.get('domain') or '').lower()
+        urls = dom_urls.get(dom, [])
+        results = [by_url[u] for u in urls if u in by_url]
+        ok = [r for r in results if r['status'] == 'ok']
+        if not urls:
+            continue
+        comp_pages = {}
+        for n in names[1:]:
+            comp_pages[n] = sum(1 for r in ok if (r['counts'].get(n) or 0) > 0)
+        row['page_evidence'] = {
+            'pages_checked': len(urls),
+            'pages_ok': len(ok),
+            'brand_pages': sum(1 for r in ok if (r['counts'].get(brand) or 0) > 0),
+            'brand_mentions': sum(r['counts'].get(brand) or 0 for r in ok),
+            'competitors': comp_pages,
+            'pages': [{'url': u, 'title': by_url[u]['title'],
+                       'published': by_url[u]['published']}
+                      for u in urls if u in by_url and by_url[u]['status'] == 'ok'][:4],
+        }
+        scraped += len(ok)
+    print(f"page-evidence: {scraped} pages analyzed across {len(dom_urls)} outlets "
+          f"({len(jobs) - len(to_fetch)} from cache)")
+
+
 _COVERAGE_ORDER = {'confirmed': 0, 'mention': 1, 'category': 2, 'unverified': 3}
 
 
@@ -6754,6 +6981,14 @@ Respond with ONLY valid JSON:
     except Exception as _sov_e:
         print("outlet share-of-voice computation failed (continuing without):", _sov_e)
         analysis["outlet_sov"] = []
+    # Page-evidence layer: scrape the cited pages behind each SoV outlet and
+    # count every tracked brand on them — in-answer SoV vs on-page SoV.
+    if any(r.get("grounded") for r in all_responses):
+        try:
+            _attach_page_evidence(analysis.get("outlet_sov"), ranked_domains,
+                                  brand, competitor_counts)
+        except Exception as _pe_e:
+            print("page-evidence failed (continuing without):", _pe_e)
     # Brand-coverage verification (BACKSTAGE ONLY): fetch each target's sample
     # article URL(s) and record whether the brand is actually named on the page.
     # Kept in the saved payload / CSV for diagnostics, but it no longer drives
@@ -7451,6 +7686,13 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
         print(f"[rerender] SoV failed: {e}")
         new_sov = data.get('outlet_sov') or []
     out['outlet_sov'] = new_sov
+
+    # Page-evidence layer — same as the fresh path; cache makes reruns cheap.
+    if any(r.get("grounded") for r in all_responses):
+        try:
+            _attach_page_evidence(new_sov, ranked_domains, brand, competitor_counts)
+        except Exception as _pe_e:
+            print(f"[rerender] page-evidence failed (continuing): {_pe_e}")
 
     # Patch synthesized rationales now that each outlet's verdict is known.
     sov_by_dom = {(r.get('domain') or '').lower(): r for r in new_sov}

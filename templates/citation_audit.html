@@ -526,6 +526,16 @@
             font-weight: 400;
             font-style: italic;
         }
+        .media-sov-pages {
+            margin-top: 9px;
+            padding-top: 8px;
+            border-top: 1px dashed #22223a;
+            font-size: 11px;
+            color: #8a8a9a;
+            line-height: 1.55;
+        }
+        .media-sov-pages strong { color: #cfd2ff; font-weight: 600; }
+        .media-sov-pages .pe-flag { color: #ffb860; }
         /* Media Landscape */
         .ml-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
         .ml-tab { background: #15151f; border: 1px solid #2a2a3a; color: #cfd2ff;
@@ -2175,11 +2185,34 @@
                     const moreLine = extra > 0
                         ? `<div class="media-sov-more">+${extra} more competitor${extra > 1 ? 's' : ''} mentioned at this outlet</div>`
                         : '';
+                    // Page-evidence line: in-answer SoV vs ON-PAGE presence. The
+                    // divergence is the insight — a rival named by AI but absent
+                    // from the cited pages is free-riding; a brand on the pages
+                    // but unnamed in answers has coverage that isn't converting.
+                    let pagesLine = '';
+                    const pe = sov.page_evidence;
+                    if (pe && pe.pages_ok > 0) {
+                        const tcName = (sov.top_competitor_at_outlet || {}).name;
+                        const tcPages = tcName ? (pe.competitors || {})[tcName] : undefined;
+                        let bits = `<strong>${esc(brandLabel)}</strong> on ${pe.brand_pages} of ${pe.pages_ok}`;
+                        if (tcName && tcPages !== undefined) bits += ` &middot; ${esc(tcName)} on ${tcPages} of ${pe.pages_ok}`;
+                        const tcAt = tcName
+                            ? (((sov.all_competitors_at_outlet || []).find(c => c.name === tcName) || {}).mentions_at_outlet || 0)
+                            : 0;
+                        let flag = '';
+                        if (tcName && tcPages === 0 && tcAt >= 2 && pe.pages_ok >= 2) {
+                            flag = ` <span class="pe-flag">${esc(tcName)} is named by AI here without appearing on these pages — its position is borrowed.</span>`;
+                        } else if (pe.brand_pages > 0 && (sov.brand_mentions_at_outlet || 0) === 0) {
+                            flag = ` <span class="pe-flag">${esc(brandLabel)} is on the cited pages but AI isn't naming it — coverage isn't converting.</span>`;
+                        }
+                        pagesLine = `<div class="media-sov-pages">Source-page check (${pe.pages_ok} cited page${pe.pages_ok === 1 ? '' : 's'} read): ${bits}${flag}</div>`;
+                    }
                     sovBlock = `
                         <div class="media-sov">
                             <div class="media-sov-head">Brands named when AI cites this outlet${sampleCaption}</div>
                             ${rows}
                             ${moreLine}
+                            ${pagesLine}
                             ${contextLine}
                         </div>
                     `;
