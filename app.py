@@ -4418,13 +4418,18 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
         cm = tc.get('mentions_at_outlet') or 0
         if r.get('_pre_guard_verdict') == 'strength':
             # Coverage-guard downgrade: the brand IS named whenever AI cites
-            # this outlet, but the cited pages don't actually cover it. The
-            # move is converting co-mention into real coverage — "below its
+            # this outlet, but the cited pages don't substantively cover it.
+            # The move is converting co-mention into real coverage — "below its
             # overall visibility" would be flatly wrong here (often ba == n).
             rival = f" alongside {tc['name']}" if tc.get('name') else ""
+            if r.get('_guard_reason') == 'mention':
+                gap_clause = (f"but the cited pages only mention {b} in passing — "
+                              f"deepen the coverage to own the territory.")
+            else:
+                gap_clause = (f"but the cited pages don't cover {b} — earn real coverage "
+                              f"to convert the co-mention into owned territory.")
             text = (f"Pitch {dom}. AI already names {b}{rival} in {ba} of the {n} responses "
-                    f"citing it, but the cited pages don't cover {b} — earn real coverage "
-                    f"to convert the co-mention into owned territory.")
+                    f"citing it, {gap_clause}")
         elif tc.get('name') and cm > ba:
             text = (f"Pitch {dom}. {tc['name']} shows up in {cm} of the {n} AI responses "
                     f"citing it, {b} in {ba} — closing this gap is your highest-leverage "
@@ -4966,7 +4971,7 @@ def _check_url_topic(url, brand_lower, category_keywords, timeout=4):
         return 'inaccessible'
 
 
-def _page_brand_mentions(url, brand, timeout=5):
+def _page_brand_mentions(url, brand, timeout=10):
     """Fetch a URL and count how many times `brand` appears in its title+body
     (word-boundary, case-insensitive, with the multi-word first-word fallback).
     Returns the count, or -1 if the page couldn't be fetched/parsed.
@@ -4977,6 +4982,13 @@ def _page_brand_mentions(url, brand, timeout=5):
     topic-verify pass returns 'verified' on brand OR category-keyword match, so
     a Rare-Beauty packaging article passes as "on-topic" without covering the
     brand at all — this check closes that gap.
+
+    Scans the FULL page body (capped at 3MB), not a 200KB prefix — large
+    publisher pages (Hearst ~2MB, CMSWire ~800KB) front-load hundreds of KB of
+    script before the article, so a prefix scan false-negatives real coverage
+    (observed: Adobe first appears at byte 365K of a CMSWire page that names it
+    64 times). Script/style blocks are stripped first so JSON-LD and tracking
+    payloads neither hide nor inflate the count.
     """
     try:
         if not _is_safe_url(url):
@@ -4985,11 +4997,12 @@ def _page_brand_mentions(url, brand, timeout=5):
                          headers=_TOPIC_CHECK_HEADERS, stream=False)
         if r.status_code >= 400:
             return -1
-        raw = r.text or ''
+        raw = (r.text or '')[:3_000_000]
         if not raw.strip():
             return -1
         title_m = re.search(r'<title[^>]*>([^<]+)</title>', raw, re.IGNORECASE)
-        text = (title_m.group(1) if title_m else '') + ' ' + re.sub(r'<[^>]+>', ' ', raw[:200000])
+        body = re.sub(r'(?is)<(script|style)\b[^>]*>.*?</\1>', ' ', raw)
+        text = (title_m.group(1) if title_m else '') + ' ' + re.sub(r'<[^>]+>', ' ', body)
         if not brand:
             return 0
         cnt = len(re.findall(r'\b' + re.escape(brand) + r'\b', text, re.IGNORECASE))
@@ -5224,23 +5237,32 @@ def _coverage_guard_verdicts(media_targets, outlet_sov, brand):
     for row in outlet_sov:
         dom = (row.get('domain') or '').lower()
         cov = cov_by_dom.get(dom)
-        if row.get('verdict') == 'strength' and cov and cov != 'confirmed':
+        # Downgrade only on EVIDENCE of absence — the page was fetched and the
+        # brand genuinely isn't there ('category') or appears once in passing
+        # ('mention'). 'unverified' means we COULDN'T see the page (bot-blocked,
+        # timeout); asserting "the page doesn't cover the brand" from a failed
+        # fetch is a false claim — observed on menshealth.com, which bot-stubs
+        # datacenter IPs while its cited roundups feature the brand 100+ times.
+        if row.get('verdict') == 'strength' and cov in ('category', 'mention'):
             row['_pre_guard_verdict'] = 'strength'  # diagnostic
+            row['_guard_reason'] = cov
             row['verdict'] = 'opportunity'
             tc = row.get('top_competitor_at_outlet') or {}
             comp = tc.get('name') if isinstance(tc, dict) else None
-            if comp:
+            rival = f" alongside {comp}" if comp else ""
+            if cov == 'mention':
                 row['verdict_label'] = (
-                    f"AI co-mentions {b} alongside {comp} when it cites this "
-                    f"outlet, but the cited page doesn't actually cover {b}. "
-                    f"Pitch to convert co-mention into coverage."
+                    f"AI co-mentions {b}{rival} when it cites this outlet, but "
+                    f"the cited page only mentions {b} in passing. Pitch to "
+                    f"deepen the coverage."
                 )
             else:
                 row['verdict_label'] = (
-                    f"AI co-mentions {b} when it cites this outlet, but the "
-                    f"cited page doesn't actually cover {b}. Pitch coverage."
+                    f"AI co-mentions {b}{rival} when it cites this outlet, but "
+                    f"the cited page doesn't actually cover {b}. Pitch to "
+                    f"convert co-mention into coverage."
                 )
-            downgraded.append(dom)
+            downgraded.append(f"{dom}({cov})")
     if downgraded:
         print(f"_coverage_guard_verdicts: downgraded {len(downgraded)} 'strength' -> "
               f"'opportunity' (no on-page coverage): {', '.join(downgraded[:10])}")
