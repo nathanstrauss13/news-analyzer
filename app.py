@@ -3466,7 +3466,7 @@ def extract_urls(text):
     out = []
     seen = set()
     for u in urls:
-        u = u.rstrip('.,;:!?\'"\)\]\}')
+        u = u.rstrip('.,;:!?\'")]}')
         try:
             host = u.split('/')[2].lower()
         except Exception:
@@ -4387,22 +4387,31 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
     strengths = [r for r in sov if r.get('verdict') == 'strength']
     emerging = [r for r in sov if r.get('verdict') == 'emerging']
 
-    # 1. Best opportunity. Rank by CITATION VOLUME first (a gap at a 6×-cited
-    # outlet is a far stronger signal than a 100%-vs-0% at a 2×-cited one),
-    # then by the raw mention gap. Phrase with concrete counts, not just %, so
-    # the claim is honest at small sample sizes.
+    # 1. Best opportunity. Rank by CITATION VOLUME first — the most-cited
+    # outlet is where a win moves AI mindshare most, and at n<=2 a one-mention
+    # competitor "lead" is noise, not signal (observed: a 2-response outlet
+    # beating the audit's #1-cited outlet for the headline slot). Competitor
+    # gap only breaks ties between equally-cited outlets. Phrase with concrete
+    # counts, not just %, so the claim is honest at small sample sizes.
     if opportunities:
         def _opp_key(r):
             tc = r.get('top_competitor_at_outlet') or {}
             gap = (tc.get('mentions_at_outlet') or 0) - _brand_at(r)
-            # Prefer a genuine competitor lead (gap > 0), then citation volume,
-            # then gap size — so the headline isn't a zero-gap "opportunity".
-            return (1 if gap > 0 else 0, _n(r), gap)
+            return (_n(r), 1 if gap > 0 else 0, gap)
         r = max(opportunities, key=_opp_key)
         tc = r.get('top_competitor_at_outlet') or {}
         dom, n, ba = r.get('domain'), _n(r), _brand_at(r)
         cm = tc.get('mentions_at_outlet') or 0
-        if tc.get('name') and cm > ba:
+        if r.get('_pre_guard_verdict') == 'strength':
+            # Coverage-guard downgrade: the brand IS named whenever AI cites
+            # this outlet, but the cited pages don't actually cover it. The
+            # move is converting co-mention into real coverage — "below its
+            # overall visibility" would be flatly wrong here (often ba == n).
+            rival = f" alongside {tc['name']}" if tc.get('name') else ""
+            text = (f"Pitch {dom}. AI already names {b}{rival} in {ba} of the {n} responses "
+                    f"citing it, but the cited pages don't cover {b} — earn real coverage "
+                    f"to convert the co-mention into owned territory.")
+        elif tc.get('name') and cm > ba:
             text = (f"Pitch {dom}. {tc['name']} shows up in {cm} of the {n} AI responses "
                     f"citing it, {b} in {ba} — closing this gap is your highest-leverage "
                     f"earned-media move.")
@@ -7390,11 +7399,6 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
             t['rationale'] = _synth_rationale(
                 (sov_by_dom.get((t.get('domain') or '').lower()) or {}).get('verdict'))
 
-    try:
-        out['headline_move'] = _compute_headline_move(brand, new_sov, new_media)
-    except Exception:
-        out['headline_move'] = None
-
     # Brand-coverage verification (BACKSTAGE ONLY — saved for the CSV, not shown
     # as a coverage tier). Only meaningful when grounded (real URLs).
     if any(r.get("grounded") for r in all_responses):
@@ -7412,6 +7416,14 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
         _sort_targets_by_prominence(out.get("media_targets"), new_sov)
     except Exception:
         pass
+
+    # Headline move LAST — it must read post-guard verdicts, or a guarded
+    # 'strength' fires a "Defend X" headline while X's card shows opportunity.
+    # (Matches the fresh-audit path: guard -> sort -> headline.)
+    try:
+        out['headline_move'] = _compute_headline_move(brand, new_sov, new_media)
+    except Exception:
+        out['headline_move'] = None
 
     # Optionally refresh the 'What we found' executive summary with the
     # current prompt wording — the one piece the pure-Python pass can't
