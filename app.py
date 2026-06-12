@@ -3063,6 +3063,20 @@ NON_EDITORIAL_VENDORS = {
     # tool; 42DM and Prometheus Agency are B2B marketing agencies whose
     # comparison blogs get cited but aren't pitchable editorial.
     'sprinklr.com', 'konnectinsights.com', '42dm.net', 'prometheusagency.co',
+    # CXM / martech vendor product sites + blogs (NICE is a major CXM vendor;
+    # Pushwoosh push-notification SaaS; AnyRoad experiential-analytics vendor).
+    'nice.com', 'pushwoosh.com', 'anyroad.com',
+    # Syndicated market-research report mills — they sell research PDFs, you
+    # can't pitch them an earned story. Observed as top "media targets" in
+    # enterprise audits.
+    'futuremarketinsights.com', 'custommarketinsights.com',
+    'fortunebusinessinsights.com', 'marketsandmarkets.com',
+    'grandviewresearch.com', 'mordorintelligence.com', 'precedenceresearch.com',
+    # Black & White Zebra content-SEO network ("The * Lead/Manager/CMO" sites)
+    # — affiliate/lead-gen publishers with no newsroom, not pitchable press.
+    'thecxlead.com', 'thecmo.com', 'theecommmanager.com', 'thedigitalprojectmanager.com',
+    'peoplemanagingpeople.com', 'theproductmanager.com', 'thectoclub.com',
+    'managingeditor.com', 'indiecators.com',
     # Grounded-mode additions: native web search (ALL_GROUNDED) surfaces ~4x
     # more URLs, so SaaS tool / vendor / software-review .com/.co/.st sites the
     # productish-TLD rule can't catch leak into B2B targets. Observed polluting
