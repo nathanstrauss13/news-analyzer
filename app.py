@@ -6097,6 +6097,10 @@ def _retry_analysis_json(raw_text, prior_attempts):
     fix_resp = anthropic.messages.create(
         model=CLAUDE_SONNET,
         max_tokens=8000,
+        timeout=150.0,  # explicit: the client default (60s) was too short to
+                        # regenerate a large JSON object, so the repair itself
+                        # timed out — turning a fixable truncation into a hard
+                        # audit failure (observed on the ServiceNow category).
         messages=[{
             "role": "user",
             "content": (
@@ -6825,7 +6829,13 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     # mid-JSON (25 media + 10 institutional + 10 analyst + competitors + exec
     # summary won't fit). 8K gives Claude headroom; the prompt also tells it
     # to self-budget so it ships concise text rather than truncated JSON.
-    analysis_max_tokens = 8000 if tier == "paid" else 5000
+    # Free tier raised 5000 -> 7000: verbose categories (enterprise software,
+    # agentic AI — many competitors + long rationales) were truncating the JSON
+    # at 5000, which then failed every parse strategy and dragged the self-
+    # repair call into a timeout (observed: ServiceNow audit died twice). 7000
+    # gives the JSON room to close; the prompt still tells the model to self-
+    # budget so it ships concise text rather than running to the ceiling.
+    analysis_max_tokens = 8000 if tier == "paid" else 7000
     output_budget_chars = analysis_max_tokens * 4  # rough char approximation
 
     # Per-call timeout override. The Anthropic client's 60s default was triggering
