@@ -6952,18 +6952,43 @@ Respond with ONLY valid JSON:
             messages=[{"role": "user", "content": _analysis_prompt_content}],
         )
 
-    try:
-        analysis_response = _call_analysis(analysis_max_tokens)
-    except Exception as _e:
-        _err_name = type(_e).__name__
-        if 'Timeout' in _err_name or 'Connection' in _err_name:
-            _reduced = max(4000, analysis_max_tokens // 2)
-            print(f"[analysis] {_err_name} at max_tokens={analysis_max_tokens}; retrying with max_tokens={_reduced}")
-            analysis_response = _call_analysis(_reduced)
-        else:
-            raise
+    def _extract_text(resp):
+        """Concatenate all text blocks, defensively. An empty string here means
+        the model returned no text (observed: claude-sonnet-4-6 occasionally
+        returns an empty response under load) — which is NOT an exception, so it
+        must be detected and retried explicitly or it silently kills the audit
+        at JSON-parse time ('Expecting value: line 1 column 1 (char 0)')."""
+        try:
+            return "".join(
+                getattr(b, 'text', '') or '' for b in (resp.content or [])
+                if getattr(b, 'type', None) == 'text'
+            ).strip()
+        except Exception:
+            return ""
 
-    analysis_text = analysis_response.content[0].text
+    # Retry on BOTH transient exceptions (timeout/connection) AND empty
+    # responses. Each kills an 8-min audit otherwise; the analysis call is the
+    # single most expensive step to lose.
+    analysis_text = ""
+    _tok = analysis_max_tokens
+    for _attempt in range(3):
+        try:
+            analysis_response = _call_analysis(_tok)
+        except Exception as _e:
+            _err_name = type(_e).__name__
+            if ('Timeout' in _err_name or 'Connection' in _err_name) and _attempt < 2:
+                _tok = max(4000, _tok // 2)
+                print(f"[analysis] {_err_name} attempt {_attempt+1}; retry at max_tokens={_tok}")
+                continue
+            raise
+        analysis_text = _extract_text(analysis_response)
+        if analysis_text:
+            break
+        _stop = getattr(analysis_response, 'stop_reason', None)
+        print(f"[analysis] EMPTY response on attempt {_attempt+1} "
+              f"(stop_reason={_stop}); retrying")
+    if not analysis_text:
+        raise AuditAnalysisError("Analysis call returned empty text after 3 attempts")
     # Multi-strategy parse with a Claude self-repair fallback. Raises
     # AuditAnalysisError (which the SSE worker catches and emails diagnostics
     # for) if every strategy fails.
