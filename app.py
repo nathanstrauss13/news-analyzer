@@ -302,6 +302,15 @@ print(f"NYT_API_KEY is {'set' if NYT_API_KEY else 'NOT SET'}")
 print(f"GUARDIAN_API_KEY is {'set' if GUARDIAN_API_KEY else 'NOT SET'}")
 
 anthropic = Anthropic(api_key=ANTHROPIC_API_KEY, timeout=60.0)
+
+# Centralized Claude model IDs. Anthropic retires dated model snapshots ~12
+# months out, and the failure mode is a silent 404 NotFoundError at call time
+# (observed June 2026: claude-sonnet-4-20250514 retired, killing prompt-gen +
+# exec-summary). Keeping every call site on these constants means the next
+# migration is a one-line change, not a 13-site grep. Override per-deploy via
+# env vars without a code change.
+CLAUDE_SONNET = os.environ.get("CLAUDE_SONNET_MODEL", "claude-sonnet-4-6")
+CLAUDE_HAIKU = os.environ.get("CLAUDE_HAIKU_MODEL", "claude-haiku-4-5-20251001")
 try:
     openai_client = OpenAI(api_key=OPENAI_API_KEY, timeout=60.0) if OPENAI_API_KEY else None
 except Exception:
@@ -379,7 +388,7 @@ def analyze_articles(articles, query):
     else:
         try:
             response = anthropic.messages.create(
-                model="claude-3-haiku-20240307",
+                model=CLAUDE_HAIKU,
                 max_tokens=1000,
                 messages=[{
                     "role": "user",
@@ -1909,7 +1918,7 @@ Key points to address:
 Articles: {json.dumps(summarized_articles[:50])}"""
             
             response = anthropic.messages.create(
-                model="claude-3-haiku-20240307",
+                model=CLAUDE_HAIKU,
                 max_tokens=1000,
                 messages=[{
                     "role": "user",
@@ -3391,7 +3400,7 @@ def verify_editorial_domains(editorial_domains, brand, category):
         )
     try:
         resp = anthropic.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=CLAUDE_SONNET,
             max_tokens=1500,
             messages=[{
                 "role": "user",
@@ -3937,7 +3946,7 @@ def _classify_competitor_types(brand, category, competitor_counts):
             f'the list. No prose, no markdown, just the JSON.'
         )
         resp = anthropic.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=600, timeout=30.0,
+            model=CLAUDE_SONNET, max_tokens=600, timeout=30.0,
             messages=[{"role": "user", "content": prompt}],
         )
         txt = (resp.content[0].text or "").strip()
@@ -3981,7 +3990,7 @@ def _extract_competitor_candidates(brand, category, all_responses, max_candidate
 
     try:
         resp = anthropic.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=CLAUDE_SONNET,
             max_tokens=600,
             messages=[{
                 "role": "user",
@@ -4656,7 +4665,7 @@ def _compute_media_landscape(brand, category, all_responses, ranked_domains):
             f"Real primary domains only (no www, no paths). No prose, no markdown."
         )
         resp = anthropic.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=1400, timeout=45.0,
+            model=CLAUDE_SONNET, max_tokens=1400, timeout=45.0,
             messages=[{"role": "user", "content": prompt}],
         )
         txt = (resp.content[0].text or "").strip()
@@ -5616,7 +5625,7 @@ def _claude_grounded(prompt):
     (the bound is what keeps latency/memory sane — the reverted version ran
     unbounded). Builds the answer from text blocks + harvests cited URLs."""
     resp = anthropic.with_options(timeout=120.0).messages.create(
-        model="claude-sonnet-4-20250514",
+        model=CLAUDE_SONNET,
         max_tokens=2500,
         system=CITATION_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
@@ -5708,7 +5717,7 @@ def _call_llm(provider, enriched_prompt):
             except Exception as e:
                 print("Claude web_search failed; parametric fallback:", str(e)[:160])
         resp = anthropic.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=CLAUDE_SONNET,
             max_tokens=2000,
             system=CITATION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": enriched_prompt}],
@@ -6026,7 +6035,7 @@ def _retry_analysis_json(raw_text, prior_attempts):
     """Ask Claude to fix its own broken JSON. Returns the corrected text."""
     last_err = (prior_attempts[-1] if prior_attempts else {}).get('err', 'unknown')
     fix_resp = anthropic.messages.create(
-        model="claude-sonnet-4-20250514",
+        model=CLAUDE_SONNET,
         max_tokens=8000,
         messages=[{
             "role": "user",
@@ -6290,7 +6299,7 @@ def _generate_audit_prompts(problem_statement, tier="free"):
     prompt_count = cfg["prompt_count"]
 
     prompt_gen_response = anthropic.messages.create(
-        model="claude-sonnet-4-20250514",
+        model=CLAUDE_SONNET,
         max_tokens=4000 if prompt_count > 20 else 2000,
         messages=[{
             "role": "user",
@@ -6364,7 +6373,7 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         emit("prompts", "Preparing your curated prompts...", 0, 1)
         try:
             brand_resp = anthropic.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=CLAUDE_SONNET,
                 max_tokens=300,
                 messages=[{
                     "role": "user",
@@ -6877,7 +6886,7 @@ Respond with ONLY valid JSON:
     # the budget forces it to ship concise JSON inside the deadline.
     def _call_analysis(max_tok):
         return anthropic.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=CLAUDE_SONNET,
             max_tokens=max_tok,
             timeout=analysis_call_timeout,
             messages=[{"role": "user", "content": _analysis_prompt_content}],
@@ -7498,7 +7507,7 @@ FRAMING RULE (critical): these are AI-citation SHARE-OF-VOICE signals — how of
 BANNED: filler like 'this audit reveals', 'in today's landscape'. Discuss analysts only if they actually dominate the source domains above. Respond with ONLY the 3 sentences — no preamble, no JSON, no labels."""
 
         resp = anthropic.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=CLAUDE_SONNET,
             max_tokens=400,
             timeout=60.0,
             messages=[{"role": "user", "content": prompt}],
