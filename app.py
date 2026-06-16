@@ -6559,6 +6559,25 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         # release without blocking on hung Grok calls. Cancelled futures won't run.
         executor.shutdown(wait=False, cancel_futures=True)
 
+    # Treat ERRORED responses like timed-out ones: NOT delivered. They were
+    # being kept in all_responses and counted as "delivered non-mentions",
+    # which deflated every brand's mindshare and fabricated false "dark on X"
+    # findings when a whole provider failed. Observed: Grok returned 402
+    # 'insufficient credits' on all 10 calls -> 10 empty responses -> the report
+    # claimed "0/10 on Grok" as a real signal AND held the denominator at 50
+    # instead of the 40 actually delivered. Drop errored responses so every
+    # downstream metric (citations, mindshare, per-LLM, SoV, completion) is over
+    # responses that actually came back; keep the per-provider error counts for
+    # diagnostics + the partial-delivery indicator.
+    _errored = [r for r in all_responses if r.get('error')]
+    if _errored:
+        all_responses = [r for r in all_responses if not r.get('error')]
+        _dead = sorted({r.get('llm') for r in _errored
+                        if per_provider_errors.get(r.get('llm'), 0) >= len(prompts)})
+        print(f"[audit] dropped {len(_errored)} errored responses "
+              f"(fully-failed providers: {_dead or 'none'}); metrics now over "
+              f"{len(all_responses)} delivered responses")
+
     # URL verification consumes 80% of the extract step's progress budget; aggregation is the rest.
     # We size the step "total" relative to URL count so per-URL progress emits map cleanly.
     all_urls = list({c['url'] for r in all_responses for c in (r.get('citations') or [])})
@@ -7645,7 +7664,18 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     if not all_responses or not brand:
         return data
 
+    # Drop errored responses (same rule as the fresh-audit path) so a rerender
+    # repairs reports that were saved with a failed provider's empty responses
+    # — recomputing mindshare/per-LLM/SoV over what actually came back. Lets us
+    # fix a credit-exhausted-Grok report without re-running the 50-call batch.
+    _errored = [r for r in all_responses if r.get('error')]
+    if _errored:
+        all_responses = [r for r in all_responses if not r.get('error')]
+        print(f"[rerender] dropped {len(_errored)} errored responses; metrics "
+              f"now over {len(all_responses)} delivered responses")
+
     out = dict(data)
+    out['all_responses'] = all_responses  # persist the cleaned set
     ranked_domains = aggregate_citations(all_responses)
     ranked_domains = _augment_citations_with_named_outlets(ranked_domains, all_responses)
 
@@ -7661,6 +7691,13 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
             print(f"[rerender] brand_mention_count recount: "
                   f"{data.get('brand_mention_count')} -> {new_brand_count}")
         out['brand_mention_count'] = new_brand_count
+    # Sync the denominator to the cleaned response set so mindshare % is over
+    # what was actually delivered (a dropped-error rerender shrinks this from
+    # e.g. 50 -> 40, correcting ServiceNow's "34%" to ~43% over 4 live LLMs).
+    if len(all_responses) != (data.get('total_responses') or 0):
+        print(f"[rerender] total_responses: {data.get('total_responses')} -> {len(all_responses)}")
+    out['total_responses'] = len(all_responses)
+    out['responses_completed'] = len(all_responses)
 
     competitor_counts = data.get('competitors') or []
     # Recount competitor mention totals against the cached responses so the
