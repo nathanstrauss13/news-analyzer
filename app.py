@@ -5444,6 +5444,51 @@ def _sort_targets_by_prominence(targets, outlet_sov=None):
         t['rank'] = i + 1
 
 
+def _reconcile_coverage_from_page_evidence(media_targets, outlet_sov):
+    """Make the page-evidence layer the single source of truth for each
+    target's `coverage` field, overriding the older _verify_brand_coverage
+    result whenever page-evidence actually read pages.
+
+    WHY: two coverage systems run per audit. _verify_brand_coverage samples
+    up to 2 sample_urls; _attach_page_evidence samples up to 6 ranked URLs
+    with a reader-proxy fallback for bot-blocked publishers — strictly more
+    thorough. They can disagree, which produced a self-contradicting card on
+    the Lululemon report: the headline said "the cited pages don't cover
+    Lululemon" at Women's Health while that card's source-page check showed
+    Lululemon on 2 of 3 pages. Downstream (coverage-guard verdict + headline
+    move + card label) all read `coverage`, so reconciling it here fixes the
+    contradiction everywhere at once.
+
+    Mapping from page_evidence (only when pages were actually read):
+      brand on >=2 pages           -> 'confirmed'
+      brand on exactly 1 page      -> 'mention'
+      pages read, brand on 0       -> 'category'
+      no pages read (pages_ok==0)  -> leave _verify_brand_coverage's value
+    """
+    if not media_targets or not outlet_sov:
+        return
+    pe_by_dom = {}
+    for r in outlet_sov:
+        pe = r.get('page_evidence')
+        if pe and (pe.get('pages_ok') or 0) > 0:
+            pe_by_dom[(r.get('domain') or '').lower()] = pe
+    changed = 0
+    for t in media_targets:
+        pe = pe_by_dom.get((t.get('domain') or '').lower())
+        if not pe:
+            continue
+        bp = pe.get('brand_pages') or 0
+        new_cov = 'confirmed' if bp >= 2 else ('mention' if bp == 1 else 'category')
+        if t.get('coverage') != new_cov:
+            changed += 1
+        t['coverage'] = new_cov
+        t['brand_confirmed'] = bp >= 1
+        t['brand_page_mentions'] = pe.get('brand_mentions') or 0
+    if changed:
+        print(f"_reconcile_coverage_from_page_evidence: updated {changed} target(s) "
+              f"from the (more thorough) page-evidence layer")
+
+
 def _coverage_guard_verdicts(media_targets, outlet_sov, brand):
     """An outlet can only be a STRENGTH TO DEFEND if the brand is VERIFIED on
     its cited page (coverage='confirmed'). Without that, the share-of-voice
@@ -7009,6 +7054,13 @@ Respond with ONLY valid JSON:
             _verify_brand_coverage(brand, analysis.get("media_targets") or [], ranked_domains)
         except Exception as _bc_e:
             print("brand-coverage verification failed (continuing without):", _bc_e)
+    # Reconcile coverage from the (more thorough) page-evidence layer so the
+    # guard, headline, and card labels all agree on whether the brand is on the
+    # cited pages. Must run AFTER both coverage passes, BEFORE the guard.
+    try:
+        _reconcile_coverage_from_page_evidence(analysis.get("media_targets"), analysis.get("outlet_sov"))
+    except Exception as _rc_e:
+        print("coverage reconciliation failed (continuing without):", _rc_e)
     # Coverage-guard the SoV verdicts: an outlet can only be 'strength' if the
     # brand is on the cited page. Otherwise it's 'opportunity'. Keeps Media
     # Targets agreeing with Media Landscape so 'strength' honestly means 'they
@@ -7717,6 +7769,12 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
             _verify_brand_coverage(brand, out.get("media_targets") or [], ranked_domains)
         except Exception:
             pass
+    # Reconcile coverage from the more-thorough page-evidence layer so guard +
+    # headline + card labels agree (mirrors the fresh-audit path).
+    try:
+        _reconcile_coverage_from_page_evidence(out.get("media_targets"), new_sov)
+    except Exception:
+        pass
     # Coverage-guard: 'strength' requires on-page coverage; otherwise -> opportunity.
     try:
         _coverage_guard_verdicts(out.get("media_targets"), new_sov, brand)
