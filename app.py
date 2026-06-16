@@ -3289,10 +3289,21 @@ def _competitor_domain_stems(competitor_counts):
     return {'words': words, 'concats': concats}
 
 
+# SaaS/brand domains very commonly prefix the brand name with one of these
+# ("getquantic.com", "trynotion.com", "usepylon.com", "joinhoney.com"). The
+# competitor-owned-domain matcher compares the registrable label against the
+# brand's no-space concat — so we ALSO emit the prefix-stripped form, or a
+# competitor's own site leaks in as a "media target" (observed: getquantic.com
+# surfacing as a pitch outlet in a SpotOn audit while Quantic is a competitor).
+# Only the unambiguous prefixes; remainder must stay >= 4 chars.
+_SAAS_DOMAIN_PREFIXES = ('get', 'try', 'use', 'join', 'meet', 'go')
+
+
 def _registrable_label_candidates(segs):
     """Given a domain's alnum dot-segments, return the labels that could be the
     'registrable' name (the bit before the public-suffix-ish TLD). Handles both
-    foo.com (label 'foo') and foo.co.uk (label 'foo', not 'co')."""
+    foo.com (label 'foo') and foo.co.uk (label 'foo', not 'co'), plus the
+    SaaS-prefix-stripped form (getquantic → quantic)."""
     cands = set()
     if len(segs) >= 2:
         cands.add(segs[-2])
@@ -3300,6 +3311,10 @@ def _registrable_label_candidates(segs):
         cands.add(segs[-3])  # foo.co.uk → also consider 3rd-to-last
     if segs:
         cands.add(segs[0])
+    for c in list(cands):
+        for p in _SAAS_DOMAIN_PREFIXES:
+            if c.startswith(p) and len(c) - len(p) >= 4:
+                cands.add(c[len(p):])
     return cands
 
 
