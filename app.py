@@ -329,6 +329,7 @@ class Outreach(db.Model):
     cadence = db.Column(db.String(40), default='5,14', nullable=False)  # comma days from sent
     followup_count = db.Column(db.Integer, default=0, nullable=False)
     insight = db.Column(db.Text, nullable=True)        # one-line lead insight, seeds proposed text
+    relationship = db.Column(db.String(240), nullable=True)  # shared-connection hook (e.g. "fellow Oregon alum")
     notes = db.Column(db.Text, nullable=True)
     sent_at = db.Column(db.DateTime, nullable=True)
     last_activity_at = db.Column(db.DateTime, nullable=True)
@@ -8335,16 +8336,22 @@ def _outreach_compute_due(o):
 
 def _followup_text(o):
     """Proposed follow-up copy for this prospect's current step — warmer if they
-    opened the link, soft break-up on the final step."""
+    opened the link, soft break-up on the final step, and opens with the shared-
+    connection hook (UO alum, ex-colleague, mutual contact) when one is set."""
     first = _outreach_first_name(o)
     insight = (o.insight or '').strip()
+    rel = (o.relationship or '').strip().rstrip('.')
     steps = _cadence_days(o.cadence)
     is_last = o.followup_count >= len(steps) - 1
     lead = f"{insight} " if insight else ""
-    if o.status == 'opened':
-        opener = f"Hi {first} — saw you had a chance to glance at the read; would love your quick reaction."
+    body = ("saw you had a chance to glance at the read; would love your quick reaction."
+            if o.status == 'opened'
+            else "floating this back up in case it got buried.")
+    if rel:
+        # relationship is its own warm clause; capitalize the body that follows.
+        opener = f"Hi {first} — {rel}. {body[:1].upper()}{body[1:]}"
     else:
-        opener = f"Hi {first} — floating this back up in case it got buried."
+        opener = f"Hi {first} — {body}"
     if is_last:
         close = "I'll leave it here either way — happy to send the full one-pager if AI visibility ever climbs the priority list."
     else:
@@ -8380,7 +8387,7 @@ def _outreach_mark(o, action):
 
 
 def _outreach_upsert(name, slug, title=None, company=None, channel='linkedin',
-                     insight=None, cadence='5,14', token=None):
+                     insight=None, cadence='5,14', token=None, relationship=None):
     """Idempotent create-or-update of a prospect. On first create, mints the
     prospect's tracked link (using `token` if given). Safe against concurrent
     gunicorn workers via the (prospect_name, slug) unique constraint."""
@@ -8407,6 +8414,8 @@ def _outreach_upsert(name, slug, title=None, company=None, channel='linkedin',
         o.channel = channel; changed = True
     if insight is not None and o.insight != insight:
         o.insight = insight; changed = True
+    if relationship is not None and o.relationship != relationship:
+        o.relationship = relationship; changed = True
     if cadence and o.cadence != cadence:
         o.cadence = cadence; changed = True
     if changed:
@@ -8539,7 +8548,23 @@ def outreach_new():
                      company=(request.args.get('company') or None),
                      channel=(request.args.get('channel') or 'linkedin'),
                      insight=(request.args.get('insight') or None),
+                     relationship=(request.args.get('relationship') or None),
                      cadence=(request.args.get('cadence') or '5,14'))
+    return redirect(url_for('outreach_board') + _outreach_keyq())
+
+
+@app.route('/outreach/<int:oid>/set', methods=['POST'])
+def outreach_set(oid):
+    """Inline edit of free-text fields (relationship hook, insight) from the board."""
+    if not _operator_ok():
+        abort(404)
+    o = Outreach.query.get(oid)
+    if o:
+        if 'relationship' in request.form:
+            o.relationship = (request.form.get('relationship') or '').strip()[:240] or None
+        if 'insight' in request.form:
+            o.insight = (request.form.get('insight') or '').strip() or None
+        db.session.commit()
     return redirect(url_for('outreach_board') + _outreach_keyq())
 
 
@@ -8604,18 +8629,30 @@ def outreach_board():
         proposed = (f'<div style="margin-top:8px;font-size:12px;color:#333;background:#f7f7f7;'
                     f'padding:9px 11px;border-radius:6px"><span style="color:#999">proposed follow-up:</span><br>'
                     f'{html.escape(_followup_text(o))}</div>') if show_text else ''
+        rel_badge = (f'<span style="font-size:11px;color:#7a3ff2;background:#f3eefe;'
+                     f'padding:1px 8px;border-radius:10px;margin-left:6px">🤝 {html.escape(o.relationship)}</span>'
+                     if o.relationship else '')
+        rel_form = (
+            f'<form method="post" action="{root}/outreach/{o.id}/set{keyq}" style="margin-top:8px;display:flex;gap:6px">'
+            f'<input name="relationship" value="{html.escape(o.relationship or "")}" '
+            f'placeholder="shared connection — e.g. fellow Oregon alum · ex-Edelman · intro via Sam" '
+            f'style="flex:1;font-size:12px;padding:5px 8px;border:1px solid #ddd;border-radius:5px">'
+            f'<button type="submit" style="font-size:12px;padding:4px 10px;border:1px solid #ccc;'
+            f'border-radius:5px;background:#fff;cursor:pointer">Save hook</button></form>'
+        )
         cards.append(
             '<div style="border:1px solid #e7e7e7;border-radius:10px;padding:14px 16px;margin:0 0 12px">'
             '<div style="display:flex;justify-content:space-between;align-items:baseline">'
             f'<div><span style="font-size:15px;font-weight:600">{html.escape(o.prospect_name)}</span> '
             f'<span style="color:#888;font-size:13px">{html.escape(o.prospect_title or "")}'
-            f'{" · " + html.escape(o.company) if o.company else ""}</span></div>'
+            f'{" · " + html.escape(o.company) if o.company else ""}</span>{rel_badge}</div>'
             f'<span style="font-size:11px;font-weight:700;color:#fff;background:{color};'
             f'padding:2px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.03em">{label}</span>'
             '</div>'
             f'<div style="font-size:12px;color:#777;margin-top:5px">'
             f'<a href="{root}/signal/{html.escape(o.slug)}">{html.escape(o.slug)}</a> · {days} · {due} · '
             f'<code style="font-size:11px;color:#888">{html.escape(track_url)}</code></div>'
+            f'{rel_form}'
             f'{proposed}'
             f'<div style="margin-top:10px">{"".join(btns)}</div>'
             '</div>'
