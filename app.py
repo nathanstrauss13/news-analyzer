@@ -330,6 +330,7 @@ class Outreach(db.Model):
     followup_count = db.Column(db.Integer, default=0, nullable=False)
     insight = db.Column(db.Text, nullable=True)        # one-line lead insight, seeds proposed text
     relationship = db.Column(db.String(240), nullable=True)  # shared-connection hook (e.g. "fellow Oregon alum")
+    message = db.Column(db.Text, nullable=True)        # full suggested initial outreach message
     notes = db.Column(db.Text, nullable=True)
     sent_at = db.Column(db.DateTime, nullable=True)
     last_activity_at = db.Column(db.DateTime, nullable=True)
@@ -8641,19 +8642,85 @@ def _run_outreach_digest():
 _OUTREACH_SEED = [
     dict(name="Bill Chandler", title="SVP, Global Communications & PR", company="Lululemon",
          slug="lululemon", channel="linkedin", token="7a7483ef",
-         insight="Vuori — not Alo — is dead even with you at Women's Health and Business Insider, the two outlets that most shape how AI describes the category."),
+         insight="Vuori — not Alo — is dead even with you at Women's Health and Business Insider, the two outlets that most shape how AI describes the category.",
+         message=(
+             "Hi Bill — I'd been in talks with some of your digital marketing colleagues a while back, "
+             "but wanted to bring you something built specifically for communicators. Everyone's drowning "
+             "in GEO dashboards right now; this is the opposite — a simple read that answers two questions "
+             "about how AI describes your category: which outlets punch above their weight on your "
+             "visibility, and which under-index you while quietly surfacing competitors instead.\n\n"
+             "For lululemon, the standout: you're tied for #1 in AI mindshare — but it's Vuori, not Alo, "
+             "that's dead even with you, matching you 19-for-19 at Women's Health and Business Insider, the "
+             "two outlets with the most influence on how AI describes the category. Those are the "
+             "relationships to defend before Vuori turns parity into a lead.\n\n"
+             "Happy to send the full one-pager if useful — no pitch, just a lens I think is about to "
+             "matter for earned media.")),
     dict(name="Kate Wolfe", title="VP, Marketing & Brand Strategy", company="SpotOn",
          slug="spoton", channel="linkedin", token="91e0f327",
-         insight="At the outlets AI leans on most — TechRadar, Forbes Advisor, Business News Daily — Toast is named in nearly every response and SpotOn in fewer than half."),
+         insight="At the outlets AI leans on most — TechRadar, Forbes Advisor, Business News Daily — Toast is named in nearly every response and SpotOn in fewer than half.",
+         message=(
+             "Hi Kate — can't believe it's been a decade-plus since our Edelman days! Quick one in that "
+             "spirit: instead of another GEO dashboard, I built the opposite — a simple read that answers "
+             "two questions about how AI describes \"best restaurant POS\": which outlets shape the answer, "
+             "and which under-index you while surfacing competitors instead.\n\n"
+             "For SpotOn, the pattern is consistent and actionable: at TechRadar, Forbes Advisor, Business "
+             "News Daily and NerdWallet — the outlets AI leans on most — Toast is named in nearly every "
+             "response and SpotOn in fewer than half. Those are your highest-leverage earned-media targets. "
+             "(AI also skips SpotOn entirely on ChatGPT today — a specific, fixable gap, not a brand-wide "
+             "weakness.)\n\n"
+             "Happy to send the full one-pager if useful — no pitch, just a lens I think is about to "
+             "matter for SMB discovery.")),
     dict(name="Carolyn Bos", title="VP, Corporate Marketing", company="Motive",
          slug="motive", channel="linkedin", token="11418dcd",
-         insight="AI's category leader isn't Samsara — it's Geotab (42 responses vs your 32), and the trade press (CCJ, TechRadar) is where Geotab out-indexes you."),
+         insight="AI's category leader isn't Samsara — it's Geotab (42 responses vs your 32), and the trade press (CCJ, TechRadar) is where Geotab out-indexes you.",
+         message=(
+             "Hi Carolyn — quick one. Rather than another GEO dashboard, I built the opposite: a simple "
+             "read for communicators that answers two questions about how AI describes \"best fleet "
+             "management platform\" — which outlets shape the answer, and which under-index you while "
+             "surfacing competitors instead.\n\n"
+             "Two things stood out for Motive. First, AI's category leader isn't Samsara — it's Geotab "
+             "(named in 42 responses vs. Motive's 32; Samsara, 33, is dead even with you). Second, the "
+             "trade press is where to focus: at Commercial Carrier Journal, TechRadar, and Work Truck "
+             "Online, Geotab out-indexes you — those are your earned-media targets — while FreightWaves "
+             "and Forbes already punch above their weight for you.\n\n"
+             "Happy to send the full one-pager if useful — no pitch, just a lens I think is about to "
+             "matter for fleet-buyer discovery.")),
     dict(name="Sydney Williams", title="VP, Global Brand Marketing", company="ServiceNow",
          slug="servicenow", channel="linkedin", token="2e2af1ad",
-         insight="You're genuinely top-tier (58% mindshare, neck-and-neck with Microsoft/IBM/Google) — the move is at IT Pro and Forbes, where IBM and Salesforce out-cite you."),
+         insight="You're genuinely top-tier (58% mindshare, neck-and-neck with Microsoft/IBM/Google) — the move is at IT Pro and Forbes, where IBM and Salesforce out-cite you.",
+         message=(
+             "Hi Sydney — can't believe it's been a decade-plus since our GE days! Quick one: everyone's "
+             "pushing complex GEO dashboards right now; I built the opposite — a simple read for "
+             "communicators that answers two questions about how AI describes your category: which outlets "
+             "punch above their weight on your visibility, and which under-index you while quietly "
+             "surfacing competitors instead.\n\n"
+             "For ServiceNow, the read is encouraging and specific: when people ask the five major "
+             "assistants about agentic AI platforms for the enterprise, you're genuinely top-tier — 58% "
+             "mindshare, neck-and-neck with Microsoft, IBM, and Google, just behind Salesforce. The move "
+             "is at the outlets AI leans on most: at IT Pro and Forbes, IBM and Salesforce out-cite "
+             "ServiceNow, and at MarkTechPost AI names you alongside Microsoft but the cited pages only "
+             "mention you in passing. Those few outlets are where earned media moves the needle.\n\n"
+             "Happy to send the full one-pager if useful — no pitch, just a lens I think is about to "
+             "matter for how buyers discover enterprise software.")),
     dict(name="Jennifer McGuire", title="Head of Brand & PR", company="Swarovski",
          slug="swarovski", channel="linkedin", token="e8e86b05",
-         insight="Forbes is your single highest-return target: it's cited 15× across the audit and Mejuri owns it 10-to-3."),
+         insight="Forbes is your single highest-return target: it's cited 15× across the audit and Mejuri owns it 10-to-3.",
+         message=(
+             "Hi Jennifer — still nostalgic about the good old Tiffany days; our exec-comms collaboration "
+             "never quite came together, so I thought I'd come back with something new. Everyone's selling "
+             "complex GEO dashboards right now; I built the opposite — a simple read for communicators "
+             "that answers two questions about how AI describes your category: which outlets punch above "
+             "their weight on your visibility, and which under-index you while quietly surfacing "
+             "competitors instead.\n\n"
+             "For Swarovski, the finding worth knowing: when people ask the five major assistants about "
+             "crystal and accessible-luxury jewelry, the digital-native brands have caught you — Mejuri "
+             "leads by a wide margin, and Missoma is now dead even with Swarovski, with Monica Vinader, "
+             "Adina Eden, and BaubleBar just behind. More actionably: you under-index at the exact "
+             "fashion-and-shopping outlets AI leans on most — Forbes, Elle, Who What Wear, AOL — where "
+             "Mejuri is named far more often than you. Forbes is the single highest-return target: it's "
+             "cited 15 times across the audit, and Mejuri owns it 10-to-3.\n\n"
+             "Happy to send the full one-pager if useful — no pitch, just a lens I think is about to "
+             "matter for how shoppers discover jewelry.")),
 ]
 
 
@@ -8666,6 +8733,7 @@ def _ensure_outreach_columns():
     error is caught and ignored."""
     migrations = [
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS relationship VARCHAR(240)",
+        "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS message TEXT",
     ]
     try:
         with app.app_context():
@@ -8683,14 +8751,18 @@ def _ensure_outreach_columns():
 
 def _ensure_outreach_seed():
     """Idempotently ensure the five seed prospects exist (mints their links on
-    first run, using their fixed tokens). Safe to call on every boot."""
+    first run, using their fixed tokens). Backfills the suggested message once
+    when empty — never clobbers later board edits. Safe to call on every boot."""
     try:
         with app.app_context():
             for s in _OUTREACH_SEED:
-                _outreach_upsert(s["name"], s["slug"], title=s["title"],
-                                 company=s["company"], channel=s["channel"],
-                                 insight=s["insight"], cadence="5,14",
-                                 token=s["token"])
+                o = _outreach_upsert(s["name"], s["slug"], title=s["title"],
+                                     company=s["company"], channel=s["channel"],
+                                     insight=s["insight"], cadence="5,14",
+                                     token=s["token"])
+                if s.get("message") and o is not None and not (o.message or "").strip():
+                    o.message = s["message"]
+                    db.session.commit()
     except Exception as e:
         print("outreach seed error:", e)
 
@@ -8731,6 +8803,8 @@ def outreach_set(oid):
     if o:
         if 'relationship' in request.form:
             o.relationship = (request.form.get('relationship') or '').strip()[:240] or None
+        if 'message' in request.form:
+            o.message = (request.form.get('message') or '').strip() or None
         if 'insight' in request.form:
             o.insight = (request.form.get('insight') or '').strip() or None
         db.session.commit()
@@ -8810,6 +8884,26 @@ def outreach_board():
             f'<button type="submit" style="font-size:12px;padding:4px 10px;border:1px solid #ccc;'
             f'border-radius:5px;background:#fff;cursor:pointer">Save hook</button></form>'
         )
+        # Full suggested message: editable textarea + copy controls (the send kit).
+        msg_block = (
+            f'<form method="post" action="{root}/outreach/{o.id}/set{keyq}" style="margin-top:10px">'
+            f'<div style="font-size:11px;color:#999;margin-bottom:4px">suggested message</div>'
+            f'<textarea name="message" id="msg{o.id}" rows="8" '
+            f'style="width:100%;box-sizing:border-box;font:13px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;'
+            f'color:#222;padding:10px 12px;border:1px solid #ddd;border-radius:7px;resize:vertical">'
+            f'{html.escape(o.message or "")}</textarea>'
+            f'<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">'
+            f'<button type="button" data-t="msg{o.id}" data-link="{html.escape(track_url)}" onclick="cpML(this)" '
+            f'style="font-size:12px;padding:5px 11px;border:1px solid #2356c7;color:#fff;background:#2356c7;'
+            f'border-radius:5px;cursor:pointer;font-weight:600">Copy message + link</button>'
+            f'<button type="button" data-t="msg{o.id}" onclick="cpEl(this)" '
+            f'style="font-size:12px;padding:5px 10px;border:1px solid #ccc;border-radius:5px;background:#fff;cursor:pointer">Copy message</button>'
+            f'<button type="button" data-v="{html.escape(track_url)}" onclick="cpV(this)" '
+            f'style="font-size:12px;padding:5px 10px;border:1px solid #ccc;border-radius:5px;background:#fff;cursor:pointer">Copy link</button>'
+            f'<button type="submit" '
+            f'style="font-size:12px;padding:5px 10px;border:1px solid #ccc;border-radius:5px;background:#fafafa;cursor:pointer">Save edits</button>'
+            f'</div></form>'
+        )
         cards.append(
             '<div style="border:1px solid #e7e7e7;border-radius:10px;padding:14px 16px;margin:0 0 12px">'
             '<div style="display:flex;justify-content:space-between;align-items:baseline">'
@@ -8822,6 +8916,7 @@ def outreach_board():
             f'<div style="font-size:12px;color:#777;margin-top:5px">'
             f'<a href="{root}/signal/{html.escape(o.slug)}">{html.escape(o.slug)}</a> · {days} · {due} · '
             f'<code style="font-size:11px;color:#888">{html.escape(track_url)}</code></div>'
+            f'{msg_block}'
             f'{rel_form}'
             f'{proposed}'
             f'<div style="margin-top:10px">{"".join(btns)}</div>'
@@ -8842,6 +8937,16 @@ def outreach_board():
         f'opens auto-advance to “Opened” · reminders at days {html.escape(rows[0].cadence) if rows else "5,14"} after sent</p>'
         + (''.join(cards) or '<p style="color:#999">No prospects yet. Add one with '
            '<code>/outreach/new?name=&amp;slug=</code>.</p>')
+        + '<script>'
+          'function flash(b){var o=b.textContent;b.textContent="Copied \\u2713";'
+          'setTimeout(function(){b.textContent=o;},1400);}'
+          'function cpEl(b){var t=document.getElementById(b.dataset.t);'
+          'navigator.clipboard.writeText(t.value).then(function(){flash(b);});}'
+          'function cpML(b){var t=document.getElementById(b.dataset.t);'
+          'var v=t.value+"\\n\\nHere\\u2019s the read: "+b.dataset.link;'
+          'navigator.clipboard.writeText(v).then(function(){flash(b);});}'
+          'function cpV(b){navigator.clipboard.writeText(b.dataset.v).then(function(){flash(b);});}'
+          '</script>'
         + '</body></html>'
     )
     return Response(body, mimetype='text/html')
