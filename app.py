@@ -8512,6 +8512,30 @@ _OUTREACH_SEED = [
 ]
 
 
+def _ensure_outreach_columns():
+    """Add columns introduced AFTER the outreach table was first created.
+    db.create_all() only creates missing tables, never alters existing ones, so
+    a new field on a table that already exists in prod needs an explicit,
+    idempotent ALTER. Postgres honors IF NOT EXISTS; on a fresh SQLite dev DB
+    the column already exists (created by create_all) and the duplicate-column
+    error is caught and ignored."""
+    migrations = [
+        "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS relationship VARCHAR(240)",
+    ]
+    try:
+        with app.app_context():
+            from sqlalchemy import text
+            for stmt in migrations:
+                try:
+                    db.session.execute(text(stmt))
+                    db.session.commit()
+                except Exception as e:
+                    db.session.rollback()
+                    print("outreach column migrate skipped:", str(e)[:120])
+    except Exception as e:
+        print("outreach column migrate error:", e)
+
+
 def _ensure_outreach_seed():
     """Idempotently ensure the five seed prospects exist (mints their links on
     first run, using their fixed tokens). Safe to call on every boot."""
@@ -9556,7 +9580,8 @@ def signal_stripe_webhook():
     return jsonify({"ok": True})
 
 
-# Ensure the five seed outreach prospects exist (idempotent; mints links once).
+# Apply post-creation column migrations, then ensure the seed prospects exist.
+_ensure_outreach_columns()
 _ensure_outreach_seed()
 
 
