@@ -4378,6 +4378,10 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
         # section still surfaces meaningful insight.
         STRENGTH_PP = 0.15
         OPPORTUNITY_PP = 0.15
+        # Defend-class lead: leading the competitive field at an outlet cited in
+        # at least this many responses is a position to DEFEND even without a big
+        # over-index vs the brand's own baseline (see standard-mode block below).
+        LEAD_MIN_RESPONSES = 5
         DOMINANT_BRAND_THRESHOLD = 0.70  # overall SoV at which we switch modes
         DOMINANT_STRENGTH_FLOOR = 0.95   # in dominant mode, strength = brand at >= 95%
         DOMINANT_OPPORTUNITY_DELTA = 0.10  # in dominant mode, opportunity = brand drops 10pp below baseline
@@ -4419,14 +4423,44 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
             # Standard mode: relative-delta verdicts. Use leader_comp (highest
             # SoV) for the math so opportunity-detection responds to the actual
             # leader, not whichever competitor happens to be closest by SoV.
-            if brand_patterns and brand_diff >= STRENGTH_PP and (not leader_comp or brand_sov_at >= leader_comp["sov_at_outlet"]):
+            comp_sov = leader_comp["sov_at_outlet"] if leader_comp else 0.0
+            comp_at = leader_comp["mentions_at_outlet"] if leader_comp else 0
+            if brand_patterns and brand_diff >= STRENGTH_PP and (not leader_comp or brand_sov_at >= comp_sov):
                 verdict = "strength"
                 verdict_label = (
                     f"{brand} over-indexes here. Defend the relationship; "
                     f"pitch follow-up coverage."
                 )
+            # DEFEND-CLASS LEAD: the brand is the outright most-cited brand at a
+            # materially-cited outlet, even without a big over-index vs its OWN
+            # baseline. Leading the field at a top outlet is the textbook "punch
+            # above your weight" signal — a position to DEFEND, not the
+            # "neutral / no action" the relative-delta test would bury it as.
+            # (Fixes: a brand ahead of the category leader at the single
+            # most-cited outlet rendering as "steady; no urgent action".)
+            elif (brand_patterns and brand_at >= 2 and n_at_outlet >= LEAD_MIN_RESPONSES
+                  and brand_at > comp_at):
+                verdict = "strength"
+                if leader_comp and (brand_sov_at - comp_sov) < 0.10:
+                    # Narrow lead — honest about how close the threat is.
+                    verdict_label = (
+                        f"{brand} is the most-cited brand here ({brand_at} of {n_at_outlet} "
+                        f"responses) but {leader_comp['name']} is right behind ({comp_at}) — "
+                        f"a contested lead at a top outlet. Defend it before it flips."
+                    )
+                elif leader_comp:
+                    verdict_label = (
+                        f"{brand} leads the field here ({brand_at} of {n_at_outlet} responses, "
+                        f"ahead of {leader_comp['name']} at {comp_at}) — defend and extend this "
+                        f"lead at a top outlet."
+                    )
+                else:
+                    verdict_label = (
+                        f"{brand} owns this outlet ({brand_at} of {n_at_outlet} responses) with "
+                        f"no competitor present — lock it in with follow-up coverage."
+                    )
             elif leader_comp:
-                comp_lead = leader_comp["sov_at_outlet"] - brand_sov_at
+                comp_lead = comp_sov - brand_sov_at
                 if comp_lead >= OPPORTUNITY_PP or (brand_at == 0 and leader_comp["mentions_at_outlet"] >= 2):
                     verdict = "opportunity"
                     # For opportunity display the LEADER (the one to displace),
@@ -4442,6 +4476,30 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
                             f"{leader_comp['name']} out-cites {brand} here. "
                             f"Close the gap with earned coverage."
                         )
+
+            # Neck-and-neck at a TOP outlet — still 'neutral' (neither side
+            # clearly leads), but "steady; no urgent action" badly undersells a
+            # dead heat with a rival at one of the most-cited outlets. Relabel so
+            # the reader sees it's contested and winnable. Reference top_comp —
+            # the same head-to-head rival the card displays — so the label and
+            # the card agree. (Observed: Palisociety 7-7 with its nearest rival
+            # at Travel+Leisure, n=21, read as "no action".)
+            if (verdict == "neutral" and brand_patterns and brand_at > 0
+                    and top_comp and n_at_outlet >= LEAD_MIN_RESPONSES
+                    and abs(brand_sov_at - (top_comp.get('sov_at_outlet') or 0)) <= 0.06):
+                _tc_at = top_comp.get('mentions_at_outlet') or 0
+                if brand_at >= _tc_at:
+                    verdict_label = (
+                        f"{brand} is neck-and-neck with {top_comp['name']} here "
+                        f"({brand_at} vs {_tc_at} of {n_at_outlet} responses) at a top outlet "
+                        f"— no one owns it yet; a sharper story can tip it your way."
+                    )
+                else:
+                    verdict_label = (
+                        f"{brand} sits just behind {top_comp['name']} here "
+                        f"({brand_at} vs {_tc_at} of {n_at_outlet} responses) at a top outlet "
+                        f"— close and winnable; a sharper story can pull you ahead."
+                    )
 
         out.append({
             "domain": domain,
@@ -4513,43 +4571,69 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
     strengths = [r for r in sov if r.get('verdict') == 'strength']
     emerging = [r for r in sov if r.get('verdict') == 'emerging']
 
-    # 1. Best opportunity. Rank by CITATION VOLUME first — the most-cited
-    # outlet is where a win moves AI mindshare most, and at n<=2 a one-mention
-    # competitor "lead" is noise, not signal (observed: a 2-response outlet
-    # beating the audit's #1-cited outlet for the headline slot). Competitor
-    # gap only breaks ties between equally-cited outlets. Phrase with concrete
-    # counts, not just %, so the claim is honest at small sample sizes.
-    if opportunities:
-        def _opp_key(r):
+    # THE #1 MOVE is at the outlet where AI visibility is most at stake AND there
+    # is a clear action: the most-cited OPPORTUNITY (whitespace to pitch) or
+    # CONTESTED STRENGTH (a lead a competitor is actively closing). A SECURE
+    # strength (wide lead / no rival) isn't urgent, so it never preempts a pitch
+    # — it only becomes the move when there's nothing to pitch or defend under
+    # threat (handled in the fallback below). Ranked by CITATION VOLUME first:
+    # the most-cited outlet is where a move shifts AI mindshare most, and at n<=2
+    # a one-mention competitor "lead" is noise. (Earlier versions ALWAYS led with
+    # an opportunity, which buried "you lead the single most-cited outlet but a
+    # rival is one mention behind" — frequently the bigger story.)
+    def _comp_sov(r):
+        return (r.get('top_competitor_at_outlet') or {}).get('sov_at_outlet') or 0
+
+    def _is_contested_strength(r):
+        tc = r.get('top_competitor_at_outlet') or {}
+        return bool(tc.get('name')) and ((r.get('brand_sov_at_outlet') or 0) - _comp_sov(r)) < 0.12
+
+    contested_strengths = [r for r in strengths if _is_contested_strength(r)]
+    move_pool = opportunities + contested_strengths
+    if move_pool:
+        # Volume first; ties broken toward an active gap (opportunity outranks a
+        # contested strength at equal volume) and the larger competitor margin.
+        def _move_key(r):
             tc = r.get('top_competitor_at_outlet') or {}
             gap = (tc.get('mentions_at_outlet') or 0) - _brand_at(r)
-            return (_n(r), 1 if gap > 0 else 0, gap)
-        r = max(opportunities, key=_opp_key)
+            return (_n(r), 1 if r.get('verdict') == 'opportunity' else 0, gap)
+        r = max(move_pool, key=_move_key)
         tc = r.get('top_competitor_at_outlet') or {}
         dom, n, ba = r.get('domain'), _n(r), _brand_at(r)
         cm = tc.get('mentions_at_outlet') or 0
-        if r.get('_pre_guard_verdict') == 'strength':
-            # Coverage-guard downgrade: the brand IS named whenever AI cites
-            # this outlet, but the cited pages don't substantively cover it.
-            # The move is converting co-mention into real coverage — "below its
-            # overall visibility" would be flatly wrong here (often ba == n).
-            rival = f" alongside {tc['name']}" if tc.get('name') else ""
-            if r.get('_guard_reason') == 'mention':
-                gap_clause = (f"but the cited pages only mention {b} in passing — "
-                              f"deepen the coverage to own the territory.")
+        if r.get('verdict') == 'opportunity':
+            if r.get('_pre_guard_verdict') == 'strength':
+                # Coverage-guard downgrade: the brand IS named whenever AI cites
+                # this outlet, but the cited pages don't substantively cover it.
+                # The move is converting co-mention into real coverage — "below
+                # its overall visibility" would be flatly wrong here (often ba==n).
+                rival = f" alongside {tc['name']}" if tc.get('name') else ""
+                if r.get('_guard_reason') == 'mention':
+                    gap_clause = (f"but the cited pages only mention {b} in passing — "
+                                  f"deepen the coverage to own the territory.")
+                else:
+                    gap_clause = (f"but the cited pages don't cover {b} — earn real coverage "
+                                  f"to convert the co-mention into owned territory.")
+                text = (f"Pitch {dom}. AI already names {b}{rival} in {ba} of the {n} responses "
+                        f"citing it, {gap_clause}")
+            elif tc.get('name') and cm > ba:
+                text = (f"Pitch {dom}. {tc['name']} shows up in {cm} of the {n} AI responses "
+                        f"citing it, {b} in {ba} — closing this gap is your highest-leverage "
+                        f"earned-media move.")
             else:
-                gap_clause = (f"but the cited pages don't cover {b} — earn real coverage "
-                              f"to convert the co-mention into owned territory.")
-            text = (f"Pitch {dom}. AI already names {b}{rival} in {ba} of the {n} responses "
-                    f"citing it, {gap_clause}")
-        elif tc.get('name') and cm > ba:
-            text = (f"Pitch {dom}. {tc['name']} shows up in {cm} of the {n} AI responses "
-                    f"citing it, {b} in {ba} — closing this gap is your highest-leverage "
-                    f"earned-media move.")
+                text = (f"Pitch {dom}. {b} appears in only {ba} of the {n} AI responses citing it, "
+                        f"below its overall visibility — the clearest place to grow.")
+            return {"verb": "Pitch", "outlet": dom, "text": text}
+        # Contested strength → defend the lead at the most-cited at-risk outlet.
+        if ba > cm:
+            text = (f"Defend {dom}. {b} leads there ({ba} of {n} responses) but {tc['name']} "
+                    f"is right behind ({cm}) — protect this lead before it flips; it's your "
+                    f"most-cited outlet at risk.")
         else:
-            text = (f"Pitch {dom}. {b} appears in only {ba} of the {n} AI responses citing it, "
-                    f"below its overall visibility — the clearest place to grow.")
-        return {"verb": "Pitch", "outlet": dom, "text": text}
+            text = (f"Defend {dom}. {b} is tied with {tc['name']} at the top here ({ba} each "
+                    f"of {n} responses) — your most-cited outlet, and a dead heat; pull ahead "
+                    f"with a fresh story before they do.")
+        return {"verb": "Defend", "outlet": dom, "text": text}
 
     # 2/3. No opportunities — defend. Prefer the most-CITED strength where a
     # competitor also appears (most contested + most important), else the
@@ -4655,6 +4739,28 @@ def _llm_visibility_read(brand, per_llm):
     absent = [x['llm'] for x in per_llm if (x.get('mentions') or 0) == 0]
     present_names = [x['llm'] for x in present]
 
+    # DEPTH metrics — being named by every assistant is NOT the same as being
+    # named OFTEN by each. Without this guard a brand at 3/10 on each assistant
+    # reads as "broad, embedded visibility" when it's really named in only a
+    # minority of answers. mean_rate = avg mention rate across assistants;
+    # leader/weakest = strongest/thinnest assistant. Used below to gate the
+    # strong "embedded / consistent" language honestly.
+    def _rate(x):
+        t = x.get('total') or 0
+        return (x.get('mentions') or 0) / t if t else 0.0
+    def _frac(x):
+        return f"{x.get('mentions')}/{x.get('total')}"
+    _tot_resp = sum(x.get('total') or 0 for x in per_llm)
+    mean_rate = (sum(x.get('mentions') or 0 for x in per_llm) / _tot_resp) if _tot_resp else 0.0
+    leader = max(per_llm, key=lambda x: x.get('mentions') or 0)
+    weakest = min(per_llm, key=lambda x: x.get('mentions') or 0)
+    # "Embedded/consistent" only when the brand is named in a real share of EACH
+    # assistant's answers — a majority on average AND a solid plurality on the
+    # weakest. "Uneven" when one assistant carries the brand far more than
+    # another (>=30pp gap). Otherwise it's present-but-thin.
+    is_deep = mean_rate >= 0.5 and _rate(weakest) >= 0.3
+    is_uneven = (_rate(leader) - _rate(weakest)) >= 0.3
+
     # GROUNDED MODE (ALL_GROUNDED): every assistant answered with live web
     # search, so the spread reflects DISCOVERABILITY — what AI finds when it
     # searches the current web — NOT what's embedded in the model's memory. The
@@ -4665,22 +4771,21 @@ def _llm_visibility_read(brand, per_llm):
             return (f"{b} is absent from all {total} assistants even in live-search mode — "
                     f"no discoverable web presence in this category yet.")
         if len(present) == total:
-            # "All 5 surfacing" doesn't always mean balanced — Lululemon hit all 5
-            # but ranged 1-5 (ChatGPT 1 vs Grok 5). Calling that "consistent" is
-            # misleading. Only claim consistency when the spread is genuinely
-            # tight; otherwise name the strongest + weakest honestly.
-            mentions = [x.get('mentions') or 0 for x in per_llm]
-            mn, mx = min(mentions), max(mentions)
-            is_balanced = mn >= 2 and mx <= mn * 3
-            if is_balanced:
-                return (f"{b} surfaces across all {total} assistants in live-search mode — strong, "
-                        f"consistent discoverability when AI searches the web for your category.")
-            leader = max(per_llm, key=lambda x: x.get('mentions') or 0)
-            weakest = min(per_llm, key=lambda x: x.get('mentions') or 0)
-            return (f"{b} surfaces across all {total} assistants but unevenly — strongest on "
-                    f"{leader.get('llm')} ({leader.get('mentions')}/{leader.get('total')}), "
-                    f"thinnest on {weakest.get('llm')} ({weakest.get('mentions')}/{weakest.get('total')}). "
-                    f"Broad reach but uneven recommendation depth.")
+            # "All 5 surfacing" doesn't mean broad+deep. Three honest reads:
+            # DEEP (named in most answers everywhere) → strong, consistent;
+            # UNEVEN (one assistant carries it, e.g. Lululemon ranged 1-5) →
+            # name strongest + weakest; THIN (present everywhere but only a
+            # minority of answers each) → broadly discoverable, not the default.
+            if is_deep:
+                return (f"{b} surfaces in most answers across all {total} assistants in live-search "
+                        f"mode — strong, consistent discoverability when AI searches your category.")
+            if is_uneven:
+                return (f"{b} surfaces across all {total} assistants but unevenly — strongest on "
+                        f"{leader.get('llm')} ({_frac(leader)}), thinnest on "
+                        f"{weakest.get('llm')} ({_frac(weakest)}). Broad reach, uneven depth.")
+            return (f"{b} is named by all {total} assistants in live-search mode but only in a "
+                    f"minority of answers (~{round(mean_rate*100)}% each) — broadly discoverable, "
+                    f"not yet the default recommendation.")
         if len(present) >= max(2, total - 2):
             return (f"{b} surfaces on {len(present)} of {total} assistants in live-search mode; "
                     f"thinner on {', '.join(absent)}. Solid discoverability with room to broaden.")
@@ -4692,7 +4797,19 @@ def _llm_visibility_read(brand, per_llm):
         return (f"{b} doesn't surface on any of the {total} assistants for unbranded "
                 f"category queries — effectively invisible in AI today.")
     if len(present) == total:
-        return f"{b} surfaces across all {total} assistants — broad, embedded AI visibility."
+        # Present on every assistant — but gate the "embedded" claim on DEPTH.
+        # 3/10 on each assistant is recognition across the board, NOT broadly
+        # embedded; saying so over-claims and erodes trust on the first read.
+        if is_deep:
+            return (f"{b} surfaces in most answers across all {total} assistants — "
+                    f"broad, embedded AI visibility.")
+        if is_uneven:
+            return (f"{b} is named by all {total} assistants but unevenly — strongest on "
+                    f"{leader.get('llm')} ({_frac(leader)}), thinnest on "
+                    f"{weakest.get('llm')} ({_frac(weakest)}).")
+        return (f"{b} is named by all {total} assistants but only in a minority of answers "
+                f"(~{round(mean_rate*100)}% each) — recognized across the board, not yet the "
+                f"default pick.")
     # Concentrated only in the search-grounded assistants, absent from the
     # parametric ones = recent-press visibility, not yet model-embedded.
     if set(present_names) <= SEARCH_GROUNDED_LLMS and absent:
@@ -5542,11 +5659,18 @@ def _reconcile_coverage_from_page_evidence(media_targets, outlet_sov):
     move + card label) all read `coverage`, so reconciling it here fixes the
     contradiction everywhere at once.
 
-    Mapping from page_evidence (only when pages were actually read):
-      brand on >=2 pages           -> 'confirmed'
-      brand on exactly 1 page      -> 'mention'
-      pages read, brand on 0       -> 'category'
-      no pages read (pages_ok==0)  -> leave _verify_brand_coverage's value
+    Mapping from page_evidence (only when pages were actually read). Coverage
+    is judged RELATIVE to how many pages we could actually read, not on an
+    absolute page count — otherwise an outlet where only one page was fetchable
+    but the brand IS on it gets mislabeled "mention / in passing" and the guard
+    then downgrades a real strength. (Observed on Oatly: tastingtable.com named
+    Oatly in 12/12 AI responses and on its one readable page, yet was tagged
+    'mention' and the headline said "pitch — deepen coverage" at an outlet the
+    brand already dominates.)
+      brand on >=2 pages, OR on ALL readable pages   -> 'confirmed'
+      brand on >=1 page but not all (and <2)         -> 'mention'
+      pages read, brand on 0                         -> 'category'
+      no pages read (pages_ok==0)                    -> leave _verify_brand_coverage's value
     """
     if not media_targets or not outlet_sov:
         return
@@ -5561,7 +5685,16 @@ def _reconcile_coverage_from_page_evidence(media_targets, outlet_sov):
         if not pe:
             continue
         bp = pe.get('brand_pages') or 0
-        new_cov = 'confirmed' if bp >= 2 else ('mention' if bp == 1 else 'category')
+        ok = pe.get('pages_ok') or 0
+        # Confirmed = brand on >=2 pages OR on EVERY readable page (so a lone
+        # fetchable page that features the brand counts, instead of being
+        # under-rated to 'mention' and triggering a false guard downgrade).
+        if bp == 0:
+            new_cov = 'category'
+        elif bp >= 2 or (ok >= 1 and bp >= ok):
+            new_cov = 'confirmed'
+        else:
+            new_cov = 'mention'
         if t.get('coverage') != new_cov:
             changed += 1
         t['coverage'] = new_cov
@@ -8334,13 +8467,23 @@ def _outreach_compute_due(o):
     return (o.sent_at + timedelta(days=steps[o.followup_count])).date()
 
 
+def _clean_relationship(rel):
+    """Normalize a relationship hook for display/use. Operators sometimes type a
+    non-hook ('none', 'skip', 'n/a', '-') to mean 'no shared connection' — treat
+    those as empty so the opener stays clean."""
+    rel = (rel or '').strip()
+    if rel.lower() in ('none', 'n/a', 'na', 'skip', '-', '—'):
+        return ''
+    return rel
+
+
 def _followup_text(o):
     """Proposed follow-up copy for this prospect's current step — warmer if they
     opened the link, soft break-up on the final step, and opens with the shared-
     connection hook (UO alum, ex-colleague, mutual contact) when one is set."""
     first = _outreach_first_name(o)
     insight = (o.insight or '').strip()
-    rel = (o.relationship or '').strip().rstrip('.')
+    rel = _clean_relationship(o.relationship)
     steps = _cadence_days(o.cadence)
     is_last = o.followup_count >= len(steps) - 1
     lead = f"{insight} " if insight else ""
@@ -8348,8 +8491,10 @@ def _followup_text(o):
             if o.status == 'opened'
             else "floating this back up in case it got buried.")
     if rel:
-        # relationship is its own warm clause; capitalize the body that follows.
-        opener = f"Hi {first} — {rel}. {body[:1].upper()}{body[1:]}"
+        # relationship is its own warm clause; don't double up terminal
+        # punctuation, and capitalize the body that follows.
+        sep = '' if rel[-1] in '.!?' else '.'
+        opener = f"Hi {first} — {rel}{sep} {body[:1].upper()}{body[1:]}"
     else:
         opener = f"Hi {first} — {body}"
     if is_last:
@@ -8653,9 +8798,10 @@ def outreach_board():
         proposed = (f'<div style="margin-top:8px;font-size:12px;color:#333;background:#f7f7f7;'
                     f'padding:9px 11px;border-radius:6px"><span style="color:#999">proposed follow-up:</span><br>'
                     f'{html.escape(_followup_text(o))}</div>') if show_text else ''
+        rel_show = _clean_relationship(o.relationship)
         rel_badge = (f'<span style="font-size:11px;color:#7a3ff2;background:#f3eefe;'
-                     f'padding:1px 8px;border-radius:10px;margin-left:6px">🤝 {html.escape(o.relationship)}</span>'
-                     if o.relationship else '')
+                     f'padding:1px 8px;border-radius:10px;margin-left:6px">🤝 {html.escape(rel_show)}</span>'
+                     if rel_show else '')
         rel_form = (
             f'<form method="post" action="{root}/outreach/{o.id}/set{keyq}" style="margin-top:8px;display:flex;gap:6px">'
             f'<input name="relationship" value="{html.escape(o.relationship or "")}" '
