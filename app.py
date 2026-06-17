@@ -8369,7 +8369,10 @@ def track_and_redirect(token):
             print("outreach open-sync failed:", e)
 
     if first_human:
-        report_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=link.slug)
+        if link.slug == '__home__':
+            report_url = request.url_root.rstrip('/') + url_for('citation_audit')
+        else:
+            report_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=link.slug)
         stats_url = request.url_root.rstrip('/') + '/r-stats'
         when_et = _fmt_et(datetime.utcnow())
         threading.Thread(
@@ -8378,6 +8381,8 @@ def track_and_redirect(token):
             daemon=True,
         ).start()
 
+    if link.slug == '__home__':
+        return redirect(url_for('citation_audit'), code=302)
     return redirect(url_for('view_signal_report', slug=link.slug), code=302)
 
 
@@ -8454,6 +8459,23 @@ def link_stats_json():
     return jsonify(_link_stats_rows(as_json=True))
 
 
+def _operator_nav(active=''):
+    """Shared top nav linking the operator-only pages, preserving ?key=."""
+    k = request.args.get('key')
+    q = f"?key={k}" if k else ""
+    items = [('outreach', 'Outreach board', '/outreach'),
+             ('dashboards', 'All dashboards', '/dashboards'),
+             ('rstats', 'Link opens', '/r-stats')]
+    links = []
+    for key_, label, path in items:
+        if key_ == active:
+            links.append(f'<span style="font-weight:700;color:#1a1a1a">{label}</span>')
+        else:
+            links.append(f'<a href="{path}{q}">{label}</a>')
+    return ('<div style="font-size:13px;margin:0 0 16px;padding-bottom:10px;'
+            'border-bottom:1px solid #eee">' + ' &nbsp;·&nbsp; '.join(links) + '</div>')
+
+
 @app.route('/r-stats')
 def link_stats():
     if not _operator_ok():
@@ -8494,6 +8516,7 @@ def link_stats():
         'border-bottom:2px solid #ddd}'
         'tr:hover td{background:#fafafa}a{color:#2356c7;text-decoration:none}'
         'code{background:#f5f5f5;padding:1px 4px;border-radius:3px}</style></head><body>'
+        + _operator_nav('rstats') +
         '<h1>Pitch link opens</h1>'
         f'<p class="sub">{opened} of {len(rows)} links opened by a human · bot/preview hits '
         'shown separately · times in ET</p>'
@@ -8935,6 +8958,19 @@ def outreach_board():
         color = _OUTREACH_STATUS_COLORS.get(o.status, '#888')
         label = _OUTREACH_STATUS_LABELS.get(o.status, o.status)
         track_url = f"{root}/r/{o.link_token}" if o.link_token else '—'
+        # Per-card open analytics: genuine human opens of this prospect's /r/ link
+        opens, last_open = 0, None
+        if o.link_token:
+            _oc = (LinkClick.query.filter_by(token=o.link_token, is_bot=False)
+                   .order_by(LinkClick.clicked_at.desc()).all())
+            opens = len(_oc)
+            last_open = _oc[0].clicked_at if _oc else None
+        if opens:
+            open_badge = (f'<span style="color:#1db954;font-weight:600">👀 {opens} open'
+                          f'{"s" if opens != 1 else ""}</span>'
+                          f'<span style="color:#999"> · last {html.escape(_fmt_et(last_open))}</span>')
+        else:
+            open_badge = '<span style="color:#bbb">no opens yet</span>'
         days = f"{(datetime.utcnow() - o.sent_at).days}d ago" if o.sent_at else 'not sent'
         if o.next_followup_due:
             overdue = o.next_followup_due <= today
@@ -8996,8 +9032,11 @@ def outreach_board():
             f'padding:2px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.03em">{label}</span>'
             '</div>'
             f'<div style="font-size:12px;color:#777;margin-top:5px">'
-            f'<a href="{root}/signal/{html.escape(o.slug)}">{html.escape(o.slug)}</a> · {days} · {due} · '
+            f'<a href="{root}/signal/{html.escape(o.slug)}">{html.escape(o.slug)}</a> · {days} · {due} · {open_badge} · '
             f'<code style="font-size:11px;color:#888">{html.escape(track_url)}</code></div>'
+            f'<div style="margin-top:6px"><a href="{root}/signal/{html.escape(o.slug)}" target="_blank" '
+            f'style="font-size:12px;color:#2356c7;font-weight:600">📊 Open dashboard</a> '
+            f'<span style="font-size:11px;color:#aaa">(preview — doesn\'t count as an open)</span></div>'
             f'{msg_block}'
             f'{rel_form}'
             f'{proposed}'
@@ -9014,6 +9053,7 @@ def outreach_board():
         'h1{font-size:20px;margin:0 0 2px}.sub{color:#777;font-size:13px;margin:0 0 20px}'
         'a{color:#2356c7;text-decoration:none}code{background:#f3f3f3;padding:1px 4px;border-radius:3px}'
         'button:hover{background:#f0f0f0}</style></head><body>'
+        + _operator_nav('outreach') +
         '<h1>Outreach board</h1>'
         f'<p class="sub">{len(rows)} prospects · {active} active · {won} won · '
         f'opens auto-advance to “Opened” · reminders at days {html.escape(rows[0].cadence) if rows else "5,14"} after sent</p>'
@@ -9030,6 +9070,66 @@ def outreach_board():
           'function cpV(b){navigator.clipboard.writeText(b.dataset.v).then(function(){flash(b);});}'
           '</script>'
         + '</body></html>'
+    )
+    return Response(body, mimetype='text/html')
+
+
+@app.route('/dashboards')
+def dashboards_index():
+    """Operator-only repository of every audit dashboard built to date — including
+    samples and demos not tied to an outreach prospect."""
+    if not _operator_ok():
+        abort(404)
+    root = request.url_root.rstrip('/')
+    recs = SharedResult.query.order_by(SharedResult.created_at.desc()).all()
+    pros = {o.slug: o for o in Outreach.query.all()}
+    rows_html = []
+    for r in recs:
+        try:
+            p = json.loads(r.payload)
+        except Exception:
+            p = {}
+        brand = p.get('brand') or r.slug
+        mind = ''
+        if p.get('brand_mention_count') is not None and p.get('total_responses'):
+            pct = round(100 * p['brand_mention_count'] / p['total_responses'])
+            mind = f"{p['brand_mention_count']}/{p['total_responses']} · {pct}%"
+        hm = p.get('headline_move') or {}
+        move = f"{hm.get('verb', '')} {hm.get('outlet', '')}".strip()
+        o = pros.get(r.slug)
+        if o:
+            who = html.escape(o.prospect_name) + (f" · {html.escape(o.company)}" if o.company else "")
+        else:
+            who = '<span style="color:#bbb">— sample —</span>'
+        rows_html.append(
+            '<tr>'
+            f'<td><a href="{root}/signal/{html.escape(r.slug)}" target="_blank">{html.escape(brand)}</a><br>'
+            f'<code style="font-size:11px;color:#999">{html.escape(r.slug)}</code></td>'
+            f'<td>{html.escape(mind)}</td>'
+            f'<td style="font-size:12px">{html.escape(move) or "—"}</td>'
+            f'<td style="font-size:12px">{who}</td>'
+            f'<td style="font-size:11px;color:#888">{html.escape(_fmt_et(r.created_at))}</td>'
+            f'<td style="font-size:11px"><a href="{root}/signal/{html.escape(r.slug)}.json" target="_blank">json</a> · '
+            f'<a href="{root}/signal/{html.escape(r.slug)}.csv" target="_blank">csv</a></td>'
+            '</tr>'
+        )
+    body = (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="robots" content="noindex"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>All dashboards</title>'
+        '<style>body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;'
+        'margin:28px auto;max-width:980px;color:#1a1a1a;padding:0 16px}'
+        'h1{font-size:20px;margin:0 0 2px}.sub{color:#777;font-size:13px;margin:0 0 18px}'
+        'a{color:#2356c7;text-decoration:none}code{background:#f3f3f3;padding:1px 4px;border-radius:3px}'
+        'table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top}'
+        'th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#999}</style></head><body>'
+        + _operator_nav('dashboards') +
+        '<h1>All dashboards</h1>'
+        f'<p class="sub">{len(recs)} reports built to date · newest first · samples + client work</p>'
+        '<table><thead><tr><th>Brand / slug</th><th>AI mindshare</th><th>Headline move</th>'
+        '<th>Prospect</th><th>Built</th><th>Export</th></tr></thead><tbody>'
+        + ''.join(rows_html) +
+        '</tbody></table></body></html>'
     )
     return Response(body, mimetype='text/html')
 
@@ -9913,9 +10013,21 @@ def signal_stripe_webhook():
     return jsonify({"ok": True})
 
 
+def _ensure_homepage_link():
+    """Idempotently mint the trackable homepage link (/r/try -> homepage), so
+    the operator can share a click-logged CTA instead of the bare URL."""
+    try:
+        with app.app_context():
+            if not TrackedLink.query.filter_by(token='try').first():
+                _mint_tracked_link('__home__', 'Homepage CTA', 'homepage', token='try')
+    except Exception as e:
+        print("homepage-link ensure failed:", e)
+
+
 # Apply post-creation column migrations, then ensure the seed prospects exist.
 _ensure_outreach_columns()
 _ensure_outreach_seed()
+_ensure_homepage_link()
 
 
 if __name__ == "__main__":
