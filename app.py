@@ -281,6 +281,36 @@ class AuditFeedback(db.Model):
     ip = db.Column(db.String(64), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
+
+class TrackedLink(db.Model):
+    """A per-recipient short link (/r/<token>) that redirects to a
+    /signal/<slug> report and logs genuine human opens. Lets the operator see
+    whether a specific pitch recipient opened their report — and when — so
+    follow-up can be timed while the brand is top of mind."""
+    __tablename__ = 'tracked_links'
+    id = db.Column(db.Integer, primary_key=True)
+    token = db.Column(db.String(16), unique=True, index=True, nullable=False)
+    slug = db.Column(db.String(32), nullable=False, index=True)
+    recipient = db.Column(db.String(160), nullable=True)   # e.g. "Jennifer McGuire — Swarovski"
+    campaign = db.Column(db.String(80), nullable=True)      # optional grouping label
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class LinkClick(db.Model):
+    """One row per hit on a TrackedLink. is_bot separates link-preview crawlers
+    (LinkedIn/Slack/iMessage/Outlook fetch the URL to build a preview card
+    BEFORE any human clicks) from real human opens — so the 'did they open it'
+    signal isn't inflated by automated fetches."""
+    __tablename__ = 'link_clicks'
+    id = db.Column(db.Integer, primary_key=True)
+    token = db.Column(db.String(16), index=True, nullable=False)
+    is_bot = db.Column(db.Boolean, default=False, nullable=False, index=True)
+    ip = db.Column(db.String(64), nullable=True)
+    user_agent = db.Column(db.Text, nullable=True)
+    referer = db.Column(db.String(500), nullable=True)
+    clicked_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
 # Create the database tables
 with app.app_context():
     db.create_all()
@@ -7938,6 +7968,272 @@ def view_signal_report(slug):
         signal_user=user,
         signal_credits=current_user_credits(user),
     )
+
+
+# ---------------------------------------------------------------------------
+# Tracked pitch links: /r/<token> — log genuine human opens of a shared report
+# and email the operator the first time a named recipient opens theirs.
+# ---------------------------------------------------------------------------
+
+# Lowercase User-Agent substrings that identify link-preview crawlers and
+# automated fetchers — NOT a human opening the report. LinkedIn/Slack/iMessage/
+# Outlook all fetch a URL to build the preview card before any human clicks; if
+# we counted those, every shared link would look "opened" instantly. Anything
+# matching here (plus HEAD requests and empty UAs) is logged as a bot hit and
+# never triggers the email alert.
+_LINK_PREVIEW_BOT_UA = (
+    'bot', 'crawler', 'spider', 'preview', 'linkpreview', 'link-preview',
+    'linkedinbot', 'slackbot', 'slack-imgproxy', 'facebookexternalhit',
+    'facebot', 'whatsapp', 'telegram', 'twitterbot', 'discordbot',
+    'pinterest', 'redditbot', 'embedly', 'quora link', 'skypeuripreview',
+    'vkshare', 'w3c_validator', 'baiduspider', 'yandex', 'duckduckbot',
+    'bingbot', 'googlebot', 'google-read-aloud', 'applebot', 'petalbot',
+    'semrush', 'ahrefs', 'mj12', 'dotbot', 'bytespider', 'gptbot',
+    'oai-searchbot', 'chatgpt-user', 'perplexitybot', 'amazonbot',
+    'iframely', 'metainspector', 'snapchat', 'tumblr', 'flipboard',
+    'ms-office', 'microsoft office', 'outlook', 'safelinks',
+    'curl', 'wget', 'python-requests', 'go-http-client', 'java/',
+    'okhttp', 'headlesschrome', 'phantomjs', 'lighthouse', 'apache-httpclient',
+)
+
+
+def _is_link_preview_bot(ua, method):
+    """True if this hit is an automated preview/crawler rather than a human
+    opening the link. Conservative: HEAD requests and empty UAs count as bots."""
+    if (method or 'GET').upper() == 'HEAD':
+        return True
+    ua = (ua or '').strip().lower()
+    if not ua:
+        return True
+    return any(sig in ua for sig in _LINK_PREVIEW_BOT_UA)
+
+
+def _fmt_et(dt):
+    """Format a UTC datetime as US Eastern for the operator (who's in ET)."""
+    if not dt:
+        return '—'
+    try:
+        from zoneinfo import ZoneInfo
+        et = dt.replace(tzinfo=ZoneInfo('UTC')).astimezone(ZoneInfo('America/New_York'))
+        return et.strftime('%b %-d, %Y %-I:%M %p ET')
+    except Exception:
+        return dt.strftime('%b %d, %Y %H:%M UTC')
+
+
+def _mint_tracked_link(slug, recipient=None, campaign=None):
+    """Create + persist a unique /r/<token> link for a report slug."""
+    token = secrets.token_hex(4)  # 8 hex chars
+    for _ in range(8):
+        if not TrackedLink.query.filter_by(token=token).first():
+            break
+        token = secrets.token_hex(4)
+    link = TrackedLink(token=token, slug=slug, recipient=recipient, campaign=campaign)
+    db.session.add(link)
+    db.session.commit()
+    return link
+
+
+def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats_url):
+    """Fire-and-forget alert when a recipient opens their report for the first
+    time. Skipped silently if SENDGRID_API_KEY or the recipient address unset."""
+    to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not to or not sg_key:
+        return
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+
+        who = recipient or f"Someone (link {token})"
+        subject = f"📬 {who} opened your Signal Finder report"
+        text_body = (
+            f"{who} just opened the report you shared.\n\n"
+            f"Report:  {slug}  ({report_url})\n"
+            f"When:    {when_et}\n"
+            f"Link:    /r/{token}\n"
+            f"IP:      {ip}\n"
+            f"Device:  {ua[:300]}\n\n"
+            f"This is their first open. Re-opens and the full list live at {stats_url}"
+        )
+        html_body = (
+            f'<p style="font-size:15px;margin:0 0 10px"><strong>{html.escape(who)}</strong> '
+            f'just opened the report you shared.</p>'
+            f'<table style="font-size:13px;border-collapse:collapse">'
+            f'<tr><td style="padding:2px 12px 2px 0;color:#777">Report</td>'
+            f'<td><a href="{html.escape(report_url)}">{html.escape(slug)}</a></td></tr>'
+            f'<tr><td style="padding:2px 12px 2px 0;color:#777">When</td>'
+            f'<td>{html.escape(when_et)}</td></tr>'
+            f'<tr><td style="padding:2px 12px 2px 0;color:#777">Device</td>'
+            f'<td>{html.escape(ua[:300])}</td></tr>'
+            f'<tr><td style="padding:2px 12px 2px 0;color:#777">IP</td>'
+            f'<td>{html.escape(ip or "")}</td></tr>'
+            f'</table>'
+            f'<p style="font-size:12px;color:#999;margin-top:12px">First open. '
+            f'Re-opens and the full list: <a href="{html.escape(stats_url)}">{html.escape(stats_url)}</a></p>'
+        )
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[to],
+            subject=subject,
+            plain_text_content=text_body,
+            html_content=html_body,
+        )
+        SendGridAPIClient(sg_key).send(msg)
+    except Exception as e:
+        print("click-email send failed:", e)
+
+
+@app.route('/r/<token>')
+def track_and_redirect(token):
+    """Log a hit on a tracked pitch link, then 302 to the real report. Bot/
+    preview hits are recorded but never email; the first genuine human open
+    pings the operator."""
+    link = TrackedLink.query.filter_by(token=token).first()
+    if not link:
+        return redirect(url_for('citation_audit'))
+
+    ua = request.headers.get('User-Agent', '') or ''
+    is_bot = _is_link_preview_bot(ua, request.method)
+    ip = _client_ip()
+    ref = (request.headers.get('Referer', '') or '')[:500]
+
+    # Is this the first genuine human open? Check BEFORE inserting this row.
+    first_human = (not is_bot) and (
+        LinkClick.query.filter_by(token=token, is_bot=False).count() == 0
+    )
+    try:
+        db.session.add(LinkClick(
+            token=token, is_bot=is_bot, ip=ip,
+            user_agent=ua[:1000], referer=ref,
+        ))
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print("link-click log failed:", e)
+
+    if first_human:
+        report_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=link.slug)
+        stats_url = request.url_root.rstrip('/') + '/r-stats'
+        when_et = _fmt_et(datetime.utcnow())
+        threading.Thread(
+            target=_send_click_email,
+            args=(link.recipient, link.slug, token, ip, ua, when_et, report_url, stats_url),
+            daemon=True,
+        ).start()
+
+    return redirect(url_for('view_signal_report', slug=link.slug), code=302)
+
+
+def _operator_ok():
+    """Gate operator-only link tooling: allow if the request IP is allowlisted
+    (FREE_AUDIT_BYPASS_IPS) OR a matching ?key= is supplied (LINK_STATS_KEY, so
+    the operator can check stats from a phone off the allowlisted network)."""
+    if _ip_is_exempt_from_cap(_client_ip()):
+        return True
+    key = os.environ.get('LINK_STATS_KEY')
+    return bool(key) and request.args.get('key') == key
+
+
+@app.route('/r-new')
+def mint_tracked_link_route():
+    """Operator: mint a tracked link. /r-new?slug=swarovski&to=Jennifer+McGuire"""
+    if not _operator_ok():
+        abort(404)
+    slug = (request.args.get('slug') or '').strip()
+    if not slug:
+        return Response("Provide ?slug=<report-slug>&to=<recipient>\n", mimetype='text/plain')
+    if not _load_signal_report(slug):
+        return Response(f"No report found for slug '{slug}'.\n", status=404, mimetype='text/plain')
+    recipient = (request.args.get('to') or '').strip()[:160] or None
+    campaign = (request.args.get('campaign') or '').strip()[:80] or None
+    link = _mint_tracked_link(slug, recipient, campaign)
+    url = request.url_root.rstrip('/') + '/r/' + link.token
+    return Response(url + "\n", mimetype='text/plain')
+
+
+def _link_stats_rows(as_json=False):
+    """Per-link open stats, sorted most-recently-opened first."""
+    links = TrackedLink.query.order_by(TrackedLink.created_at.desc()).all()
+    out = []
+    for lk in links:
+        humans = (LinkClick.query
+                  .filter_by(token=lk.token, is_bot=False)
+                  .order_by(LinkClick.clicked_at.asc()).all())
+        bots = LinkClick.query.filter_by(token=lk.token, is_bot=True).count()
+        out.append({
+            'token': lk.token, 'slug': lk.slug,
+            'recipient': lk.recipient, 'campaign': lk.campaign,
+            'created_at': lk.created_at,
+            'human_opens': len(humans), 'bot_hits': bots,
+            'first_open': humans[0].clicked_at if humans else None,
+            'last_open': humans[-1].clicked_at if humans else None,
+        })
+    out.sort(key=lambda r: (r['last_open'] or datetime.min), reverse=True)
+    if as_json:
+        for r in out:
+            for k in ('created_at', 'first_open', 'last_open'):
+                r[k] = r[k].isoformat() if r[k] else None
+    return out
+
+
+@app.route('/r-stats.json')
+def link_stats_json():
+    if not _operator_ok():
+        abort(404)
+    return jsonify(_link_stats_rows(as_json=True))
+
+
+@app.route('/r-stats')
+def link_stats():
+    if not _operator_ok():
+        abort(404)
+    rows = _link_stats_rows()
+    root = request.url_root.rstrip('/')
+    opened = sum(1 for r in rows if r['human_opens'])
+    trs = []
+    for r in rows:
+        dot = '#1db954' if r['human_opens'] else '#ccc'
+        track_url = f"{root}/r/{r['token']}"
+        report_url = f"{root}/signal/{html.escape(r['slug'])}"
+        recip = html.escape(r['recipient'] or '—')
+        opens = r['human_opens']
+        opens_cell = (f'<strong>{opens}</strong>' if opens else
+                      '<span style="color:#bbb">0</span>')
+        trs.append(
+            '<tr>'
+            f'<td><span style="display:inline-block;width:9px;height:9px;border-radius:50%;'
+            f'background:{dot};margin-right:7px"></span>{recip}</td>'
+            f'<td><a href="{report_url}">{html.escape(r["slug"])}</a></td>'
+            f'<td style="text-align:center">{opens_cell}</td>'
+            f'<td>{html.escape(_fmt_et(r["first_open"]))}</td>'
+            f'<td>{html.escape(_fmt_et(r["last_open"]))}</td>'
+            f'<td style="text-align:center;color:#aaa">{r["bot_hits"]}</td>'
+            f'<td><code style="font-size:11px;color:#888">{html.escape(track_url)}</code></td>'
+            '</tr>'
+        )
+    body = (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="robots" content="noindex"><title>Pitch link opens</title>'
+        '<style>body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;'
+        'margin:32px;color:#1a1a1a}h1{font-size:20px;margin:0 0 4px}'
+        '.sub{color:#777;font-size:13px;margin:0 0 18px}'
+        'table{border-collapse:collapse;width:100%;font-size:13px}'
+        'th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #eee;vertical-align:top}'
+        'th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#999;'
+        'border-bottom:2px solid #ddd}'
+        'tr:hover td{background:#fafafa}a{color:#2356c7;text-decoration:none}'
+        'code{background:#f5f5f5;padding:1px 4px;border-radius:3px}</style></head><body>'
+        '<h1>Pitch link opens</h1>'
+        f'<p class="sub">{opened} of {len(rows)} links opened by a human · bot/preview hits '
+        'shown separately · times in ET</p>'
+        '<table><thead><tr><th>Recipient</th><th>Report</th><th>Human opens</th>'
+        '<th>First open</th><th>Last open</th><th>Bot hits</th><th>Tracked link</th>'
+        '</tr></thead><tbody>'
+        + (''.join(trs) or '<tr><td colspan="7" style="color:#999">No tracked links yet. '
+           'Mint one with <code>/r-new?slug=&lt;slug&gt;&amp;to=&lt;name&gt;</code>.</td></tr>')
+        + '</tbody></table></body></html>'
+    )
+    return Response(body, mimetype='text/html')
 
 
 @app.route('/signal/<slug>.pdf')
