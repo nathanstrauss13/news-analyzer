@@ -4590,7 +4590,21 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
         tc = r.get('top_competitor_at_outlet') or {}
         return bool(tc.get('name')) and ((r.get('brand_sov_at_outlet') or 0) - _comp_sov(r)) < 0.12
 
-    contested_strengths = [r for r in strengths if _is_contested_strength(r)]
+    def _is_crowded_tie(r):
+        """A 'best X' vendor listicle where AI just names the whole field — 2+
+        competitors tie or beat the brand at the same outlet. Co-leading such an
+        outlet isn't a defensible position: there's nothing distinctive to defend
+        (everyone appears), so it must not drive the headline 'move'. This is what
+        stops 'Defend MarkTechPost' when ServiceNow, Microsoft, Google and UiPath
+        are all 9-of-10 in the same roundup."""
+        ba = _brand_at(r)
+        if ba <= 0:
+            return False
+        allc = r.get('all_competitors_at_outlet') or []
+        return sum(1 for c in allc if (c.get('mentions_at_outlet') or 0) >= ba) >= 2
+
+    contested_strengths = [r for r in strengths
+                           if _is_contested_strength(r) and not _is_crowded_tie(r)]
     move_pool = opportunities + contested_strengths
     if move_pool:
         # Volume first; ties broken toward an active gap (opportunity outranks a
@@ -4641,7 +4655,10 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
     # competitor also appears (most contested + most important), else the
     # most-cited uncontested strength.
     if strengths:
-        contested = [r for r in strengths if (r.get('top_competitor_at_outlet') or {}).get('name')]
+        # Prefer a genuinely differentiated lead; fall back to all strengths only
+        # if every one is a crowded listicle (never crash / always return a move).
+        pool = [r for r in strengths if not _is_crowded_tie(r)] or strengths
+        contested = [r for r in pool if (r.get('top_competitor_at_outlet') or {}).get('name')]
         if contested:
             r = max(contested, key=lambda x: (_n(x), (x.get('top_competitor_at_outlet') or {}).get('mentions_at_outlet') or 0))
             tc = r.get('top_competitor_at_outlet') or {}
@@ -4650,7 +4667,7 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
             text = (f"Defend {dom}. {b} leads there ({ba} of {n} responses), but {tc['name']} "
                     f"is also present ({cm}) — protect this relationship first so the lead holds.")
             return {"verb": "Defend", "outlet": dom, "text": text}
-        r = max(strengths, key=lambda x: (_n(x), _brand_at(x)))
+        r = max(pool, key=lambda x: (_n(x), _brand_at(x)))
         dom, n, ba = r.get('domain'), _n(r), _brand_at(r)
         text = (f"Defend {dom}. {b} owns the AI conversation there ({ba} of {n} responses) "
                 f"with no competitor present — lock it in with a follow-up story.")
