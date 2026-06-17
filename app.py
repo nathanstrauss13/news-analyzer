@@ -9081,36 +9081,43 @@ def dashboards_index():
     if not _operator_ok():
         abort(404)
     root = request.url_root.rstrip('/')
-    recs = SharedResult.query.order_by(SharedResult.created_at.desc()).all()
+    # Memory-safe: bulk-fetch only id/slug/date (NOT the big payloads), then load
+    # and parse each payload one at a time so peak memory is ~one report, not all of
+    # them at once (payloads total tens of MB across all reports).
+    recs = (db.session.query(SharedResult.id, SharedResult.slug, SharedResult.created_at)
+            .order_by(SharedResult.created_at.desc()).all())
     pros = {o.slug: o for o in Outreach.query.all()}
     rows_html = []
-    for r in recs:
+    for rid, slug, created_at in recs:
+        raw = db.session.query(SharedResult.payload).filter(SharedResult.id == rid).scalar()
         try:
-            p = json.loads(r.payload)
+            p = json.loads(raw) if raw else {}
         except Exception:
             p = {}
-        brand = p.get('brand') or r.slug
+        raw = None
+        brand = p.get('brand') or slug
         mind = ''
         if p.get('brand_mention_count') is not None and p.get('total_responses'):
             pct = round(100 * p['brand_mention_count'] / p['total_responses'])
             mind = f"{p['brand_mention_count']}/{p['total_responses']} · {pct}%"
         hm = p.get('headline_move') or {}
         move = f"{hm.get('verb', '')} {hm.get('outlet', '')}".strip()
-        o = pros.get(r.slug)
+        p = None
+        o = pros.get(slug)
         if o:
             who = html.escape(o.prospect_name) + (f" · {html.escape(o.company)}" if o.company else "")
         else:
             who = '<span style="color:#bbb">— sample —</span>'
         rows_html.append(
             '<tr>'
-            f'<td><a href="{root}/signal/{html.escape(r.slug)}" target="_blank">{html.escape(brand)}</a><br>'
-            f'<code style="font-size:11px;color:#999">{html.escape(r.slug)}</code></td>'
+            f'<td><a href="{root}/signal/{html.escape(slug)}" target="_blank">{html.escape(brand)}</a><br>'
+            f'<code style="font-size:11px;color:#999">{html.escape(slug)}</code></td>'
             f'<td>{html.escape(mind)}</td>'
             f'<td style="font-size:12px">{html.escape(move) or "—"}</td>'
             f'<td style="font-size:12px">{who}</td>'
-            f'<td style="font-size:11px;color:#888">{html.escape(_fmt_et(r.created_at))}</td>'
-            f'<td style="font-size:11px"><a href="{root}/signal/{html.escape(r.slug)}.json" target="_blank">json</a> · '
-            f'<a href="{root}/signal/{html.escape(r.slug)}.csv" target="_blank">csv</a></td>'
+            f'<td style="font-size:11px;color:#888">{html.escape(_fmt_et(created_at))}</td>'
+            f'<td style="font-size:11px"><a href="{root}/signal/{html.escape(slug)}.json" target="_blank">json</a> · '
+            f'<a href="{root}/signal/{html.escape(slug)}.csv" target="_blank">csv</a></td>'
             '</tr>'
         )
     body = (
