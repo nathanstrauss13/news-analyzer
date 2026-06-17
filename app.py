@@ -311,6 +311,33 @@ class LinkClick(db.Model):
     clicked_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
+class Outreach(db.Model):
+    """Lightweight outreach CRM: one row per prospect we've pitched a report to.
+    Tracks pipeline status, ties to the prospect's tracked link (so a genuine
+    open auto-advances status to 'opened'), and drives the follow-up reminder
+    cadence ('days from sent', default 5,14)."""
+    __tablename__ = 'outreach'
+    id = db.Column(db.Integer, primary_key=True)
+    prospect_name = db.Column(db.String(160), nullable=False)
+    prospect_title = db.Column(db.String(200), nullable=True)
+    company = db.Column(db.String(120), nullable=True)
+    slug = db.Column(db.String(32), nullable=False)                    # report slug
+    link_token = db.Column(db.String(16), nullable=True, index=True)   # -> TrackedLink.token
+    channel = db.Column(db.String(24), default='linkedin', nullable=False)  # linkedin | email
+    # queued | sent | opened | replied | call_scheduled | won | cold | passed
+    status = db.Column(db.String(24), default='queued', nullable=False, index=True)
+    cadence = db.Column(db.String(40), default='5,14', nullable=False)  # comma days from sent
+    followup_count = db.Column(db.Integer, default=0, nullable=False)
+    insight = db.Column(db.Text, nullable=True)        # one-line lead insight, seeds proposed text
+    notes = db.Column(db.Text, nullable=True)
+    sent_at = db.Column(db.DateTime, nullable=True)
+    last_activity_at = db.Column(db.DateTime, nullable=True)
+    next_followup_due = db.Column(db.Date, nullable=True, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (db.UniqueConstraint('prospect_name', 'slug', name='uniq_prospect_slug'),)
+
+
 # Create the database tables
 with app.app_context():
     db.create_all()
@@ -2944,6 +2971,15 @@ def run_daily_alerts():
     except Exception as e:
         print("run_daily_alerts error:", e)
 
+def run_outreach_digest():
+    """Daily follow-up digest (cron 8:05 UTC). Thin wrapper so the scheduler,
+    started just below, can register the job before the full impl is defined
+    later in the file (resolved by late binding at run time)."""
+    try:
+        _run_outreach_digest()
+    except Exception as e:
+        print("run_outreach_digest error:", e)
+
 # Start scheduler (guard against double-start under reloader)
 if BackgroundScheduler:
     try:
@@ -2951,6 +2987,7 @@ if BackgroundScheduler:
             scheduler = BackgroundScheduler(daemon=True)
             scheduler.add_job(run_realtime_alerts, 'interval', minutes=10)
             scheduler.add_job(run_daily_alerts, 'cron', hour=8, minute=0)
+            scheduler.add_job(run_outreach_digest, 'cron', hour=8, minute=5)
             scheduler.start()
             app._alerts_scheduler_started = True
             print("Alert scheduler started.")
@@ -8020,14 +8057,18 @@ def _fmt_et(dt):
         return dt.strftime('%b %d, %Y %H:%M UTC')
 
 
-def _mint_tracked_link(slug, recipient=None, campaign=None):
-    """Create + persist a unique /r/<token> link for a report slug."""
-    token = secrets.token_hex(4)  # 8 hex chars
-    for _ in range(8):
-        if not TrackedLink.query.filter_by(token=token).first():
-            break
-        token = secrets.token_hex(4)
-    link = TrackedLink(token=token, slug=slug, recipient=recipient, campaign=campaign)
+def _mint_tracked_link(slug, recipient=None, campaign=None, token=None):
+    """Create + persist a unique /r/<token> link for a report slug. If `token`
+    is supplied and still free, use it (stable seed links); else generate one."""
+    if token and not TrackedLink.query.filter_by(token=token).first():
+        chosen = token
+    else:
+        chosen = secrets.token_hex(4)  # 8 hex chars
+        for _ in range(8):
+            if not TrackedLink.query.filter_by(token=chosen).first():
+                break
+            chosen = secrets.token_hex(4)
+    link = TrackedLink(token=chosen, slug=slug, recipient=recipient, campaign=campaign)
     db.session.add(link)
     db.session.commit()
     return link
@@ -8110,6 +8151,19 @@ def track_and_redirect(token):
     except Exception as e:
         db.session.rollback()
         print("link-click log failed:", e)
+
+    # A genuine human open advances the prospect's CRM status to 'opened'
+    # (without clobbering replied/call/won/passed).
+    if not is_bot:
+        try:
+            o = Outreach.query.filter_by(link_token=token).first()
+            if o and o.status in ('queued', 'sent'):
+                o.status = 'opened'
+                o.last_activity_at = datetime.utcnow()
+                db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            print("outreach open-sync failed:", e)
 
     if first_human:
         report_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=link.slug)
@@ -8232,6 +8286,356 @@ def link_stats():
         + (''.join(trs) or '<tr><td colspan="7" style="color:#999">No tracked links yet. '
            'Mint one with <code>/r-new?slug=&lt;slug&gt;&amp;to=&lt;name&gt;</code>.</td></tr>')
         + '</tbody></table></body></html>'
+    )
+    return Response(body, mimetype='text/html')
+
+
+# ---------------------------------------------------------------------------
+# Outreach follow-up tracker (CRM-lite). Operator-only. Builds on tracked links:
+# a recipient opening their /r/ link auto-advances status to 'opened', a daily
+# digest reminds the operator who's due for follow-up (each with ready-to-paste
+# proposed text seeded from that prospect's report insight), and the /outreach
+# board gives one-click status controls.
+# ---------------------------------------------------------------------------
+
+_OUTREACH_STATUS_LABELS = {
+    'queued': 'Queued', 'sent': 'Sent', 'opened': 'Opened',
+    'replied': 'Replied', 'call_scheduled': 'Call scheduled',
+    'won': 'Won', 'cold': 'Cold', 'passed': 'Passed',
+}
+_OUTREACH_STATUS_COLORS = {
+    'queued': '#9aa0a6', 'sent': '#2356c7', 'opened': '#1db954',
+    'replied': '#0a8a6f', 'call_scheduled': '#7a3ff2',
+    'won': '#0a8a0a', 'cold': '#b00020', 'passed': '#9aa0a6',
+}
+# Statuses still "in play" for follow-up reminders.
+_OUTREACH_ACTIVE = ('sent', 'opened')
+
+
+def _cadence_days(cadence):
+    out = [int(p.strip()) for p in (cadence or '').split(',') if p.strip().isdigit()]
+    return out or [5, 14]
+
+
+def _outreach_first_name(o):
+    raw = (o.prospect_name or '').split('—')[0].strip()
+    return (raw.split(' ')[0] if raw else '') or 'there'
+
+
+def _outreach_compute_due(o):
+    """Next reminder date = sent_at + cadence[followup_count], or None if the
+    cadence is exhausted."""
+    if not o.sent_at:
+        return None
+    steps = _cadence_days(o.cadence)
+    if o.followup_count >= len(steps):
+        return None
+    return (o.sent_at + timedelta(days=steps[o.followup_count])).date()
+
+
+def _followup_text(o):
+    """Proposed follow-up copy for this prospect's current step — warmer if they
+    opened the link, soft break-up on the final step."""
+    first = _outreach_first_name(o)
+    insight = (o.insight or '').strip()
+    steps = _cadence_days(o.cadence)
+    is_last = o.followup_count >= len(steps) - 1
+    lead = f"{insight} " if insight else ""
+    if o.status == 'opened':
+        opener = f"Hi {first} — saw you had a chance to glance at the read; would love your quick reaction."
+    else:
+        opener = f"Hi {first} — floating this back up in case it got buried."
+    if is_last:
+        close = "I'll leave it here either way — happy to send the full one-pager if AI visibility ever climbs the priority list."
+    else:
+        close = "Happy to send the full one-pager if useful — no pitch, just a lens I think is about to matter."
+    return f"{opener} {lead}{close}".strip()
+
+
+def _outreach_mark(o, action):
+    """Apply an operator status action in place."""
+    now = datetime.utcnow()
+    o.last_activity_at = now
+    if action == 'sent':
+        o.status = 'sent'
+        o.sent_at = o.sent_at or now
+        o.followup_count = 0
+        o.next_followup_due = _outreach_compute_due(o)
+    elif action == 'followup':
+        o.followup_count = (o.followup_count or 0) + 1
+        o.next_followup_due = _outreach_compute_due(o)
+    elif action == 'replied':
+        o.status = 'replied'; o.next_followup_due = None
+    elif action == 'call':
+        o.status = 'call_scheduled'; o.next_followup_due = None
+    elif action == 'won':
+        o.status = 'won'; o.next_followup_due = None
+    elif action == 'cold':
+        o.status = 'cold'; o.next_followup_due = None
+    elif action == 'passed':
+        o.status = 'passed'; o.next_followup_due = None
+    elif action == 'reopen':
+        o.status = 'sent' if o.sent_at else 'queued'
+        o.next_followup_due = _outreach_compute_due(o)
+
+
+def _outreach_upsert(name, slug, title=None, company=None, channel='linkedin',
+                     insight=None, cadence='5,14', token=None):
+    """Idempotent create-or-update of a prospect. On first create, mints the
+    prospect's tracked link (using `token` if given). Safe against concurrent
+    gunicorn workers via the (prospect_name, slug) unique constraint."""
+    o = Outreach.query.filter_by(prospect_name=name, slug=slug).first()
+    if not o:
+        recip = name + (f" — {company}" if company else "")
+        link = _mint_tracked_link(slug, recip, "outreach", token=token)
+        o = Outreach(prospect_name=name, slug=slug, link_token=link.token,
+                     channel=channel or 'linkedin', cadence=cadence or '5,14')
+        db.session.add(o)
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            o = Outreach.query.filter_by(prospect_name=name, slug=slug).first()
+            if o is None:
+                raise
+    changed = False
+    if title is not None and o.prospect_title != title:
+        o.prospect_title = title; changed = True
+    if company is not None and o.company != company:
+        o.company = company; changed = True
+    if channel and o.channel != channel:
+        o.channel = channel; changed = True
+    if insight is not None and o.insight != insight:
+        o.insight = insight; changed = True
+    if cadence and o.cadence != cadence:
+        o.cadence = cadence; changed = True
+    if changed:
+        db.session.commit()
+    return o
+
+
+def _send_outreach_digest_email(due):
+    """Daily 'follow-ups due' digest with ready-to-paste proposed text."""
+    to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not to or not sg_key:
+        return
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+        root = os.environ.get("PUBLIC_BASE_URL", "https://signal.innatec3.com").rstrip('/')
+        n = len(due)
+        subject = f"⏰ {n} Signal Finder follow-up{'s' if n != 1 else ''} due"
+        txt, htm = [], []
+        for o in due:
+            days = (datetime.utcnow() - o.sent_at).days if o.sent_at else '?'
+            opened = 'opened the link' if o.status == 'opened' else 'no open yet'
+            text = _followup_text(o)
+            txt.append(
+                f"{o.prospect_name} ({o.company or o.slug}) — sent {days}d ago, {opened}\n"
+                f"Report: {root}/signal/{o.slug}\n"
+                f"Proposed: {text}\n"
+            )
+            htm.append(
+                '<div style="margin:0 0 16px;padding:12px 14px;border:1px solid #eee;border-radius:8px">'
+                f'<div style="font-size:14px"><strong>{html.escape(o.prospect_name)}</strong> '
+                f'<span style="color:#888">· {html.escape(o.company or o.slug)} · sent {days}d ago · {opened}</span></div>'
+                f'<div style="margin:8px 0;font-size:13px;color:#222;background:#f7f7f7;padding:10px;border-radius:6px">{html.escape(text)}</div>'
+                f'<a href="{root}/signal/{html.escape(o.slug)}" style="font-size:12px">view report →</a></div>'
+            )
+        board = f"{root}/outreach"
+        text_body = f"{n} follow-up(s) due.\n\n" + "\n".join(txt) + f"\nManage: {board}"
+        html_body = (
+            f'<p style="font-size:15px">{n} follow-up{"s" if n != 1 else ""} due today:</p>'
+            + "".join(htm)
+            + f'<p style="font-size:12px"><a href="{board}">Open the outreach board →</a></p>'
+        )
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[to], subject=subject,
+            plain_text_content=text_body, html_content=html_body,
+        )
+        SendGridAPIClient(sg_key).send(msg)
+    except Exception as e:
+        print("outreach digest email failed:", e)
+
+
+def _run_outreach_digest():
+    """Auto-cold stale prospects, then email the operator everyone due today."""
+    with app.app_context():
+        today = datetime.utcnow().date()
+        # Auto-cold: still active, cadence exhausted, quiet for 7+ days.
+        stale = Outreach.query.filter(
+            Outreach.status.in_(_OUTREACH_ACTIVE),
+            Outreach.next_followup_due.is_(None),
+        ).all()
+        for o in stale:
+            last = o.last_activity_at or o.sent_at
+            if last and (datetime.utcnow() - last).days >= 7:
+                o.status = 'cold'
+        due = (Outreach.query
+               .filter(Outreach.status.in_(_OUTREACH_ACTIVE),
+                       Outreach.next_followup_due.isnot(None),
+                       Outreach.next_followup_due <= today)
+               .order_by(Outreach.next_followup_due.asc()).all())
+        db.session.commit()
+        if due:
+            _send_outreach_digest_email(due)
+
+
+# --- Seed: the five live LinkedIn-outreach prospects -----------------------
+_OUTREACH_SEED = [
+    dict(name="Bill Chandler", title="SVP, Global Communications & PR", company="Lululemon",
+         slug="lululemon", channel="linkedin", token="7a7483ef",
+         insight="Vuori — not Alo — is dead even with you at Women's Health and Business Insider, the two outlets that most shape how AI describes the category."),
+    dict(name="Kate Wolfe", title="VP, Marketing & Brand Strategy", company="SpotOn",
+         slug="spoton", channel="linkedin", token="91e0f327",
+         insight="At the outlets AI leans on most — TechRadar, Forbes Advisor, Business News Daily — Toast is named in nearly every response and SpotOn in fewer than half."),
+    dict(name="Carolyn Bos", title="VP, Corporate Marketing", company="Motive",
+         slug="motive", channel="linkedin", token="11418dcd",
+         insight="AI's category leader isn't Samsara — it's Geotab (42 responses vs your 32), and the trade press (CCJ, TechRadar) is where Geotab out-indexes you."),
+    dict(name="Sydney Williams", title="VP, Global Brand Marketing", company="ServiceNow",
+         slug="servicenow", channel="linkedin", token="2e2af1ad",
+         insight="You're genuinely top-tier (58% mindshare, neck-and-neck with Microsoft/IBM/Google) — the move is at IT Pro and Forbes, where IBM and Salesforce out-cite you."),
+    dict(name="Jennifer McGuire", title="Head of Brand & PR", company="Swarovski",
+         slug="swarovski", channel="linkedin", token="e8e86b05",
+         insight="Forbes is your single highest-return target: it's cited 15× across the audit and Mejuri owns it 10-to-3."),
+]
+
+
+def _ensure_outreach_seed():
+    """Idempotently ensure the five seed prospects exist (mints their links on
+    first run, using their fixed tokens). Safe to call on every boot."""
+    try:
+        with app.app_context():
+            for s in _OUTREACH_SEED:
+                _outreach_upsert(s["name"], s["slug"], title=s["title"],
+                                 company=s["company"], channel=s["channel"],
+                                 insight=s["insight"], cadence="5,14",
+                                 token=s["token"])
+    except Exception as e:
+        print("outreach seed error:", e)
+
+
+def _outreach_keyq():
+    """Preserve ?key= across redirects/forms so off-network access keeps working."""
+    k = request.args.get('key')
+    return f"?key={k}" if k else ""
+
+
+@app.route('/outreach/new')
+def outreach_new():
+    if not _operator_ok():
+        abort(404)
+    slug = (request.args.get('slug') or '').strip()
+    name = (request.args.get('name') or '').strip()
+    if not slug or not name:
+        return Response("Provide ?name=&slug= (optional &title=&company=&channel=&insight=&cadence=)\n",
+                        mimetype='text/plain')
+    if not _load_signal_report(slug):
+        return Response(f"No report found for slug '{slug}'.\n", status=404, mimetype='text/plain')
+    _outreach_upsert(name, slug,
+                     title=(request.args.get('title') or None),
+                     company=(request.args.get('company') or None),
+                     channel=(request.args.get('channel') or 'linkedin'),
+                     insight=(request.args.get('insight') or None),
+                     cadence=(request.args.get('cadence') or '5,14'))
+    return redirect(url_for('outreach_board') + _outreach_keyq())
+
+
+@app.route('/outreach/<int:oid>/<action>', methods=['POST'])
+def outreach_action(oid, action):
+    if not _operator_ok():
+        abort(404)
+    o = Outreach.query.get(oid)
+    if o and action in ('sent', 'followup', 'replied', 'call', 'won', 'cold', 'passed', 'reopen'):
+        _outreach_mark(o, action)
+        db.session.commit()
+    return redirect(url_for('outreach_board') + _outreach_keyq())
+
+
+# Action buttons offered per current status.
+_OUTREACH_ACTIONS = {
+    'queued': [('sent', 'Mark sent')],
+    'sent': [('followup', 'Logged follow-up'), ('replied', 'Replied'),
+             ('call', 'Call set'), ('cold', 'Cold'), ('passed', 'Pass')],
+    'opened': [('followup', 'Logged follow-up'), ('replied', 'Replied'),
+               ('call', 'Call set'), ('cold', 'Cold'), ('passed', 'Pass')],
+    'replied': [('call', 'Call set'), ('won', 'Won'), ('passed', 'Pass')],
+    'call_scheduled': [('won', 'Won'), ('passed', 'Pass')],
+    'won': [('reopen', 'Reopen')],
+    'cold': [('reopen', 'Reopen')],
+    'passed': [('reopen', 'Reopen')],
+}
+
+
+@app.route('/outreach')
+def outreach_board():
+    if not _operator_ok():
+        abort(404)
+    rows = Outreach.query.order_by(Outreach.created_at.asc()).all()
+    root = request.url_root.rstrip('/')
+    keyq = _outreach_keyq()
+    today = datetime.utcnow().date()
+    active = sum(1 for r in rows if r.status in _OUTREACH_ACTIVE)
+    won = sum(1 for r in rows if r.status == 'won')
+
+    cards = []
+    for o in rows:
+        color = _OUTREACH_STATUS_COLORS.get(o.status, '#888')
+        label = _OUTREACH_STATUS_LABELS.get(o.status, o.status)
+        track_url = f"{root}/r/{o.link_token}" if o.link_token else '—'
+        days = f"{(datetime.utcnow() - o.sent_at).days}d ago" if o.sent_at else 'not sent'
+        if o.next_followup_due:
+            overdue = o.next_followup_due <= today
+            due = (f'<span style="color:#b00020;font-weight:600">follow-up due</span>'
+                   if overdue else f'follow-up {html.escape(_fmt_et(datetime(o.next_followup_due.year, o.next_followup_due.month, o.next_followup_due.day)))[:12]}')
+        else:
+            due = '—'
+        # action buttons
+        btns = []
+        for act, lbl in _OUTREACH_ACTIONS.get(o.status, []):
+            btns.append(
+                f'<form method="post" action="{root}/outreach/{o.id}/{act}{keyq}" style="display:inline">'
+                f'<button type="submit" style="font-size:12px;padding:4px 9px;margin:0 4px 4px 0;'
+                f'border:1px solid #ccc;border-radius:5px;background:#fff;cursor:pointer">{lbl}</button></form>'
+            )
+        show_text = o.status in _OUTREACH_ACTIVE
+        proposed = (f'<div style="margin-top:8px;font-size:12px;color:#333;background:#f7f7f7;'
+                    f'padding:9px 11px;border-radius:6px"><span style="color:#999">proposed follow-up:</span><br>'
+                    f'{html.escape(_followup_text(o))}</div>') if show_text else ''
+        cards.append(
+            '<div style="border:1px solid #e7e7e7;border-radius:10px;padding:14px 16px;margin:0 0 12px">'
+            '<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<div><span style="font-size:15px;font-weight:600">{html.escape(o.prospect_name)}</span> '
+            f'<span style="color:#888;font-size:13px">{html.escape(o.prospect_title or "")}'
+            f'{" · " + html.escape(o.company) if o.company else ""}</span></div>'
+            f'<span style="font-size:11px;font-weight:700;color:#fff;background:{color};'
+            f'padding:2px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.03em">{label}</span>'
+            '</div>'
+            f'<div style="font-size:12px;color:#777;margin-top:5px">'
+            f'<a href="{root}/signal/{html.escape(o.slug)}">{html.escape(o.slug)}</a> · {days} · {due} · '
+            f'<code style="font-size:11px;color:#888">{html.escape(track_url)}</code></div>'
+            f'{proposed}'
+            f'<div style="margin-top:10px">{"".join(btns)}</div>'
+            '</div>'
+        )
+
+    body = (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="robots" content="noindex"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>Outreach board</title>'
+        '<style>body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;'
+        'margin:28px auto;max-width:780px;color:#1a1a1a;padding:0 16px}'
+        'h1{font-size:20px;margin:0 0 2px}.sub{color:#777;font-size:13px;margin:0 0 20px}'
+        'a{color:#2356c7;text-decoration:none}code{background:#f3f3f3;padding:1px 4px;border-radius:3px}'
+        'button:hover{background:#f0f0f0}</style></head><body>'
+        '<h1>Outreach board</h1>'
+        f'<p class="sub">{len(rows)} prospects · {active} active · {won} won · '
+        f'opens auto-advance to “Opened” · reminders at days {html.escape(rows[0].cadence) if rows else "5,14"} after sent</p>'
+        + (''.join(cards) or '<p style="color:#999">No prospects yet. Add one with '
+           '<code>/outreach/new?name=&amp;slug=</code>.</p>')
+        + '</body></html>'
     )
     return Response(body, mimetype='text/html')
 
@@ -9113,6 +9517,10 @@ def signal_stripe_webhook():
             print("Stripe webhook credit-grant failed:", e)
             return jsonify({"error": "processing failed"}), 500
     return jsonify({"ok": True})
+
+
+# Ensure the five seed outreach prospects exist (idempotent; mints links once).
+_ensure_outreach_seed()
 
 
 if __name__ == "__main__":
