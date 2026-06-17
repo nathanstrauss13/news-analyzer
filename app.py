@@ -26,6 +26,7 @@ except ImportError:
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime, timedelta, date
 import hashlib
+import hmac
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response, session, abort
 from markupsafe import Markup
@@ -8314,13 +8315,27 @@ def track_and_redirect(token):
 
 
 def _operator_ok():
-    """Gate operator-only link tooling: allow if the request IP is allowlisted
-    (FREE_AUDIT_BYPASS_IPS) OR a matching ?key= is supplied (LINK_STATS_KEY, so
-    the operator can check stats from a phone off the allowlisted network)."""
-    if _ip_is_exempt_from_cap(_client_ip()):
+    """Gate for operator-only routes that expose client data (the outreach board,
+    link stats). Requires the LINK_STATS_KEY secret, supplied once via ?key=,
+    which then sets a signed session cookie so the board's links and POST forms
+    keep working without it. FAILS CLOSED: if no secret is configured these
+    routes 404 for everyone — they must never default to open.
+
+    Deliberately does NOT trust the client-IP allowlist. Behind Render's proxy,
+    _client_ip() can collapse to a shared value for all external callers, so
+    IP-gating these surfaces (the prior behavior) let everyone in once that
+    shared IP was allowlisted — which publicly exposed the board."""
+    secret = os.environ.get('LINK_STATS_KEY') or os.environ.get('OPERATOR_KEY')
+    if not secret:
+        return False
+    if session.get('op_ok') is True:
         return True
-    key = os.environ.get('LINK_STATS_KEY')
-    return bool(key) and request.args.get('key') == key
+    supplied = request.args.get('key') or request.headers.get('X-Operator-Key')
+    if supplied and hmac.compare_digest(str(supplied), str(secret)):
+        session['op_ok'] = True
+        session.permanent = True
+        return True
+    return False
 
 
 @app.route('/r-new')
