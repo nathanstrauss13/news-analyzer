@@ -3989,6 +3989,49 @@ def _count_brand_mentions(brand, all_responses):
     return full_count
 
 
+# Generic words that show up inside brand strings but are far too common to use
+# as evidence that a surfaced competitor is the brand's own alias/parent.
+_GENERIC_BRAND_TOKENS = {
+    'ai', 'the', 'inc', 'llc', 'ltd', 'co', 'corp', 'corporation', 'group',
+    'labs', 'lab', 'app', 'apps', 'platform', 'platforms', 'software', 'solution',
+    'solutions', 'technologies', 'technology', 'tech', 'systems', 'system', 'io',
+    'com', 'net', 'ultimate', 'global', 'digital', 'cloud', 'company', 'agent',
+    'agents', 'assistant', 'team', 'studio', 'works', 'data', 'health',
+}
+
+
+def _split_self_referential_competitors(brand, competitors):
+    """Partition competitors into (real_competitors, related_brands). A 'related
+    brand' is a surfaced competitor that the brand string LITERALLY NAMES — i.e.
+    the brand's own alias / parent / acquirer (e.g. a competitor 'Zendesk' when
+    the brand entered is 'Ultimate (Zendesk Ultimate)').
+
+    WHY: a brand must never be framed as 'losing to' its own parent. Observed on a
+    👎'd audit — Ultimate.ai (acquired by Zendesk) scored 0% and the report said it
+    trailed 'competitor' Zendesk 0-to-66, which reads as nonsense to anyone who
+    knows the brand. Pulling the parent out of the competitive set fixes the
+    head-to-head everywhere (mindshare framing, SoV, headline) at once.
+
+    MATCH RULE (deliberately strict): the competitor's FULL name must appear as a
+    word-boundary substring of the brand string, be >= 4 chars, and not be a
+    generic token. Word-OVERLAP is NOT enough — otherwise peer orgs that merely
+    share a common word get wrongly pulled (e.g. 'Black Girls Code' / 'Women Who
+    Code' vs the brand 'Girls Who Code', which share 'girls'/'code'/'who').
+    """
+    if not brand or not competitors:
+        return list(competitors or []), []
+    bl = re.sub(r'\s+', ' ', brand.lower())
+    real, related = [], []
+    for c in competitors:
+        nm = re.sub(r'\s+', ' ', (c.get('name') or '').lower().strip())
+        if (len(nm) >= 4 and nm not in _GENERIC_BRAND_TOKENS
+                and re.search(r'(?<![a-z0-9])' + re.escape(nm) + r'(?![a-z0-9])', bl)):
+            related.append(c)
+        else:
+            real.append(c)
+    return real, related
+
+
 def _classify_competitor_types(brand, category, competitor_counts):
     """Classify each extracted competitor as a brand peer, retailer, or
     marketplace so the report treats them differently.
@@ -6890,6 +6933,10 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
             competitor_counts.append({"name": name, "mention_count": cnt})
     competitor_counts.sort(key=lambda c: c["mention_count"], reverse=True)
     competitor_counts = competitor_counts[:10]
+    # Pull the brand's own alias/parent out of the competitive set (e.g. 'Zendesk'
+    # when the brand is 'Ultimate (Zendesk Ultimate)') so the analysis never frames
+    # the brand as a rival of its own parent. Kept separately as related_brands.
+    competitor_counts, related_brands = _split_self_referential_competitors(brand, competitor_counts)
     # Classify each as brand_peer / retailer / marketplace so the SoV math and
     # the UI can treat them differently — retailers aren't real PR competitors.
     competitor_counts = _classify_competitor_types(brand, category, competitor_counts)
@@ -7306,6 +7353,9 @@ Respond with ONLY valid JSON:
         }
         for c in competitor_counts
     ]
+    # Brand's own alias/parent names that surfaced as "competitors" (e.g. Zendesk
+    # for an Ultimate audit) — kept for context, never framed as rivals.
+    analysis['related_brands'] = related_brands
 
     # Deterministically reconcile each media target's `cited_by_llms` with the
     # detected citing set (URL OR name). Claude estimates this field from the
@@ -7828,6 +7878,23 @@ def _regenerate_executive_summary(data):
         brand_mentions = data.get('brand_mention_count') or 0
         mindshare = round(brand_mentions / total * 100) if total else 0
         competitors = data.get('competitors') or []
+        related = data.get('related_brands') or []
+
+        # If a name inside the brand string surfaced as an "entity" (its parent/
+        # acquirer/alias, e.g. Zendesk for 'Ultimate (Zendesk Ultimate)'), tell the
+        # model NOT to frame it as a competitor the brand is losing to, and to
+        # reframe a ~0% result as brand architecture rather than a deficit.
+        related_note = ""
+        if related:
+            rnames = ", ".join(c.get('name') for c in related if c.get('name'))
+            related_note = (
+                f"\nCRITICAL CONTEXT: {rnames} appears INSIDE the brand's own name — it is "
+                f"{brand}'s parent / acquirer / alias, NOT a competitor. NEVER say {brand} "
+                f"'trails', 'is losing to', or has a 'deficit' vs {rnames}. If {brand} "
+                f"registers little on its own, explain its AI presence is likely captured "
+                f"UNDER {rnames} (which leads the category), and frame the takeaway as a brand-"
+                f"architecture choice — build a distinct identity vs operate under {rnames} — "
+                f"not a head-to-head loss. Sentence 1 must reflect this, not a deficit number.\n")
 
         def _pct(n):
             return round((n or 0) / total * 100) if total else 0
@@ -7887,7 +7954,7 @@ def _regenerate_executive_summary(data):
 Brand: {brand}
 Category: {category}
 {brand}'s AI mindshare: {mindshare}% (cited in {brand_mentions} of {total} AI responses)
-
+{related_note}
 POSITION FACTS (pre-computed — use these EXACT numbers in Sentence 1; do NOT derive your own deltas or percentages):
 {position_facts}
 
@@ -8021,6 +8088,16 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
         competitor_counts = _classify_competitor_types(
             brand, data.get('category'), competitor_counts)
         out['competitors'] = competitor_counts
+    # Pull the brand's own alias/parent out of the competitive set (e.g. 'Zendesk'
+    # when the brand is 'Ultimate (Zendesk Ultimate)') so the report never frames
+    # the brand as losing to its own parent. Done AFTER the recount so the parent's
+    # mention total is known (passed to the summary as context, not as a rival).
+    competitor_counts, _related = _split_self_referential_competitors(brand, competitor_counts)
+    out['competitors'] = competitor_counts
+    out['related_brands'] = _related
+    if _related:
+        print(f"[rerender] moved {len(_related)} self/parent name(s) out of competitors: "
+              f"{', '.join(c.get('name') for c in _related)}")
     competitor_stems = _competitor_domain_stems(competitor_counts)
     if competitor_stems:
         editorial_domains = [d for d in editorial_domains if not _is_competitor_owned_domain(d['domain'], competitor_stems)]
