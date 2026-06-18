@@ -4626,7 +4626,14 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
                          for r in sov for c in (r.get('all_competitors_at_outlet') or [])),
                         default=0)
     _clear_leader = (_comp_overall - _brand_overall) >= 0.15  # a rival to chase
-    _present = any(r.get('verdict') == 'strength' for r in sov) or _brand_overall >= 0.30
+    # "Maintain" requires an ACTUAL verified lead/tie somewhere — i.e. at least
+    # one surviving 'strength' verdict. A brand that leads NOWHERE (every outlet
+    # an opportunity/neutral) is thin-but-present, not "winning, hold." The old
+    # `or brand_overall_sov >= 0.30` escape hatch let a 0-strength brand qualify
+    # (observed: Okta — top-mentioned at 30% but co-mention-only, guard demoted
+    # its one lead to opportunity, yet Maintain fired and falsely claimed it
+    # "leads at the outlets AI cites most"). Require a real lead instead.
+    _present = any(r.get('verdict') == 'strength' for r in sov)
     if (not _material_move) and (not _clear_leader) and _present:
         _won = sorted((r for r in sov if _brand_at(r) > 0),
                       key=lambda r: (_n(r), _brand_at(r)), reverse=True)
