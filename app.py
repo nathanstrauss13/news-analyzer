@@ -7732,8 +7732,17 @@ def citation_audit():
     t.start()
 
     def generate():
+        # Heartbeat: the analysis/verification phases (page-evidence, topic-verify,
+        # final report LLM call) can run >100s without emitting progress. Cloudflare
+        # kills a streaming connection after ~100s of silence (524), so the browser
+        # times out even though the worker finishes and saves the report. Emit an SSE
+        # keepalive comment on idle so the connection never goes silent that long.
         while True:
-            msg = q.get()
+            try:
+                msg = q.get(timeout=20)
+            except queue.Empty:
+                yield ": keepalive\n\n"
+                continue
             yield f"data: {msg}\n\n"
             parsed = json.loads(msg)
             if parsed["type"] in ("result", "error"):
