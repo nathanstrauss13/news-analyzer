@@ -8896,13 +8896,18 @@ def outreach_new():
                         mimetype='text/plain')
     if not _load_signal_report(slug):
         return Response(f"No report found for slug '{slug}'.\n", status=404, mimetype='text/plain')
-    _outreach_upsert(name, slug,
+    o = _outreach_upsert(name, slug,
                      title=(request.args.get('title') or None),
                      company=(request.args.get('company') or None),
                      channel=(request.args.get('channel') or 'linkedin'),
                      insight=(request.args.get('insight') or None),
                      relationship=(request.args.get('relationship') or None),
-                     cadence=(request.args.get('cadence') or '5,14'))
+                     cadence=(request.args.get('cadence') or '5,14'),
+                     token=(request.args.get('token') or None))
+    msg = request.args.get('message')
+    if msg is not None and o is not None:
+        o.message = (msg.strip() or None)
+        db.session.commit()
     return redirect(url_for('outreach_board') + _outreach_keyq())
 
 
