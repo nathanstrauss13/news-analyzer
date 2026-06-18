@@ -4660,19 +4660,21 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
         cm = tc.get('mentions_at_outlet') or 0
         if r.get('verdict') == 'opportunity':
             if r.get('_pre_guard_verdict') == 'strength':
-                # Coverage-guard downgrade: the brand IS named whenever AI cites
-                # this outlet, but the cited pages don't substantively cover it.
-                # The move is converting co-mention into real coverage — "below
-                # its overall visibility" would be flatly wrong here (often ba==n).
-                rival = f" alongside {tc['name']}" if tc.get('name') else ""
+                # Coverage-guard downgrade: AI names the brand when it cites this
+                # outlet, but the pages it actually cites don't feature the brand,
+                # so that visibility isn't yet ANCHORED in the source. The move is
+                # to earn coverage at this outlet (coverage -> AI presence), NOT to
+                # "convert a co-mention" (wrong direction) — and we only assert
+                # absence for pages we actually fetched.
                 if r.get('_guard_reason') == 'mention':
-                    gap_clause = (f"but the cited pages only mention {b} in passing — "
-                                  f"deepen the coverage to own the territory.")
+                    gap_clause = (f"but the cited pages we checked mention {b} only in "
+                                  f"passing, so that visibility isn't anchored in the source.")
                 else:
-                    gap_clause = (f"but the cited pages don't cover {b} — earn real coverage "
-                                  f"to convert the co-mention into owned territory.")
-                text = (f"Pitch {dom}. AI already names {b}{rival} in {ba} of the {n} responses "
-                        f"citing it, {gap_clause}")
+                    gap_clause = (f"but the cited pages we checked don't mention {b}, so that "
+                                  f"visibility isn't anchored in the source.")
+                text = (f"Pitch {dom}. AI names {b} in {ba} of the {n} answers that cite it, "
+                        f"{gap_clause} It's an outlet AI leans on for your category — earning "
+                        f"coverage there is a high-leverage way to show up in more AI answers.")
             elif tc.get('name') and cm > ba:
                 text = (f"Pitch {dom}. {tc['name']} shows up in {cm} of the {n} AI responses "
                         f"citing it, {b} in {ba} — closing this gap is your highest-leverage "
@@ -5804,20 +5806,22 @@ def _coverage_guard_verdicts(media_targets, outlet_sov, brand):
             row['_pre_guard_verdict'] = 'strength'  # diagnostic
             row['_guard_reason'] = cov
             row['verdict'] = 'opportunity'
-            tc = row.get('top_competitor_at_outlet') or {}
-            comp = tc.get('name') if isinstance(tc, dict) else None
-            rival = f" alongside {comp}" if comp else ""
+            # Precise + direction-correct: AI names the brand when it cites this
+            # outlet, but the pages it cites don't feature the brand, so that
+            # visibility isn't anchored in the source. The play is to EARN
+            # coverage here (coverage -> AI presence), and we only assert absence
+            # for pages we actually fetched ('unverified' is excluded above).
             if cov == 'mention':
                 row['verdict_label'] = (
-                    f"AI co-mentions {b}{rival} when it cites this outlet, but "
-                    f"the cited page only mentions {b} in passing. Pitch to "
-                    f"deepen the coverage."
+                    f"AI names {b} when it cites this outlet, but the cited pages we "
+                    f"checked mention {b} only in passing — the visibility isn't "
+                    f"anchored in the source. Pitch to earn coverage that sticks."
                 )
             else:
                 row['verdict_label'] = (
-                    f"AI co-mentions {b}{rival} when it cites this outlet, but "
-                    f"the cited page doesn't actually cover {b}. Pitch to "
-                    f"convert co-mention into coverage."
+                    f"AI names {b} when it cites this outlet, but the cited pages we "
+                    f"checked don't mention {b} — the visibility isn't anchored in the "
+                    f"source. Pitch to earn coverage that puts {b} on the page."
                 )
             downgraded.append(f"{dom}({cov})")
     if downgraded:
