@@ -5682,9 +5682,17 @@ def _count_names_in_text(text, names):
     """Word-boundary, case-insensitive count for each name, with the same
     common-word guardrail as _page_brand_mentions (short single-word brands
     like 'Gap' or 'On' collide with English words — when the case-insensitive
-    count dwarfs the case-sensitive one, trust the proper-noun count)."""
+    count dwarfs the case-sensitive one, trust the proper-noun count).
+
+    names[0] is treated as the AUDITED BRAND and gets a short-form fallback: if
+    the full multi-word name isn't on the page, count a distinctive Capitalized
+    first word (>=4 chars) — e.g. a Healthline page that says 'Hims' but not
+    'Hims & Hers'. Without this the brand's real on-page coverage reads 0 and the
+    coverage guard falsely downgrades a genuine strength. Case-sensitive so a
+    lowercase common word (a competitor 'Bank of America' -> 'bank') can't false-
+    match; and competitors (names[1:]) stay conservative (full name only)."""
     out = {}
-    for name in names:
+    for i, name in enumerate(names or []):
         if not name:
             continue
         cnt = len(re.findall(r'\b' + re.escape(name) + r'\b', text, re.IGNORECASE))
@@ -5693,6 +5701,8 @@ def _count_names_in_text(text, names):
             cs = len(re.findall(r'\b' + re.escape(name) + r'\b', text))
             if cnt > max(cs * 2, 3):
                 cnt = cs
+        if i == 0 and cnt == 0 and len(parts) > 1 and len(parts[0]) >= 4:
+            cnt = len(re.findall(r'\b' + re.escape(parts[0]) + r'\b', text))
         out[name] = cnt
     return out
 
