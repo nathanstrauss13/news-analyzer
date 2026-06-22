@@ -3913,7 +3913,7 @@ def _augment_citations_with_named_outlets(ranked_domains, all_responses):
     return merged
 
 
-def _count_brand_mentions(brand, all_responses):
+def _count_brand_mentions(brand, all_responses, is_primary_brand=False):
     """Deterministic, case-insensitive, word-boundary count of how many responses
     mention the brand. Replaces the previous LLM-estimated count which was
     biased low because the analysis prompt only saw 500-char excerpts of each
@@ -3969,17 +3969,36 @@ def _count_brand_mentions(brand, all_responses):
         if full_count > max(cs_count * 2, 3):
             return cs_count
 
-    if len(parts) > 1 and len(parts[0]) > 5:
+    # The aggressive short-form handling (4-char first words + the proper-noun
+    # override) applies ONLY to the AUDITED BRAND (is_primary_brand). Competitors
+    # stay conservative — first word must be >=6 chars and pass the dominance
+    # guard — so a shared parent token like "Apple" can't inflate a competitor
+    # "Apple Arcade" with "Apple Music"/"Apple TV+" mentions.
+    min_first = 4 if is_primary_brand else 6
+    if len(parts) > 1 and len(parts[0]) >= min_first:
         first_pat = re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE)
         first_count = sum(
             1 for r in all_responses
             if first_pat.search(r.get('response', '') or '')
         )
-        # Guardrail: accept the fallback only when the first word doesn't
-        # dominate. Compare to max(2×full, 3) so very small full-counts still
-        # leave room for legitimate fallback (e.g. full=0 but first=2 is OK;
-        # full=0 but first=29 is the Beauty bug).
-        if first_count <= max(full_count * 2, 3):
+        # (a) Original guard: accept the fallback when the first word doesn't
+        # dominate (<= max(2×full, 3)).
+        accept = first_count <= max(full_count * 2, 3)
+        # (b) BRAND ONLY: accept a DOMINATING first word when it's proper-noun-
+        # like — almost always Capitalized — i.e. a distinctive short form ("Hims"
+        # for "Hims & Hers", 90% capitalized) not a common word used generically
+        # ("Beauty" appears lowercase all over a beauty audit). Same CI-vs-CS
+        # signal as the single-word guard. Capped at 4× so a standalone entity
+        # can't run away. This stops "Hims & Hers" reading 10/50 when AI calls it
+        # just "Hims" in 29/50.
+        if is_primary_brand and not accept:
+            first_cs_count = sum(
+                1 for r in all_responses
+                if re.compile(r'\b' + re.escape(parts[0]) + r'\b').search(r.get('response', '') or '')
+            )
+            proper_nounish = first_cs_count >= first_count * 0.7
+            accept = proper_nounish and full_count >= 2 and first_count <= full_count * 4
+        if accept:
             combined = sum(
                 1 for r in all_responses
                 if full_pat.search(r.get('response', '') or '') or
@@ -4030,6 +4049,55 @@ def _split_self_referential_competitors(brand, competitors):
         else:
             real.append(c)
     return real, related
+
+
+def _dedupe_competitors(competitor_counts, all_responses=None):
+    """Merge competitor entries that are the SAME entity expressed two ways —
+    e.g. 'JPMorgan' and 'J.P. Morgan Asset Management' (observed on a BlackRock
+    audit, listed as two rivals). Two names merge when one's alphanumeric-
+    normalized form contains the other's (min length 4, to avoid merging on a
+    tiny shared fragment). The longer / higher-count name is kept as canonical;
+    the merged mention_count is recounted as responses matching EITHER stored
+    form (so we never double-count a response that used both). Order preserved
+    by descending count."""
+    if not competitor_counts:
+        return competitor_counts
+    def norm(n):
+        return re.sub(r'[^a-z0-9]', '', (n or '').lower())
+    items = list(competitor_counts)
+    used = [False] * len(items)
+    out = []
+    for i in range(len(items)):
+        if used[i]:
+            continue
+        ni = norm(items[i].get('name'))
+        group = [items[i]]
+        used[i] = True
+        for j in range(i + 1, len(items)):
+            if used[j]:
+                continue
+            nj = norm(items[j].get('name'))
+            if ni and nj and min(len(ni), len(nj)) >= 4 and (ni in nj or nj in ni):
+                group.append(items[j])
+                used[j] = True
+        if len(group) == 1:
+            out.append(items[i])
+            continue
+        canon = max(group, key=lambda m: ((m.get('mention_count') or 0), len(m.get('name') or '')))
+        merged = dict(canon)
+        if all_responses:
+            pats = [re.compile(r'\b' + re.escape(m.get('name') or '') + r'\b', re.IGNORECASE)
+                    for m in group if m.get('name')]
+            merged['mention_count'] = sum(
+                1 for r in all_responses
+                if any(p.search(r.get('response', '') or '') for p in pats))
+        else:
+            merged['mention_count'] = max((m.get('mention_count') or 0) for m in group)
+        names = ', '.join(m.get('name') for m in group if m.get('name'))
+        print(f"_dedupe_competitors: merged [{names}] -> '{merged.get('name')}' ({merged['mention_count']})")
+        out.append(merged)
+    out.sort(key=lambda c: c.get('mention_count') or 0, reverse=True)
+    return out
 
 
 def _classify_competitor_types(brand, category, competitor_counts):
@@ -4219,7 +4287,7 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
     # depending on whether the first-word fallback survives the guardrail
     # against the response corpus. This is computed once per name so SoV
     # per-outlet counts don't keep re-evaluating the guardrail.
-    def _patterns_for(name):
+    def _patterns_for(name, is_primary=False):
         if not name:
             return []
         full_pat = re.compile(r'\b' + re.escape(name) + r'\b', re.IGNORECASE)
@@ -4242,10 +4310,13 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
             if ci_count > max(cs_count * 2, 3):
                 return [cs_pat]
 
-        if not (len(parts) > 1 and len(parts[0]) > 5):
+        # BRAND ONLY gets the 4-char first-word handling; competitors stay >=6 +
+        # dominance-only, so a shared parent token ("Apple" in "Apple Arcade")
+        # can't inflate a competitor. Mirrors _count_brand_mentions.
+        min_first = 4 if is_primary else 6
+        if not (len(parts) > 1 and len(parts[0]) >= min_first):
             return [full_pat]
         first_pat = re.compile(r'\b' + re.escape(parts[0]) + r'\b', re.IGNORECASE)
-        # Reject fallback if first word dominates (category-word false positive).
         full_count = sum(
             1 for r in all_responses
             if full_pat.search(r.get('response', '') or '')
@@ -4255,10 +4326,23 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
             if first_pat.search(r.get('response', '') or '')
         )
         if first_count > max(full_count * 2, 3):
-            return [full_pat]
+            # First word dominates. Drop it — UNLESS this is the audited brand and
+            # the first word is a distinctive proper-noun short form (mostly
+            # Capitalized, like "Hims"), capped at 4× so a standalone entity can't
+            # run. Keeping it stops per-outlet SoV (and the headline) undercounting
+            # the brand.
+            if not is_primary:
+                return [full_pat]
+            first_cs_count = sum(
+                1 for r in all_responses
+                if re.compile(r'\b' + re.escape(parts[0]) + r'\b').search(r.get('response', '') or '')
+            )
+            proper_nounish = first_cs_count >= first_count * 0.7
+            if not (proper_nounish and full_count >= 2 and first_count <= full_count * 4):
+                return [full_pat]
         return [full_pat, first_pat]
 
-    brand_patterns = _patterns_for(brand or '')
+    brand_patterns = _patterns_for(brand or '', is_primary=True)
     competitor_pat_map = {
         c['name']: _patterns_for(c['name'])
         for c in (competitor_counts or [])
@@ -4974,7 +5058,7 @@ def _compute_per_llm_visibility(brand, all_responses):
     for l in order:
         subset = [r for r in all_responses if r.get('llm') == l]
         n = len(subset)
-        m = _count_brand_mentions(brand, subset)
+        m = _count_brand_mentions(brand, subset, is_primary_brand=True)
         # Prefer the per-response `grounded` flag (present on audits run after
         # the grounded-retrieval change): an assistant is "grounded" here if a
         # majority of its responses actually retrieved. Fall back to the static
@@ -7071,7 +7155,7 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     # Allowlist-gated, so it cannot introduce non-editorial noise.
     ranked_domains = _augment_citations_with_named_outlets(ranked_domains, all_responses)
     total_citations = sum(d['count'] for d in ranked_domains)
-    brand_mention_count = _count_brand_mentions(brand, all_responses)
+    brand_mention_count = _count_brand_mentions(brand, all_responses, is_primary_brand=True)
     # Per-assistant visibility — computed here (before the analysis prompt) so
     # the summary can call out lopsided concentration. (Re-stored on the
     # analysis dict below for the UI.)
@@ -7094,6 +7178,8 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
             competitor_counts.append({"name": name, "mention_count": cnt})
     competitor_counts.sort(key=lambda c: c["mention_count"], reverse=True)
     competitor_counts = competitor_counts[:10]
+    # Merge same-entity duplicates (e.g. 'JPMorgan' + 'J.P. Morgan Asset Management').
+    competitor_counts = _dedupe_competitors(competitor_counts, all_responses)
     # Pull the brand's own alias/parent out of the competitive set (e.g. 'Zendesk'
     # when the brand is 'Ultimate (Zendesk Ultimate)') so the analysis never frames
     # the brand as a rival of its own parent. Kept separately as related_brands.
@@ -8211,7 +8297,7 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     # the current guardrails (e.g. a brand named "On" was previously inflated
     # to 47/50 by the common-word collision; now correctly 17/50).
     if all_responses and brand:
-        new_brand_count = _count_brand_mentions(brand, all_responses)
+        new_brand_count = _count_brand_mentions(brand, all_responses, is_primary_brand=True)
         if new_brand_count != (data.get('brand_mention_count') or 0):
             print(f"[rerender] brand_mention_count recount: "
                   f"{data.get('brand_mention_count')} -> {new_brand_count}")
@@ -8249,6 +8335,10 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
                   ", ".join(f"{n}: {a}->{b}" for n, a, b in deltas[:10]))
         competitor_counts = rebuilt
         out['competitors'] = competitor_counts
+    # Merge same-entity duplicates (e.g. 'JPMorgan' + 'J.P. Morgan Asset Management')
+    # so existing audits get the dedupe on refresh too.
+    competitor_counts = _dedupe_competitors(competitor_counts, all_responses)
+    out['competitors'] = competitor_counts
     # Re-classify competitor types so existing audits (saved before the
     # classifier existed) also get the brand_peer / retailer split applied.
     # Skip if every competitor is already classified — saves a Claude call.
