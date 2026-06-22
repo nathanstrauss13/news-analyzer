@@ -3441,7 +3441,10 @@ def _is_brand_own_domain(domain, brand):
     """
     if not brand or not domain:
         return False
-    brand_slug = re.sub(r'[^a-z0-9]', '', brand.lower())
+    # Accent-fold first: "Estée Lauder" -> "estee lauder" -> "esteelauder" so it
+    # matches esteelauder.com (without folding, the stripped 'é' yields
+    # "estelauder", which misses the double-e domain and undercounts owned media).
+    brand_slug = re.sub(r'[^a-z0-9]', '', _ascii_fold(brand.lower()))
     if len(brand_slug) < 3:
         return False
     d = (domain or '').lower().lstrip('.')
