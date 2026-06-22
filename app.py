@@ -4770,6 +4770,167 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
     return None
 
 
+# ── Owned Signal Finder ──────────────────────────────────────────────────────
+# A re-lens of the SAME grounded audit data, focused on OWNED media: the brand's
+# and competitors' own sites/blogs/docs that AI cites, plus the topics where a
+# competitor's owned content is what AI pulls and the brand has nothing to cite.
+# Fully deterministic (no LLM calls) — runs on the same 50-response batch as the
+# earned report (PR Signal Finder). Reuses the editorial/owned domain classifiers.
+
+def _url_host(u):
+    """Bare host of a URL (www-stripped), '' on failure."""
+    try:
+        from urllib.parse import urlparse
+        h = (urlparse(u or '').netloc or '').lower()
+        return h[4:] if h.startswith('www.') else h
+    except Exception:
+        return ''
+
+
+def _owned_peer_competitors(competitors):
+    """Owned analysis compares against brand PEERS only — retailers/marketplaces
+    sell many brands' goods, so their owned sites aren't a like-for-like content
+    rival (mirrors the earned SoV peer rule)."""
+    return [c for c in (competitors or []) if (c.get('type') or 'brand_peer') == 'brand_peer']
+
+
+def _compute_owned_share_of_voice(brand, competitors, related_brands, ranked_domains):
+    """Owned share-of-voice: citations to the brand's OWN domains vs each
+    competitor's own domains. A parent/acquirer named in the brand string
+    (related_brands — e.g. Zendesk for an Ultimate audit) is folded into the
+    brand's owned side, since the brand's content lives there. Returns the
+    leaderboard + the brand's share of the owned-citation pie. Deterministic."""
+    peers = _owned_peer_competitors(competitors)
+    related_stems = _competitor_domain_stems(related_brands or [])
+    comp_stem_map = {c['name']: _competitor_domain_stems([c]) for c in peers if c.get('name')}
+    brand_owned, brand_domains = 0, []
+    comp_owned, comp_domains = {}, {}
+    for d in (ranked_domains or []):
+        dom, cnt = (d.get('domain') or ''), (d.get('count') or 0)
+        if not dom:
+            continue
+        if _is_brand_own_domain(dom, brand) or _is_competitor_owned_domain(dom, related_stems):
+            brand_owned += cnt
+            brand_domains.append({'domain': dom, 'count': cnt})
+            continue
+        for name, stems in comp_stem_map.items():
+            if _is_competitor_owned_domain(dom, stems):
+                comp_owned[name] = comp_owned.get(name, 0) + cnt
+                comp_domains.setdefault(name, []).append({'domain': dom, 'count': cnt})
+                break
+    owned_total = brand_owned + sum(comp_owned.values())
+    rows = [{
+        'name': brand, 'is_brand': True, 'count': brand_owned,
+        'share': round(brand_owned / owned_total, 3) if owned_total else 0.0,
+        'domains': sorted(brand_domains, key=lambda x: -x['count'])[:5],
+    }]
+    for name, cnt in sorted(comp_owned.items(), key=lambda x: -x[1]):
+        rows.append({
+            'name': name, 'is_brand': False, 'count': cnt,
+            'share': round(cnt / owned_total, 3) if owned_total else 0.0,
+            'domains': sorted(comp_domains[name], key=lambda x: -x['count'])[:3],
+        })
+    return {
+        'brand_owned': brand_owned, 'owned_total': owned_total,
+        'brand_share': round(brand_owned / owned_total, 3) if owned_total else 0.0,
+        'rows': rows,
+        'parent_folded': [c.get('name') for c in (related_brands or []) if c.get('name')],
+    }
+
+
+def _compute_earned_owned_mix(brand, competitors, related_brands, ranked_domains):
+    """How citation-heavy the category is on EARNED (editorial) vs OWNED (brand +
+    competitor sites) — tells the brand which game to play. Deterministic."""
+    peers = _owned_peer_competitors(competitors)
+    related_stems = _competitor_domain_stems(related_brands or [])
+    comp_stems = _competitor_domain_stems(peers)
+    editorial = owned = total = 0
+    for d in (ranked_domains or []):
+        dom, cnt = (d.get('domain') or ''), (d.get('count') or 0)
+        total += cnt
+        if classify_citation_domain(dom) == 'editorial':
+            editorial += cnt
+        if (_is_brand_own_domain(dom, brand)
+                or _is_competitor_owned_domain(dom, related_stems)
+                or _is_competitor_owned_domain(dom, comp_stems)):
+            owned += cnt
+    return {'editorial': editorial, 'owned': owned, 'total': total}
+
+
+def _compute_content_gaps(brand, competitors, related_brands, all_responses, max_gaps=6):
+    """Per-topic 'where to publish': prompts where AI cited a competitor's OWN
+    content and the brand had none, ranked by competitor-citation volume. The
+    actionable core of Owned Signal Finder. Deterministic."""
+    peers = _owned_peer_competitors(competitors)
+    related_stems = _competitor_domain_stems(related_brands or [])
+    comp_stem_map = {c['name']: _competitor_domain_stems([c]) for c in peers if c.get('name')}
+    by_prompt = {}
+    for r in (all_responses or []):
+        p = r.get('prompt') or ''
+        if not p:
+            continue
+        slot = by_prompt.setdefault(p, {'brand': 0, 'comp': {}})
+        for c in (r.get('citations') or []):
+            dom = _url_host(c.get('url') or '')
+            if not dom:
+                continue
+            if _is_brand_own_domain(dom, brand) or _is_competitor_owned_domain(dom, related_stems):
+                slot['brand'] += 1
+                continue
+            for name, stems in comp_stem_map.items():
+                if _is_competitor_owned_domain(dom, stems):
+                    slot['comp'][name] = slot['comp'].get(name, 0) + 1
+                    break
+    gaps = []
+    for p, v in by_prompt.items():
+        if v['brand'] == 0 and v['comp']:
+            winners = sorted(v['comp'].items(), key=lambda x: -x[1])
+            gaps.append({
+                'topic': p, 'competitor_volume': sum(v['comp'].values()),
+                'winners': [{'name': n, 'count': c} for n, c in winners[:3]],
+            })
+    gaps.sort(key=lambda g: -g['competitor_volume'])
+    return gaps[:max_gaps]
+
+
+def _compute_owned_headline_move(brand, owned_sov, content_gaps):
+    """The single #1 OWNED move — publish on the biggest content gap, or (no gaps,
+    brand already cited) extend the lead. Deterministic, no LLM."""
+    b = brand or 'Your brand'
+    if content_gaps:
+        g = content_gaps[0]
+        wn = ((g.get('winners') or [{}])[0]).get('name') or 'Competitors'
+        topic = g['topic'] if len(g['topic']) <= 90 else g['topic'][:88] + '…'
+        return {
+            'verb': 'Publish',
+            'text': (f'Publish on "{topic}". {wn}\'s own content is what AI cites for this query, '
+                     f'and {b} has nothing AI can pull — owned content here is your fastest path '
+                     f'to getting cited.'),
+        }
+    if (owned_sov or {}).get('brand_owned', 0) > 0:
+        return {
+            'verb': 'Extend',
+            'text': (f"{b}'s own content already gets cited ({owned_sov['brand_owned']} times) and no "
+                     f"single topic shows a competitor's content beating you outright — keep "
+                     f"publishing on the queries you already win to widen the lead."),
+        }
+    return None
+
+
+def _compute_owned_analysis(brand, competitors, related_brands, ranked_domains, all_responses):
+    """Bundle the owned-media lens into one dict for the payload (`owned` key).
+    Pure-Python; same data as the earned report. Safe no-op on thin inputs."""
+    sov = _compute_owned_share_of_voice(brand, competitors, related_brands, ranked_domains)
+    mix = _compute_earned_owned_mix(brand, competitors, related_brands, ranked_domains)
+    gaps = _compute_content_gaps(brand, competitors, related_brands, all_responses)
+    return {
+        'owned_sov': sov,
+        'mix': mix,
+        'content_gaps': gaps,
+        'headline_move': _compute_owned_headline_move(brand, sov, gaps),
+    }
+
+
 # Assistants whose answers are grounded in live web search (so a brand can
 # surface there from RECENT press / its own site even if the base model has
 # never "heard of" it). The others answer mostly from parametric knowledge, so
@@ -7357,6 +7518,13 @@ Respond with ONLY valid JSON:
     # for an Ultimate audit) — kept for context, never framed as rivals.
     analysis['related_brands'] = related_brands
 
+    # Owned Signal Finder lens — same data, owned-media focus (deterministic, no API).
+    try:
+        analysis['owned'] = _compute_owned_analysis(
+            brand, competitor_counts, related_brands, ranked_domains, all_responses)
+    except Exception as _oe:
+        print("owned analysis failed (continuing):", str(_oe)[:120])
+
     # Deterministically reconcile each media target's `cited_by_llms` with the
     # detected citing set (URL OR name). Claude estimates this field from the
     # response excerpts and can drift; the augmented ranked_domains carries the
@@ -8098,6 +8266,11 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     if _related:
         print(f"[rerender] moved {len(_related)} self/parent name(s) out of competitors: "
               f"{', '.join(c.get('name') for c in _related)}")
+    # Owned Signal Finder lens — same data, owned-media focus (deterministic, no API).
+    try:
+        out['owned'] = _compute_owned_analysis(brand, competitor_counts, _related, ranked_domains, all_responses)
+    except Exception as _oe:
+        print(f"[rerender] owned analysis failed (continuing): {_oe}")
     competitor_stems = _competitor_domain_stems(competitor_counts)
     if competitor_stems:
         editorial_domains = [d for d in editorial_domains if not _is_competitor_owned_domain(d['domain'], competitor_stems)]
@@ -8304,6 +8477,41 @@ def view_signal_report(slug):
         json_url=json_url,
         signal_user=user,
         signal_credits=current_user_credits(user),
+    )
+
+
+@app.route('/signal/<slug>/owned')
+def view_signal_report_owned(slug):
+    """Owned Signal Finder — the owned-media lens on the SAME shared audit as the
+    PR Signal Finder report. No new audit: re-lenses the saved payload's cached
+    citations toward the brand's vs competitors' OWN content + content gaps."""
+    data = _load_signal_report(slug)
+    if not data:
+        flash("Report not found or expired.")
+        return redirect(url_for('citation_audit'))
+    owned = data.get('owned')
+    if not owned:
+        # Audit saved before the owned lens existed — compute on the fly from the
+        # cached payload (pure-Python, no API), so every report is dual-lens.
+        try:
+            owned = _compute_owned_analysis(
+                data.get('brand') or '',
+                data.get('competitors') or [],
+                data.get('related_brands') or [],
+                data.get('raw_citation_domains') or [],
+                data.get('all_responses') or [])
+        except Exception as e:
+            print(f"[owned] on-the-fly compute failed for {slug}: {e}")
+            owned = {'owned_sov': {'rows': [], 'owned_total': 0, 'brand_owned': 0,
+                                   'brand_share': 0.0, 'parent_folded': []},
+                     'mix': {}, 'content_gaps': [], 'headline_move': None}
+    return render_template(
+        'citation_audit_owned.html',
+        ga_measurement_id=GA_MEASUREMENT_ID,
+        brand=data.get('brand') or 'this brand',
+        category=data.get('category') or '',
+        slug=slug,
+        owned=owned,
     )
 
 

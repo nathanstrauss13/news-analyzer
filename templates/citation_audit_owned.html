@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Owned Signal Finder — {{ brand }} — INNATE C3</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family:'IBM Plex Sans',sans-serif; background:#0a0a0a; color:#e0e0e0; margin:0; }
+  .container { max-width:860px; margin:0 auto; padding:32px 24px 80px; }
+  a { color:#7acbff; }
+  .signal-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:28px; }
+  .brandmark { font-size:13px; font-weight:500; color:#888; text-transform:uppercase; letter-spacing:2px; text-decoration:none; }
+  .switcher { display:flex; gap:6px; }
+  .switcher a { font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:1px; text-decoration:none;
+                padding:6px 12px; border-radius:7px; color:#9a9aa8; border:1px solid #26262e; }
+  .switcher a.active { color:#0a0a0a; background:#5aff8a; border-color:#5aff8a; }
+  .report-eyebrow { font-size:12px; font-weight:600; letter-spacing:2px; text-transform:uppercase; color:#5aaf7a; margin-bottom:8px; }
+  h2 { font-size:30px; color:#fff; margin:0 0 10px; }
+  .brand-pill { display:inline-block; font-size:12px; background:#1a1a2e; padding:4px 12px; border-radius:20px; color:#7a8aff; }
+  .lead { font-size:15px; color:#bbb; margin:18px 0 4px; line-height:1.5; }
+  .lead strong { color:#5aff8a; }
+  .method { font-size:12px; color:#6a6a78; margin-bottom:6px; }
+  .mix { font-size:13px; color:#9a9aa8; margin:6px 0 0; }
+  .mix b { color:#cfd2ff; }
+  .headline-move { display:flex; gap:14px; align-items:flex-start; margin:28px 0 36px; padding:18px 22px;
+                   background:#0f1a12; border:1px solid #1f4a2a; border-left:4px solid #5aff8a; border-radius:12px; }
+  .hm-verb { flex-shrink:0; font-size:11px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase;
+             color:#0f1a12; background:#5aff8a; padding:5px 11px; border-radius:6px; margin-top:1px; }
+  .hm-label { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#7acc7a; font-weight:700; margin-bottom:3px; }
+  .hm-text { color:#dfeede; font-size:15px; line-height:1.5; }
+  .section-title { font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:1.5px; color:#b8b8c8; margin:40px 0 6px; }
+  .section-note { font-size:13px; color:#8a8a9a; margin-bottom:16px; line-height:1.45; }
+  .sov-row { display:flex; align-items:center; gap:12px; margin:7px 0; }
+  .sov-name { width:180px; font-size:13px; color:#e8e8f0; flex-shrink:0; }
+  .sov-row.brand .sov-name { color:#5aff8a; font-weight:700; }
+  .sov-track { flex:1; height:11px; background:#1a1a26; border-radius:5px; overflow:hidden; }
+  .sov-fill { height:100%; background:#4a9eff; border-radius:5px; }
+  .sov-row.brand .sov-fill { background:#5aff8a; }
+  .sov-num { width:96px; text-align:right; font-size:12px; color:#cfd2ff; font-weight:600; flex-shrink:0; }
+  .card { background:#0e0e18; border:1px solid #1e1e2c; border-radius:12px; padding:15px 18px; margin:10px 0; }
+  .card .topic { font-size:15px; color:#fff; font-weight:600; margin-bottom:6px; line-height:1.4; }
+  .card .winners { font-size:13px; color:#9a9aa8; }
+  .card .winners b { color:#ff9b6b; }
+  .yours { font-size:13px; color:#aab; line-height:1.6; }
+  .empty { color:#777; font-style:italic; font-size:13px; }
+  .footer { margin-top:48px; padding-top:20px; border-top:1px solid #1e1e2c; font-size:12px; color:#666; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="signal-header">
+    <a href="https://innatec3.com" target="_blank" rel="noopener" class="brandmark">INNATE C3</a>
+    <div class="switcher">
+      <a href="/signal/{{ slug }}">Earned · PR</a>
+      <a href="/signal/{{ slug }}/owned" class="active">Owned</a>
+    </div>
+  </div>
+
+  <div class="report-eyebrow">Owned Signal Finder</div>
+  <h2>{{ brand }}</h2>
+  <span class="brand-pill">{{ category }}</span>
+
+  {% set sov = owned.owned_sov %}
+  {% set mix = owned.mix %}
+  <div class="lead">
+    {% if sov.owned_total %}
+      <strong>{{ (sov.brand_share*100)|round|int }}% owned share of voice</strong> — AI cites {{ brand }}'s own content {{ sov.brand_owned }} times vs {{ sov.owned_total - sov.brand_owned }} for competitors in this category.
+    {% else %}
+      AI cites little owned content in this category yet.
+    {% endif %}
+  </div>
+  <div class="method">Owned visibility measured on unbranded category queries</div>
+  {% if mix.total %}
+  <div class="mix">Citation mix: <b>{{ mix.owned }}</b> owned (your &amp; competitor sites) vs <b>{{ mix.editorial }}</b> editorial, of {{ mix.total }} total — {% if mix.owned > mix.editorial %}this category rewards owned content.{% else %}this category leans on earned/editorial coverage.{% endif %}</div>
+  {% endif %}
+
+  {% if owned.headline_move %}
+  <div class="headline-move">
+    <span class="hm-verb">{{ owned.headline_move.verb }}</span>
+    <div>
+      <div class="hm-label">Your #1 owned move</div>
+      <div class="hm-text">{{ owned.headline_move.text }}</div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="section-title">Owned share of voice — whose content AI pulls</div>
+  <div class="section-note">Of the brand-and-competitor owned content AI cites for this category, how much is yours.</div>
+  {% set counts = sov.rows|map(attribute='count')|list %}
+  {% set maxc = (counts|max if counts else 1) or 1 %}
+  {% for r in sov.rows %}
+  <div class="sov-row {% if r.is_brand %}brand{% endif %}">
+    <div class="sov-name">{{ (r.name if r.name|length < 26 else r.name[:24] ~ '…') }}{% if r.is_brand %} (you){% endif %}</div>
+    <div class="sov-track"><div class="sov-fill" style="width:{{ (r.count / maxc * 100)|round|int }}%"></div></div>
+    <div class="sov-num">{{ r.count }} · {{ (r.share*100)|round|int }}%</div>
+  </div>
+  {% endfor %}
+  {% if sov.parent_folded %}<div class="section-note" style="margin-top:10px">Counted under {{ brand }}: content on {{ sov.parent_folded|join(', ') }} (parent/owner).</div>{% endif %}
+
+  <div class="section-title">Content gaps — where to publish</div>
+  <div class="section-note">Topics where AI cites a competitor's own content and {{ brand }} has nothing to pull. Publishing AI-discoverable content here is the fastest path to getting cited.</div>
+  {% if owned.content_gaps %}
+    {% for g in owned.content_gaps %}
+    <div class="card">
+      <div class="topic">{{ g.topic }}</div>
+      <div class="winners">AI pulls: {% for w in g.winners %}<b>{{ w.name }}</b> ({{ w.count }}){% if not loop.last %} · {% endif %}{% endfor %}</div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="empty">No clear content gaps — AI doesn't cite a competitor's owned content on any topic where you're absent.</div>
+  {% endif %}
+
+  {% set yours = (sov.rows[0].domains if (sov.rows and sov.rows[0].is_brand) else []) %}
+  <div class="section-title">Owned content AI already cites from you</div>
+  {% if yours %}
+    <div class="yours">{% for d in yours %}{{ d.domain }} ({{ d.count }}){% if not loop.last %} · {% endif %}{% endfor %}</div>
+  {% else %}
+    <div class="empty">AI isn't citing any of {{ brand }}'s own pages for this category yet — the gaps above are where to start.</div>
+  {% endif %}
+
+  <div class="footer">Owned Signal Finder by <a href="https://innatec3.com" target="_blank" rel="noopener">INNATE C3</a> · same audit as <a href="/signal/{{ slug }}">PR Signal Finder</a> · For a bespoke analysis, contact nstrauss@innatec3.com</div>
+</div>
+</body>
+</html>

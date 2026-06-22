@@ -1513,6 +1513,12 @@
     <div class="container">
         <div class="signal-header">
             <a href="https://innatec3.com" target="_blank" rel="noopener" style="font-size:13px;font-weight:500;color:#555;text-transform:uppercase;letter-spacing:2px;text-decoration:none">INNATE C3</a>
+            {% if shared_data and shared_data.slug %}
+            <div style="display:flex;gap:6px">
+                <a href="/signal/{{ shared_data.slug }}" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1px;text-decoration:none;padding:6px 12px;border-radius:7px;color:#0a0a0a;background:#5aff8a;border:1px solid #5aff8a">Earned · PR</a>
+                <a href="/signal/{{ shared_data.slug }}/owned" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1px;text-decoration:none;padding:6px 12px;border-radius:7px;color:#9a9aa8;border:1px solid #26262e">Owned</a>
+            </div>
+            {% endif %}
             <div class="auth-cluster">
                 <a href="#" onclick="openDemoModal(); return false;">Talk to us</a>
             </div>
