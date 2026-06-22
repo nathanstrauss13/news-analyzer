@@ -4874,6 +4874,54 @@ def _url_host(u):
         return ''
 
 
+_BRAND_DOMAINS_CACHE = {}
+
+
+def _registrable_root(dom):
+    """Second-level label of a domain ('investors.elcompanies.com' -> 'elcompanies')."""
+    parts = [p for p in (dom or '').lower().lstrip('.').split('/')[0].split(':')[0].split('.') if p]
+    return parts[-2] if len(parts) >= 2 else (parts[0] if parts else '')
+
+
+def _resolve_brand_domains(brand):
+    """Best-effort official domain(s) for the brand via one cheap Haiku call, so the
+    owned analysis can credit corporate/abbreviation domains that name-matching can't
+    catch (e.g. elcompanies.com for 'Estée Lauder', whose label shares no letters with
+    the brand name). Returns a list of bare registrable domains; [] on any failure, in
+    which case the owned analysis falls back to pure name-matching (no regression).
+    Cached per-process by brand."""
+    if not brand:
+        return []
+    key = brand.strip().lower()
+    if key in _BRAND_DOMAINS_CACHE:
+        return _BRAND_DOMAINS_CACHE[key]
+    out = []
+    try:
+        resp = anthropic.messages.create(
+            model=CLAUDE_HAIKU, max_tokens=200,
+            messages=[{"role": "user", "content": (
+                f'What are the official website domain(s) owned by the company/brand "{brand}"? '
+                f'Include its main consumer site and its corporate/investor site if they differ. '
+                f'Reply ONLY with a JSON array of bare registrable domains (no paths, no "www"), '
+                f'e.g. ["esteelauder.com","elcompanies.com"]. If you are not confident, reply [].'
+            )}])
+        txt = (resp.content[0].text or "").strip()
+        m = re.search(r'\[.*\]', txt, re.DOTALL)
+        if m:
+            for d in json.loads(m.group()):
+                if not isinstance(d, str):
+                    continue
+                dd = re.sub(r'^https?://', '', d.strip().lower()).lstrip('.').split('/')[0]
+                dd = re.sub(r'^www\.', '', dd)
+                if dd and '.' in dd and dd not in out:
+                    out.append(dd)
+    except Exception as e:
+        print("brand-domain resolve failed (continuing without hint):", str(e)[:120])
+    out = out[:6]
+    _BRAND_DOMAINS_CACHE[key] = out
+    return out
+
+
 def _owned_peer_competitors(competitors):
     """Owned analysis compares against brand PEERS only — retailers/marketplaces
     sell many brands' goods, so their owned sites aren't a like-for-like content
@@ -4881,22 +4929,27 @@ def _owned_peer_competitors(competitors):
     return [c for c in (competitors or []) if (c.get('type') or 'brand_peer') == 'brand_peer']
 
 
-def _compute_owned_share_of_voice(brand, competitors, related_brands, ranked_domains):
+def _compute_owned_share_of_voice(brand, competitors, related_brands, ranked_domains,
+                                  brand_domain_hints=None):
     """Owned share-of-voice: citations to the brand's OWN domains vs each
     competitor's own domains. A parent/acquirer named in the brand string
     (related_brands — e.g. Zendesk for an Ultimate audit) is folded into the
-    brand's owned side, since the brand's content lives there. Returns the
-    leaderboard + the brand's share of the owned-citation pie. Deterministic."""
+    brand's owned side, since the brand's content lives there. brand_domain_hints
+    (resolved official domains) catch corporate/abbreviation sites name-matching
+    misses. Returns the leaderboard + the brand's share of the owned-citation pie.
+    Deterministic."""
     peers = _owned_peer_competitors(competitors)
     related_stems = _competitor_domain_stems(related_brands or [])
     comp_stem_map = {c['name']: _competitor_domain_stems([c]) for c in peers if c.get('name')}
+    hint_roots = {_registrable_root(d) for d in (brand_domain_hints or []) if d}
     brand_owned, brand_domains = 0, []
     comp_owned, comp_domains = {}, {}
     for d in (ranked_domains or []):
         dom, cnt = (d.get('domain') or ''), (d.get('count') or 0)
         if not dom:
             continue
-        if _is_brand_own_domain(dom, brand) or _is_competitor_owned_domain(dom, related_stems):
+        if (_is_brand_own_domain(dom, brand) or _is_competitor_owned_domain(dom, related_stems)
+                or _registrable_root(dom) in hint_roots):
             brand_owned += cnt
             brand_domains.append({'domain': dom, 'count': cnt})
             continue
@@ -4925,12 +4978,14 @@ def _compute_owned_share_of_voice(brand, competitors, related_brands, ranked_dom
     }
 
 
-def _compute_earned_owned_mix(brand, competitors, related_brands, ranked_domains):
+def _compute_earned_owned_mix(brand, competitors, related_brands, ranked_domains,
+                              brand_domain_hints=None):
     """How citation-heavy the category is on EARNED (editorial) vs OWNED (brand +
     competitor sites) — tells the brand which game to play. Deterministic."""
     peers = _owned_peer_competitors(competitors)
     related_stems = _competitor_domain_stems(related_brands or [])
     comp_stems = _competitor_domain_stems(peers)
+    hint_roots = {_registrable_root(d) for d in (brand_domain_hints or []) if d}
     editorial = owned = total = 0
     for d in (ranked_domains or []):
         dom, cnt = (d.get('domain') or ''), (d.get('count') or 0)
@@ -4939,18 +4994,21 @@ def _compute_earned_owned_mix(brand, competitors, related_brands, ranked_domains
             editorial += cnt
         if (_is_brand_own_domain(dom, brand)
                 or _is_competitor_owned_domain(dom, related_stems)
-                or _is_competitor_owned_domain(dom, comp_stems)):
+                or _is_competitor_owned_domain(dom, comp_stems)
+                or _registrable_root(dom) in hint_roots):
             owned += cnt
     return {'editorial': editorial, 'owned': owned, 'total': total}
 
 
-def _compute_content_gaps(brand, competitors, related_brands, all_responses, max_gaps=6):
+def _compute_content_gaps(brand, competitors, related_brands, all_responses, max_gaps=6,
+                          brand_domain_hints=None):
     """Per-topic 'where to publish': prompts where AI cited a competitor's OWN
     content and the brand had none, ranked by competitor-citation volume. The
     actionable core of Owned Signal Finder. Deterministic."""
     peers = _owned_peer_competitors(competitors)
     related_stems = _competitor_domain_stems(related_brands or [])
     comp_stem_map = {c['name']: _competitor_domain_stems([c]) for c in peers if c.get('name')}
+    hint_roots = {_registrable_root(d) for d in (brand_domain_hints or []) if d}
     by_prompt = {}
     for r in (all_responses or []):
         p = r.get('prompt') or ''
@@ -4961,7 +5019,8 @@ def _compute_content_gaps(brand, competitors, related_brands, all_responses, max
             dom = _url_host(c.get('url') or '')
             if not dom:
                 continue
-            if _is_brand_own_domain(dom, brand) or _is_competitor_owned_domain(dom, related_stems):
+            if (_is_brand_own_domain(dom, brand) or _is_competitor_owned_domain(dom, related_stems)
+                    or _registrable_root(dom) in hint_roots):
                 slot['brand'] += 1
                 continue
             for name, stems in comp_stem_map.items():
@@ -5004,12 +5063,18 @@ def _compute_owned_headline_move(brand, owned_sov, content_gaps):
     return None
 
 
-def _compute_owned_analysis(brand, competitors, related_brands, ranked_domains, all_responses):
+def _compute_owned_analysis(brand, competitors, related_brands, ranked_domains, all_responses,
+                            brand_domain_hints=None):
     """Bundle the owned-media lens into one dict for the payload (`owned` key).
-    Pure-Python; same data as the earned report. Safe no-op on thin inputs."""
-    sov = _compute_owned_share_of_voice(brand, competitors, related_brands, ranked_domains)
-    mix = _compute_earned_owned_mix(brand, competitors, related_brands, ranked_domains)
-    gaps = _compute_content_gaps(brand, competitors, related_brands, all_responses)
+    Pure-Python; same data as the earned report. brand_domain_hints (resolved
+    official domains) credit corporate/abbreviation sites name-matching misses.
+    Safe no-op on thin inputs."""
+    sov = _compute_owned_share_of_voice(brand, competitors, related_brands, ranked_domains,
+                                        brand_domain_hints=brand_domain_hints)
+    mix = _compute_earned_owned_mix(brand, competitors, related_brands, ranked_domains,
+                                    brand_domain_hints=brand_domain_hints)
+    gaps = _compute_content_gaps(brand, competitors, related_brands, all_responses,
+                                 brand_domain_hints=brand_domain_hints)
     return {
         'owned_sov': sov,
         'mix': mix,
@@ -7619,8 +7684,11 @@ Respond with ONLY valid JSON:
 
     # Owned Signal Finder lens — same data, owned-media focus (deterministic, no API).
     try:
+        brand_domain_hints = _resolve_brand_domains(brand)
+        analysis['brand_domains'] = brand_domain_hints
         analysis['owned'] = _compute_owned_analysis(
-            brand, competitor_counts, related_brands, ranked_domains, all_responses)
+            brand, competitor_counts, related_brands, ranked_domains, all_responses,
+            brand_domain_hints=brand_domain_hints)
     except Exception as _oe:
         print("owned analysis failed (continuing):", str(_oe)[:120])
 
@@ -8371,7 +8439,10 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
               f"{', '.join(c.get('name') for c in _related)}")
     # Owned Signal Finder lens — same data, owned-media focus (deterministic, no API).
     try:
-        out['owned'] = _compute_owned_analysis(brand, competitor_counts, _related, ranked_domains, all_responses)
+        brand_domain_hints = out.get('brand_domains') or _resolve_brand_domains(brand)
+        out['brand_domains'] = brand_domain_hints
+        out['owned'] = _compute_owned_analysis(brand, competitor_counts, _related, ranked_domains,
+                                               all_responses, brand_domain_hints=brand_domain_hints)
     except Exception as _oe:
         print(f"[rerender] owned analysis failed (continuing): {_oe}")
     competitor_stems = _competitor_domain_stems(competitor_counts)
@@ -8602,7 +8673,8 @@ def view_signal_report_owned(slug):
                 data.get('competitors') or [],
                 data.get('related_brands') or [],
                 data.get('raw_citation_domains') or [],
-                data.get('all_responses') or [])
+                data.get('all_responses') or [],
+                brand_domain_hints=data.get('brand_domains') or [])
         except Exception as e:
             print(f"[owned] on-the-fly compute failed for {slug}: {e}")
             owned = {'owned_sov': {'rows': [], 'owned_total': 0, 'brand_owned': 0,
