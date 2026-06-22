@@ -360,7 +360,7 @@
         <strong>{{ overall_pct }}% AI mindshare</strong> — cited in {{ data.brand_mention_count or 0 }} of {{ data.total_responses or 30 }} responses
         · {{ data.total_citations_extracted or 0 }} citations
     </div>
-    <div class="meta-method">Measured on neutral category queries — no brand named in any prompt — so this is true unprompted visibility, and every brand is compared on the same footing.</div>
+    <div class="meta-method">Organic visibility measured on unbranded category queries</div>
     {% if data.responses_planned %}
         {% set _rate = data.completion_rate if data.completion_rate is not none else (data.responses_completed / data.responses_planned if data.responses_planned else 0) %}
         {% set _pct = (_rate * 100) | round | int %}
