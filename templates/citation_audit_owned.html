@@ -103,8 +103,8 @@
   {% if owned.content_gaps %}
     {% for g in owned.content_gaps %}
     <div class="card">
-      <div class="topic">{{ g.topic }}</div>
-      <div class="winners">AI pulls: {% for w in g.winners %}<b>{{ w.name }}</b> ({{ w.count }}){% if not loop.last %} · {% endif %}{% endfor %}</div>
+      <div class="topic">{% if g.recommendation %}Publish {{ g.recommendation }}{% else %}{{ g.topic }}{% endif %}</div>
+      <div class="winners">AI cites {% for w in g.winners %}<b>{{ w.name }}</b>{% if not loop.last %} · {% endif %}{% endfor %} for &ldquo;{{ g.topic|truncate(70) }}&rdquo;</div>
     </div>
     {% endfor %}
   {% else %}

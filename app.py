@@ -5083,6 +5083,56 @@ def _compute_owned_analysis(brand, competitors, related_brands, ranked_domains, 
     }
 
 
+def _enrich_owned_recommendations(brand, category, owned):
+    """Turn each owned content-gap *query* into an actionable publishing angle via
+    one Claude call — so the report says "publish an explainer on how index funds
+    differ from actively managed funds" instead of echoing the raw question. Mutates
+    `owned` in place: sets gap['recommendation'] and rewrites the Publish headline to
+    lead with the top angle. No-op on any failure (the raw query phrasing remains)."""
+    gaps = (owned or {}).get('content_gaps') or []
+    if not gaps:
+        return owned
+    listing = "\n".join(f'{i+1}. "{g.get("topic", "")}"' for i, g in enumerate(gaps))
+    b = brand or 'the brand'
+    try:
+        resp = anthropic.messages.create(
+            model=CLAUDE_HAIKU, max_tokens=700,
+            messages=[{"role": "user", "content": (
+                f'Brand: {b}\nCategory: {category or ""}\n\n'
+                f'Below are AI-search queries where {b} has NO owned content that AI cites, but a '
+                f'competitor does. For EACH query, write a concise, specific CONTENT ANGLE {b} should '
+                f'publish to start winning that query. Extrapolate the editorial angle — do NOT echo '
+                f'the question. ~8-16 words, a noun phrase/brief, do NOT begin with "Publish" or '
+                f'"Create". Begin with a LOWERCASE letter unless the first word is a proper noun or '
+                f'an acronym (AI, ESG, ETF). Tie it to {b} where natural.\n\n'
+                f'Style examples:\n'
+                f'  query "how do I choose between index funds and actively managed funds for my '
+                f'portfolio" -> "an informational explainer on how index funds differ from actively '
+                f'managed funds"\n'
+                f'  query "which cosmetics companies have the strongest sustainability and ESG '
+                f'reputations" -> "sustainability and ESG as a reputation differentiator for {b}"\n\n'
+                f'Queries:\n{listing}\n\n'
+                f'Return ONLY a JSON array of exactly {len(gaps)} strings, in the same order.'
+            )}])
+        txt = (resp.content[0].text or "").strip()
+        m = re.search(r'\[.*\]', txt, re.DOTALL)
+        recs = json.loads(m.group()) if m else []
+        for g, rec in zip(gaps, recs):
+            if isinstance(rec, str) and rec.strip():
+                g['recommendation'] = rec.strip()
+    except Exception as e:
+        print("owned recommendation enrich failed (continuing):", str(e)[:120])
+    # Lead the Publish headline with the top gap's angle (deterministic fallback kept).
+    hm = (owned or {}).get('headline_move') or {}
+    rec0 = (gaps[0].get('recommendation') or '').strip()
+    if rec0 and hm.get('verb') == 'Publish':
+        wn = ((gaps[0].get('winners') or [{}])[0]).get('name') or 'A competitor'
+        hm['text'] = (f"Publish {rec0}. {wn}'s own content is what AI cites for this query today, and "
+                      f"{b} has nothing AI can pull — owned content here is your fastest path to "
+                      f"getting cited.")
+    return owned
+
+
 # Assistants whose answers are grounded in live web search (so a brand can
 # surface there from RECENT press / its own site even if the base model has
 # never "heard of" it). The others answer mostly from parametric knowledge, so
@@ -7682,13 +7732,14 @@ Respond with ONLY valid JSON:
     # for an Ultimate audit) — kept for context, never framed as rivals.
     analysis['related_brands'] = related_brands
 
-    # Owned Signal Finder lens — same data, owned-media focus (deterministic, no API).
+    # Owned Signal Finder lens — same data, owned-media focus.
     try:
         brand_domain_hints = _resolve_brand_domains(brand)
         analysis['brand_domains'] = brand_domain_hints
         analysis['owned'] = _compute_owned_analysis(
             brand, competitor_counts, related_brands, ranked_domains, all_responses,
             brand_domain_hints=brand_domain_hints)
+        _enrich_owned_recommendations(brand, category, analysis['owned'])
     except Exception as _oe:
         print("owned analysis failed (continuing):", str(_oe)[:120])
 
@@ -8437,12 +8488,14 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     if _related:
         print(f"[rerender] moved {len(_related)} self/parent name(s) out of competitors: "
               f"{', '.join(c.get('name') for c in _related)}")
-    # Owned Signal Finder lens — same data, owned-media focus (deterministic, no API).
+    # Owned Signal Finder lens — same data, owned-media focus.
     try:
         brand_domain_hints = out.get('brand_domains') or _resolve_brand_domains(brand)
         out['brand_domains'] = brand_domain_hints
         out['owned'] = _compute_owned_analysis(brand, competitor_counts, _related, ranked_domains,
                                                all_responses, brand_domain_hints=brand_domain_hints)
+        if regenerate_summary:
+            _enrich_owned_recommendations(brand, category, out['owned'])
     except Exception as _oe:
         print(f"[rerender] owned analysis failed (continuing): {_oe}")
     competitor_stems = _competitor_domain_stems(competitor_counts)
