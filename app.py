@@ -9440,6 +9440,25 @@ def _outreach_mark(o, action):
         o.next_followup_due = _outreach_compute_due(o)
 
 
+def _outreach_apply_status(o, status):
+    """Set an arbitrary status directly (the board's manual status dropdown),
+    keeping the derived fields consistent: 'sent'/'opened' stamp sent_at (once)
+    and recompute the next reminder; terminal/closed states clear the reminder;
+    'queued' resets to not-yet-sent. Unknown statuses are ignored."""
+    if status not in _OUTREACH_STATUS_LABELS:
+        return
+    now = datetime.utcnow()
+    o.last_activity_at = now
+    o.status = status
+    if status in ('sent', 'opened'):
+        o.sent_at = o.sent_at or now
+        o.next_followup_due = _outreach_compute_due(o)
+    elif status == 'queued':
+        o.next_followup_due = None
+    else:  # replied | call_scheduled | won | cold | passed
+        o.next_followup_due = None
+
+
 def _outreach_upsert(name, slug, title=None, company=None, channel='linkedin',
                      insight=None, cadence='5,14', token=None, relationship=None):
     """Idempotent create-or-update of a prospect. On first create, mints the
@@ -9731,6 +9750,7 @@ def _ensure_outreach_columns():
     migrations = [
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS relationship VARCHAR(240)",
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS message TEXT",
+        "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS notes TEXT",
     ]
     try:
         with app.app_context():
@@ -9770,6 +9790,18 @@ def _outreach_keyq():
     return f"?key={k}" if k else ""
 
 
+def _outreach_redirect(oid=None, extra=None):
+    """Redirect back to the board, preserving ?key=, optionally tacking on extra
+    query params and a #card-<id> fragment so the browser lands on the row the
+    operator just acted on (survives client-side re-sorting/filtering)."""
+    url = url_for('outreach_board') + _outreach_keyq()
+    if extra:
+        url += ('&' if '?' in url else '?') + extra
+    if oid is not None:
+        url += f'#card-{oid}'
+    return redirect(url)
+
+
 @app.route('/outreach/new')
 def outreach_new():
     if not _operator_ok():
@@ -9798,7 +9830,10 @@ def outreach_new():
 
 @app.route('/outreach/<int:oid>/set', methods=['POST'])
 def outreach_set(oid):
-    """Inline edit of free-text fields (relationship hook, insight) from the board."""
+    """Inline edit of fields from the board: free-text (relationship hook,
+    message, insight, notes) plus a manual status override. Used both by full
+    form posts and by the board's debounced autosave (fetch), which sends
+    ajax=1 and expects an empty 204 back instead of a full board re-render."""
     if not _operator_ok():
         abort(404)
     o = Outreach.query.get(oid)
@@ -9809,8 +9844,42 @@ def outreach_set(oid):
             o.message = (request.form.get('message') or '').strip() or None
         if 'insight' in request.form:
             o.insight = (request.form.get('insight') or '').strip() or None
+        if 'notes' in request.form:
+            o.notes = (request.form.get('notes') or '').strip() or None
+        if request.form.get('status'):
+            _outreach_apply_status(o, request.form.get('status'))
         db.session.commit()
-    return redirect(url_for('outreach_board') + _outreach_keyq())
+    if request.form.get('ajax') or request.headers.get('X-Requested-With') == 'fetch':
+        return ('', 204)
+    return _outreach_redirect(oid)
+
+
+@app.route('/outreach/add', methods=['POST'])
+def outreach_add():
+    """Quick-add a prospect from the board UI (vs. hand-typing /outreach/new?...).
+    Validates the report slug exists, then upserts and lands you on the new card."""
+    if not _operator_ok():
+        abort(404)
+    from urllib.parse import quote_plus
+    name = (request.form.get('name') or '').strip()
+    slug = (request.form.get('slug') or '').strip()
+    if not name or not slug:
+        return _outreach_redirect(extra='err=' + quote_plus('Name and report slug are required.'))
+    if not _load_signal_report(slug):
+        return _outreach_redirect(extra='err=' + quote_plus(f"No report found for slug '{slug}'."))
+    o = _outreach_upsert(
+        name, slug,
+        title=(request.form.get('title') or '').strip() or None,
+        company=(request.form.get('company') or '').strip() or None,
+        channel=(request.form.get('channel') or 'linkedin'),
+        insight=(request.form.get('insight') or '').strip() or None,
+        relationship=(request.form.get('relationship') or '').strip() or None,
+        cadence=(request.form.get('cadence') or '5,14'))
+    msg = (request.form.get('message') or '').strip()
+    if msg and o is not None:
+        o.message = msg
+        db.session.commit()
+    return _outreach_redirect(o.id if o else None, extra='added=' + quote_plus(name))
 
 
 @app.route('/outreach/<int:oid>/<action>', methods=['POST'])
@@ -9821,7 +9890,7 @@ def outreach_action(oid, action):
     if o and action in ('sent', 'followup', 'replied', 'call', 'won', 'cold', 'passed', 'reopen'):
         _outreach_mark(o, action)
         db.session.commit()
-    return redirect(url_for('outreach_board') + _outreach_keyq())
+    return _outreach_redirect(oid)
 
 
 # Action buttons offered per current status.
@@ -9838,6 +9907,155 @@ _OUTREACH_ACTIONS = {
     'passed': [('reopen', 'Reopen')],
 }
 
+# Board styles + client behavior, kept out of the route body. The JS is a raw
+# string so JS regex/\u escapes survive Python unscathed. It powers: debounced
+# field autosave (fetch → 204), manual status set, the live hook→opener preview
+# + one-click apply, status filters + name search + overdue sort (sessionStorage-
+# persisted so they survive the POST→redirect reloads), and scroll restoration.
+_OUTREACH_BOARD_CSS = (
+    '<style>'
+    ':root{--blue:#2356c7}'
+    'body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:28px auto;max-width:820px;color:#1a1a1a;padding:0 16px}'
+    'h1{font-size:20px;margin:0 0 2px}.sub{color:#777;font-size:13px;margin:0 0 16px}'
+    'a{color:var(--blue);text-decoration:none}'
+    'code{background:#f3f3f3;padding:1px 4px;border-radius:3px;font-size:11px;color:#888}'
+    'button{cursor:pointer;font-family:inherit}'
+    '.toolbar{position:sticky;top:0;background:#fff;padding:10px 0 12px;z-index:5;border-bottom:1px solid #eee;margin-bottom:14px}'
+    '.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px}'
+    '.chip{font-size:12px;padding:4px 11px;border:1px solid #ddd;border-radius:20px;background:#fff;color:#444}'
+    '.chip:hover{background:#f5f5f5}.chip.on{background:var(--blue);color:#fff;border-color:var(--blue)}'
+    '.chip .cct{opacity:.65;font-weight:600;margin-left:4px}.chip.on .cct{opacity:.9}'
+    '.tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center}'
+    '.search{flex:1;min-width:150px;font-size:13px;padding:6px 10px;border:1px solid #ddd;border-radius:6px}'
+    '.tools button{font-size:12px;padding:6px 11px;border:1px solid #ccc;border-radius:6px;background:#fff}'
+    '.tools button.prim{background:var(--blue);color:#fff;border-color:var(--blue);font-weight:600}'
+    '.banner{font-size:13px;padding:9px 12px;border-radius:7px;margin-bottom:12px}'
+    '.banner.err{background:#fdecea;color:#b00020;border:1px solid #f5c6cb}'
+    '.banner.ok{background:#e9f8ef;color:#0a8a0a;border:1px solid #b8e6c8}'
+    '.addbox{border:1px solid #e0e0e0;border-radius:10px;padding:14px;margin-bottom:14px;background:#fafbff}'
+    '.addform input,.addform select{font-size:13px;padding:7px 9px;border:1px solid #ddd;border-radius:6px;width:100%;box-sizing:border-box;margin-bottom:8px}'
+    '.addform .arow{display:flex;gap:8px}.addform .arow button{width:auto;margin:0}'
+    '.card{border:1px solid #e7e7e7;border-radius:10px;padding:14px 16px;margin:0 0 12px;scroll-margin-top:130px}'
+    '.chead{display:flex;justify-content:space-between;align-items:baseline;gap:10px}'
+    '.pname{font-size:15px;font-weight:600}.ptitle{color:#888;font-size:13px}'
+    '.hookbadge{font-size:11px;color:#7a3ff2;background:#f3eefe;padding:1px 8px;border-radius:10px;margin-left:6px}'
+    '.pill{font-size:11px;font-weight:700;color:#fff;padding:2px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.03em;white-space:nowrap}'
+    '.meta{font-size:12px;color:#777;margin-top:5px}'
+    '.dashrow{margin-top:6px;font-size:12px}.dashrow a{font-weight:600}.muted{color:#aaa;font-size:11px}'
+    '.fld{margin-top:10px}.flab{font-size:11px;color:#999;margin-bottom:4px}'
+    '.autosave{width:100%;box-sizing:border-box;font:13px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#222;padding:8px 11px;border:1px solid #ddd;border-radius:7px}'
+    'textarea.autosave{resize:vertical}.hookin{padding:6px 9px}'
+    '.sv{font-size:11px;margin-left:7px;font-weight:600}'
+    '.hp{margin-top:6px}'
+    '.hp-snip{font-size:12px;color:#444;background:#f3eefe;border:1px solid #e6dcfa;padding:7px 9px;border-radius:6px;font-style:italic}'
+    '.hp-apply{margin-top:5px;font-size:11px;padding:3px 10px;border:1px solid #7a3ff2;color:#7a3ff2;background:#fff;border-radius:5px}'
+    '.btns{margin-top:6px;display:flex;flex-wrap:wrap;gap:6px}'
+    '.btns button{font-size:12px;padding:5px 10px;border:1px solid #ccc;border-radius:5px;background:#fff}'
+    '.btns button.prim{border-color:var(--blue);color:#fff;background:var(--blue);font-weight:600}'
+    '.prop{margin-top:8px;font-size:12px;color:#333;background:#f7f7f7;padding:9px 11px;border-radius:6px}.prop .lbl{color:#999}'
+    '.actions{margin-top:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}'
+    '.actions form{display:inline}.actions .setlbl{font-size:11px;color:#999}'
+    '.statussel{font-size:12px;padding:4px 7px;border:1px solid #ccc;border-radius:5px;background:#fff}'
+    '.act{font-size:12px;padding:4px 9px;border:1px solid #ccc;border-radius:5px;background:#fff}.act:hover{background:#f0f0f0}'
+    '.emptymsg{color:#999;font-size:13px}'
+    '</style>'
+)
+
+_OUTREACH_BOARD_JS = r'''<script>
+function debounce(fn,ms){var t;return function(){var a=arguments,c=this;clearTimeout(t);t=setTimeout(function(){fn.apply(c,a);},ms);};}
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function flash(b){var o=b.textContent;b.textContent='Copied ✓';setTimeout(function(){b.textContent=o;},1400);}
+function cpEl(b){var t=document.getElementById(b.dataset.t);navigator.clipboard.writeText(t.value).then(function(){flash(b);});}
+function cpV(b){navigator.clipboard.writeText(b.dataset.v).then(function(){flash(b);});}
+function saveField(el){
+  var fd=new FormData();fd.append(el.dataset.field,el.value);fd.append('ajax','1');
+  var ind=document.getElementById('sv-'+el.dataset.field+'-'+el.dataset.oid);
+  if(ind){ind.textContent='saving…';ind.style.color='#bbb';}
+  fetch(el.dataset.action,{method:'POST',headers:{'X-Requested-With':'fetch'},body:fd})
+   .then(function(r){if(ind){ind.textContent=r.ok?'saved ✓':'save failed';ind.style.color=r.ok?'#1db954':'#b00020';if(r.ok){setTimeout(function(){ind.textContent='';},1600);}}})
+   .catch(function(){if(ind){ind.textContent='save failed';ind.style.color='#b00020';}});
+}
+var saveDebounced=debounce(function(el){saveField(el);},900);
+function setStatus(sel){
+  saveScroll();
+  var f=document.createElement('form');f.method='POST';f.action=sel.dataset.action;
+  var i=document.createElement('input');i.name='status';i.value=sel.value;f.appendChild(i);
+  document.body.appendChild(f);f.submit();
+}
+var SKIP={'none':1,'n/a':1,'na':1,'skip':1,'-':1,'—':1};
+function hookClean(h){h=(h||'').trim();return SKIP[h.toLowerCase()]?'':h;}
+function hookOpener(first,hook,msg){
+  hook=hookClean(hook).replace(/[.!?]+$/,'');
+  if(!hook){return msg;}
+  var clause=hook+'. ';
+  var m=msg.match(/^(\s*Hi\s+[^\n—-]+\s*[—-]\s*)/);
+  if(m){
+    var rest=msg.slice(m[0].length);
+    if(rest.toLowerCase().indexOf(hook.toLowerCase())===0){return msg;}
+    return m[1]+clause+(rest?rest.charAt(0).toUpperCase()+rest.slice(1):'');
+  }
+  return 'Hi '+first+' — '+clause+(msg?msg.charAt(0).toUpperCase()+msg.slice(1):'');
+}
+function hookPreview(id){
+  var hk=document.getElementById('hook-'+id),mg=document.getElementById('msg-'+id),pv=document.getElementById('hp-'+id);
+  if(!hk||!mg||!pv){return;}
+  var hook=hookClean(hk.value);
+  if(!hook){pv.innerHTML='';return;}
+  var opener=hookOpener(hk.dataset.first,hook,mg.value).split('\n')[0];
+  if(opener.length>180){opener=opener.slice(0,180)+'…';}
+  pv.innerHTML='<div class="hp-snip">'+esc(opener)+'</div><button type="button" class="hp-apply" onclick="applyHook('+id+')">Use this opener</button>';
+}
+function applyHook(id){
+  var hk=document.getElementById('hook-'+id),mg=document.getElementById('msg-'+id);
+  if(!hk||!mg){return;}
+  mg.value=hookOpener(hk.dataset.first,hk.value,mg.value);
+  saveField(mg);hookPreview(id);mg.focus();
+}
+function setFilter(f){try{sessionStorage.setItem('orFilter',f);}catch(e){}applyView();}
+function applyView(){
+  var f='all',q='';try{f=sessionStorage.getItem('orFilter')||'all';q=(sessionStorage.getItem('orSearch')||'').toLowerCase().trim();}catch(e){}
+  var chips=document.querySelectorAll('.chip');for(var i=0;i<chips.length;i++){chips[i].classList.toggle('on',chips[i].dataset.f===f);}
+  var cards=document.querySelectorAll('.card'),shown=0;
+  for(var j=0;j<cards.length;j++){
+    var c=cards[j];
+    var okS=(f==='all')||(f==='due'?c.dataset.dueflag==='1':c.dataset.status===f);
+    var okQ=!q||(c.dataset.search.indexOf(q)>=0);
+    var v=okS&&okQ;c.style.display=v?'':'none';if(v){shown++;}
+  }
+  var e=document.getElementById('emptymsg');if(e){e.style.display=shown?'none':'';}
+}
+function toggleSort(){var m='default';try{m=sessionStorage.getItem('orSort')||'default';}catch(e){}m=(m==='due')?'default':'due';try{sessionStorage.setItem('orSort',m);}catch(e){}applySort();}
+function applySort(){
+  var m='default';try{m=sessionStorage.getItem('orSort')||'default';}catch(e){}
+  var cont=document.getElementById('cards');if(!cont){return;}
+  var arr=[].slice.call(cont.querySelectorAll('.card'));
+  arr.sort(function(a,b){
+    if(m==='due'){var d=(+a.dataset.due)-(+b.dataset.due);if(d){return d;}}
+    return (+a.dataset.order)-(+b.dataset.order);
+  });
+  for(var i=0;i<arr.length;i++){cont.appendChild(arr[i]);}
+  var btn=document.getElementById('sortbtn');if(btn){btn.textContent=(m==='due')?'Sort: overdue first':'Sort: default';}
+}
+function toggleAdd(){var b=document.getElementById('addbox');if(b){b.style.display=(b.style.display==='none')?'':'none';if(b.style.display===''){var n=b.querySelector('input[name=name]');if(n){n.focus();}}}}
+function saveScroll(){try{sessionStorage.setItem('orScroll',String(window.scrollY));}catch(e){}}
+window.addEventListener('scroll',debounce(saveScroll,200));
+document.addEventListener('submit',function(){saveScroll();},true);
+function restoreScroll(){
+  if(location.hash){var el=document.querySelector(location.hash);if(el){el.scrollIntoView({block:'center'});return;}}
+  var y=null;try{y=sessionStorage.getItem('orScroll');}catch(e){}
+  if(y!==null){window.scrollTo(0,parseInt(y,10)||0);}
+}
+(function(){
+  var as=document.querySelectorAll('.autosave');
+  for(var i=0;i<as.length;i++){(function(el){el.addEventListener('input',function(){saveDebounced(el);});el.addEventListener('blur',function(){saveField(el);});})(as[i]);}
+  var s=document.getElementById('search');
+  if(s){try{s.value=sessionStorage.getItem('orSearch')||'';}catch(e){}s.addEventListener('input',function(){try{sessionStorage.setItem('orSearch',this.value);}catch(e){}applyView();});}
+  applySort();applyView();
+  var hs=document.querySelectorAll('.hookin');for(var k=0;k<hs.length;k++){hookPreview(hs[k].id.substring(5));}
+  restoreScroll();
+})();
+</script>'''
+
 
 @app.route('/outreach')
 def outreach_board():
@@ -9850,11 +10068,24 @@ def outreach_board():
     active = sum(1 for r in rows if r.status in _OUTREACH_ACTIVE)
     won = sum(1 for r in rows if r.status == 'won')
 
+    # status counts for the filter chips + how many need a follow-up right now
+    counts = {}
+    due_count = 0
+    for r in rows:
+        counts[r.status] = counts.get(r.status, 0) + 1
+        if (r.status in _OUTREACH_ACTIVE and r.next_followup_due
+                and r.next_followup_due <= today):
+            due_count += 1
+
+    def _set_action(oid):
+        return f"{root}/outreach/{oid}/set{keyq}"
+
     cards = []
-    for o in rows:
+    for idx, o in enumerate(rows):
         color = _OUTREACH_STATUS_COLORS.get(o.status, '#888')
         label = _OUTREACH_STATUS_LABELS.get(o.status, o.status)
         track_url = f"{root}/r/{o.link_token}" if o.link_token else '—'
+        first = _outreach_first_name(o)
         # Per-card open analytics: genuine human opens of this prospect's /r/ link
         opens, last_open = 0, None
         if o.link_token:
@@ -9869,103 +10100,147 @@ def outreach_board():
         else:
             open_badge = '<span style="color:#bbb">no opens yet</span>'
         days = f"{(datetime.utcnow() - o.sent_at).days}d ago" if o.sent_at else 'not sent'
+        is_due = False
         if o.next_followup_due:
             overdue = o.next_followup_due <= today
-            due = (f'<span style="color:#b00020;font-weight:600">follow-up due</span>'
-                   if overdue else f'follow-up {html.escape(_fmt_et(datetime(o.next_followup_due.year, o.next_followup_due.month, o.next_followup_due.day)))[:12]}')
+            is_due = o.status in _OUTREACH_ACTIVE and overdue
+            due = ('<span style="color:#b00020;font-weight:600">follow-up due</span>'
+                   if overdue else
+                   f'follow-up {html.escape(_fmt_et(datetime(o.next_followup_due.year, o.next_followup_due.month, o.next_followup_due.day)))[:12]}')
+            dueval = o.next_followup_due.toordinal()
         else:
             due = '—'
-        # action buttons
+            dueval = 99999999
+
+        # quick one-click pipeline advances (kept alongside the manual dropdown)
         btns = []
         for act, lbl in _OUTREACH_ACTIONS.get(o.status, []):
             btns.append(
-                f'<form method="post" action="{root}/outreach/{o.id}/{act}{keyq}" style="display:inline">'
-                f'<button type="submit" style="font-size:12px;padding:4px 9px;margin:0 4px 4px 0;'
-                f'border:1px solid #ccc;border-radius:5px;background:#fff;cursor:pointer">{lbl}</button></form>'
+                f'<form method="post" action="{root}/outreach/{o.id}/{act}{keyq}">'
+                f'<button type="submit" class="act">{html.escape(lbl)}</button></form>'
             )
+        # manual status override — jump straight to any stage
+        opts = ''.join(
+            f'<option value="{s}"{" selected" if s == o.status else ""}>{html.escape(lbl)}</option>'
+            for s, lbl in _OUTREACH_STATUS_LABELS.items())
+        status_sel = (f'<select class="statussel" data-action="{_set_action(o.id)}" '
+                      f'onchange="setStatus(this)" title="Set status manually">{opts}</select>')
+
         show_text = o.status in _OUTREACH_ACTIVE
-        proposed = (f'<div style="margin-top:8px;font-size:12px;color:#333;background:#f7f7f7;'
-                    f'padding:9px 11px;border-radius:6px"><span style="color:#999">proposed follow-up:</span><br>'
+        proposed = (f'<div class="prop"><span class="lbl">proposed follow-up:</span><br>'
                     f'{html.escape(_followup_text(o))}</div>') if show_text else ''
         rel_show = _clean_relationship(o.relationship)
-        rel_badge = (f'<span style="font-size:11px;color:#7a3ff2;background:#f3eefe;'
-                     f'padding:1px 8px;border-radius:10px;margin-left:6px">🤝 {html.escape(rel_show)}</span>'
-                     if rel_show else '')
-        rel_form = (
-            f'<form method="post" action="{root}/outreach/{o.id}/set{keyq}" style="margin-top:8px;display:flex;gap:6px">'
-            f'<input name="relationship" value="{html.escape(o.relationship or "")}" '
-            f'placeholder="shared connection — e.g. fellow Oregon alum · ex-Edelman · intro via Sam" '
-            f'style="flex:1;font-size:12px;padding:5px 8px;border:1px solid #ddd;border-radius:5px">'
-            f'<button type="submit" style="font-size:12px;padding:4px 10px;border:1px solid #ccc;'
-            f'border-radius:5px;background:#fff;cursor:pointer">Save hook</button></form>'
+        rel_badge = (f'<span class="hookbadge">🤝 {html.escape(rel_show)}</span>' if rel_show else '')
+
+        # shared-connection hook — autosaves + drives the live opener preview
+        hook_block = (
+            '<div class="fld"><div class="flab">shared connection — weave into the opener'
+            f'<span class="sv" id="sv-relationship-{o.id}"></span></div>'
+            f'<input id="hook-{o.id}" class="autosave hookin" data-oid="{o.id}" data-field="relationship" '
+            f'data-action="{_set_action(o.id)}" data-first="{html.escape(first)}" '
+            f'value="{html.escape(o.relationship or "")}" '
+            f'placeholder="e.g. fellow Oregon alum · ex-Edelman · intro via Sam" oninput="hookPreview({o.id})">'
+            f'<div class="hp" id="hp-{o.id}"></div></div>'
         )
-        # Full suggested message: editable textarea + copy controls (the send kit).
+        # suggested message — autosaves; copy controls (no redundant +link button)
         msg_block = (
-            f'<form method="post" action="{root}/outreach/{o.id}/set{keyq}" style="margin-top:10px">'
-            f'<div style="font-size:11px;color:#999;margin-bottom:4px">suggested message</div>'
-            f'<textarea name="message" id="msg{o.id}" rows="8" '
-            f'style="width:100%;box-sizing:border-box;font:13px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;'
-            f'color:#222;padding:10px 12px;border:1px solid #ddd;border-radius:7px;resize:vertical">'
-            f'{html.escape(o.message or "")}</textarea>'
-            f'<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">'
-            f'<button type="button" data-t="msg{o.id}" data-link="{html.escape(track_url)}" onclick="cpML(this)" '
-            f'style="font-size:12px;padding:5px 11px;border:1px solid #2356c7;color:#fff;background:#2356c7;'
-            f'border-radius:5px;cursor:pointer;font-weight:600">Copy message + link</button>'
-            f'<button type="button" data-t="msg{o.id}" onclick="cpEl(this)" '
-            f'style="font-size:12px;padding:5px 10px;border:1px solid #ccc;border-radius:5px;background:#fff;cursor:pointer">Copy message</button>'
-            f'<button type="button" data-v="{html.escape(track_url)}" onclick="cpV(this)" '
-            f'style="font-size:12px;padding:5px 10px;border:1px solid #ccc;border-radius:5px;background:#fff;cursor:pointer">Copy link</button>'
-            f'<button type="submit" '
-            f'style="font-size:12px;padding:5px 10px;border:1px solid #ccc;border-radius:5px;background:#fafafa;cursor:pointer">Save edits</button>'
-            f'</div></form>'
+            f'<div class="fld"><div class="flab">suggested message<span class="sv" id="sv-message-{o.id}"></span></div>'
+            f'<textarea id="msg-{o.id}" class="autosave msg" rows="8" data-oid="{o.id}" data-field="message" '
+            f'data-action="{_set_action(o.id)}">{html.escape(o.message or "")}</textarea>'
+            '<div class="btns">'
+            f'<button type="button" class="prim" data-t="msg-{o.id}" onclick="cpEl(this)">Copy message</button>'
+            f'<button type="button" data-v="{html.escape(track_url)}" onclick="cpV(this)">Copy link</button>'
+            '</div></div>'
         )
+        # private notes — autosaves
+        notes_block = (
+            f'<div class="fld"><div class="flab">notes<span class="sv" id="sv-notes-{o.id}"></span></div>'
+            f'<textarea id="notes-{o.id}" class="autosave notes" rows="2" data-oid="{o.id}" data-field="notes" '
+            f'data-action="{_set_action(o.id)}" placeholder="private — never sent">{html.escape(o.notes or "")}</textarea></div>'
+        )
+        search_blob = html.escape(' '.join(
+            x for x in (o.prospect_name, o.company, o.prospect_title, o.slug) if x).lower())
         cards.append(
-            '<div style="border:1px solid #e7e7e7;border-radius:10px;padding:14px 16px;margin:0 0 12px">'
-            '<div style="display:flex;justify-content:space-between;align-items:baseline">'
-            f'<div><span style="font-size:15px;font-weight:600">{html.escape(o.prospect_name)}</span> '
-            f'<span style="color:#888;font-size:13px">{html.escape(o.prospect_title or "")}'
+            f'<div class="card" id="card-{o.id}" data-status="{o.status}" data-order="{idx}" '
+            f'data-due="{dueval}" data-dueflag="{1 if is_due else 0}" data-search="{search_blob}">'
+            '<div class="chead">'
+            f'<div><span class="pname">{html.escape(o.prospect_name)}</span> '
+            f'<span class="ptitle">{html.escape(o.prospect_title or "")}'
             f'{" · " + html.escape(o.company) if o.company else ""}</span>{rel_badge}</div>'
-            f'<span style="font-size:11px;font-weight:700;color:#fff;background:{color};'
-            f'padding:2px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.03em">{label}</span>'
-            '</div>'
-            f'<div style="font-size:12px;color:#777;margin-top:5px">'
-            f'<a href="{root}/signal/{html.escape(o.slug)}">{html.escape(o.slug)}</a> · {days} · {due} · {open_badge} · '
-            f'<code style="font-size:11px;color:#888">{html.escape(track_url)}</code></div>'
-            f'<div style="margin-top:6px"><a href="{root}/signal/{html.escape(o.slug)}" target="_blank" '
-            f'style="font-size:12px;color:#2356c7;font-weight:600">📊 Open dashboard</a> '
-            f'<span style="font-size:11px;color:#aaa">(preview — doesn\'t count as an open)</span></div>'
-            f'{msg_block}'
-            f'{rel_form}'
-            f'{proposed}'
-            f'<div style="margin-top:10px">{"".join(btns)}</div>'
+            f'<span class="pill" style="background:{color}">{html.escape(label)}</span></div>'
+            f'<div class="meta"><a href="{root}/signal/{html.escape(o.slug)}">{html.escape(o.slug)}</a> · '
+            f'{days} · {due} · {open_badge} · <code>{html.escape(track_url)}</code></div>'
+            f'<div class="dashrow"><a href="{root}/signal/{html.escape(o.slug)}" target="_blank">📊 Open dashboard</a> '
+            '<span class="muted">(preview — doesn\'t count as an open)</span></div>'
+            f'{hook_block}{msg_block}{notes_block}{proposed}'
+            f'<div class="actions"><span class="setlbl">Status</span>{status_sel}{"".join(btns)}</div>'
             '</div>'
         )
+
+    # ---- filter chips: All, Due, then every status that has prospects ----
+    chip_defs = [('all', 'All', len(rows))]
+    if due_count:
+        chip_defs.append(('due', 'Due', due_count))
+    for s, lbl in _OUTREACH_STATUS_LABELS.items():
+        if counts.get(s):
+            chip_defs.append((s, lbl, counts[s]))
+    chips = ''.join(
+        f'<button type="button" class="chip" data-f="{f}" onclick="setFilter(\'{f}\')">'
+        f'{html.escape(lbl)}<span class="cct">{ct}</span></button>'
+        for f, lbl, ct in chip_defs)
+
+    # ---- quick-add: datalist of report slugs so the operator can't fat-finger one ----
+    slug_opts = ''.join(
+        f'<option value="{html.escape(s)}">'
+        for (s,) in db.session.query(SharedResult.slug)
+                              .order_by(SharedResult.created_at.desc()).all())
+    add_form = (
+        '<div id="addbox" class="addbox" style="display:none">'
+        f'<form method="post" action="{root}/outreach/add{keyq}" class="addform">'
+        '<div class="arow"><input name="name" placeholder="Prospect name *" required>'
+        '<input name="slug" list="slugs" placeholder="Report slug *" required></div>'
+        '<div class="arow"><input name="title" placeholder="Title">'
+        '<input name="company" placeholder="Company">'
+        '<select name="channel"><option value="linkedin">LinkedIn</option>'
+        '<option value="email">Email</option></select></div>'
+        '<input name="relationship" placeholder="Shared connection (optional)">'
+        '<input name="insight" placeholder="One-line lead insight (optional)">'
+        '<div class="arow"><button type="submit" class="prim">Add prospect</button>'
+        '<button type="button" onclick="toggleAdd()">Cancel</button></div></form>'
+        f'<datalist id="slugs">{slug_opts}</datalist></div>'
+    )
+
+    # ---- post-action banners ----
+    err = request.args.get('err')
+    added = request.args.get('added')
+    if err:
+        banner = f'<div class="banner err">{html.escape(err)}</div>'
+    elif added:
+        banner = f'<div class="banner ok">Added {html.escape(added)} ✓</div>'
+    else:
+        banner = ''
+
+    cadence_label = html.escape(rows[0].cadence) if rows else "5,14"
+    toolbar = (
+        '<div class="toolbar"><div class="chips">' + chips + '</div>'
+        '<div class="tools"><input id="search" class="search" placeholder="Search name / company…">'
+        '<button type="button" id="sortbtn" onclick="toggleSort()">Sort: default</button>'
+        '<button type="button" class="prim" onclick="toggleAdd()">＋ Add prospect</button></div></div>'
+    )
 
     body = (
         '<!doctype html><html><head><meta charset="utf-8">'
         '<meta name="robots" content="noindex"><meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>Outreach board</title>'
-        '<style>body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;'
-        'margin:28px auto;max-width:780px;color:#1a1a1a;padding:0 16px}'
-        'h1{font-size:20px;margin:0 0 2px}.sub{color:#777;font-size:13px;margin:0 0 20px}'
-        'a{color:#2356c7;text-decoration:none}code{background:#f3f3f3;padding:1px 4px;border-radius:3px}'
-        'button:hover{background:#f0f0f0}</style></head><body>'
-        + _operator_nav('outreach') +
-        '<h1>Outreach board</h1>'
-        f'<p class="sub">{len(rows)} prospects · {active} active · {won} won · '
-        f'opens auto-advance to “Opened” · reminders at days {html.escape(rows[0].cadence) if rows else "5,14"} after sent</p>'
-        + (''.join(cards) or '<p style="color:#999">No prospects yet. Add one with '
-           '<code>/outreach/new?name=&amp;slug=</code>.</p>')
-        + '<script>'
-          'function flash(b){var o=b.textContent;b.textContent="Copied \\u2713";'
-          'setTimeout(function(){b.textContent=o;},1400);}'
-          'function cpEl(b){var t=document.getElementById(b.dataset.t);'
-          'navigator.clipboard.writeText(t.value).then(function(){flash(b);});}'
-          'function cpML(b){var t=document.getElementById(b.dataset.t);'
-          'var v=t.value+"\\n\\nHere\\u2019s the read: "+b.dataset.link;'
-          'navigator.clipboard.writeText(v).then(function(){flash(b);});}'
-          'function cpV(b){navigator.clipboard.writeText(b.dataset.v).then(function(){flash(b);});}'
-          '</script>'
+        '<title>Outreach board</title>' + _OUTREACH_BOARD_CSS + '</head><body>'
+        + _operator_nav('outreach')
+        + '<h1>Outreach board</h1>'
+        + f'<p class="sub">{len(rows)} prospects · {active} active · {won} won · '
+          f'opens auto-advance to “Opened” · reminders at days {cadence_label} after sent</p>'
+        + banner + toolbar + add_form
+        + '<div id="cards">' + ''.join(cards) + '</div>'
+        + ('' if rows else '<p class="emptymsg">No prospects yet — use ＋ Add prospect above.</p>')
+        + '<p id="emptymsg" class="emptymsg" style="display:none">No prospects match this filter.</p>'
+        + _OUTREACH_BOARD_JS
         + '</body></html>'
     )
     return Response(body, mimetype='text/html')
