@@ -5193,7 +5193,7 @@ def _outlet_url_recount(outlet, brand, rival, all_responses):
     return n, bp, cp
 
 
-def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_articles=6):
+def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=8, max_articles=6):
     """The flattering inverse of media-targets: outlets where the brand's earned
     coverage is *working* — either it out-cites rivals in AI's answers (leading) or
     its coverage is verified on the pages AI pulled (page-confirmed present) — so
@@ -5215,14 +5215,17 @@ def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_artic
         n, b, cmax = _outlet_url_recount(dom, brand, rival_name, all_responses)
         pe = r.get('page_evidence') or {}
         bp = pe.get('brand_pages') or 0
-        leads = b > cmax              # a STRICT lead — a tie is not a lead (badge only)
+        leads = b > cmax              # a STRICT lead — a tie is not a lead
         confirmed = bp > 0
-        # A win must be VERIFIED on the pages AI pulled (any margin), OR carry real
-        # answer-level weight: brand cited at least as often as the top rival AND >=3
-        # times. The >=3 floor drops a 2-vs-2 tie at the noise floor (Lumen's lone
-        # unverified techtarget row) while keeping a meaningful co-lead (a 7-vs-7 at a
-        # top outlet). 'leads' (strict) only drives the 'you lead here' badge.
-        if n < 2 or b < 1 or not (confirmed or (b >= cmax and b >= 3)):
+        # A 'strength to defend': AI names the brand in most of the answers citing this
+        # outlet (>=60%) AND no rival clearly out-cites it there (the brand is within
+        # 10% of the top rival, or ahead). Reproducible from the URL-citation recount,
+        # so it survives a reader counting links. A verified-but-clearly-trailing outlet
+        # (Upgraded Points, where United leads 14 to 11) is a pitch target, not a
+        # defend. The n>=3 / b>=2 floor drops thin one-off citations.
+        if n < 3 or b < 2:
+            continue
+        if not (b >= 0.6 * n and b >= 0.9 * cmax):
             continue
         wins.append({
             'outlet': r.get('domain'), 'answers': n, 'brand_mentions': b,
@@ -5230,12 +5233,9 @@ def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_artic
             'pages_checked': pe.get('pages_ok') or 0,
             'leads': leads, 'tier': 'leading' if leads else 'present', 'articles': [],
         })
-    # Lead with the most flattering-yet-credible: outlets the brand leads AND are
-    # page-confirmed, then leading, then page-confirmed-present, then by reach. So
-    # the section never opens on a deficit number when a 'you lead here' win exists.
-    wins.sort(key=lambda w: (-(1 if (w['leads'] and w['page_confirmed']) else 0),
-                             -(1 if w['leads'] else 0), -(1 if w['page_confirmed'] else 0),
-                             -w['answers']))
+    # Defend list: lead with the most influential relationship (most AI answers cite
+    # it), with on-page-verified outlets winning the tiebreak.
+    wins.sort(key=lambda w: (-w['answers'], -(1 if w['page_confirmed'] else 0)))
     wins = wins[:max_wins]
     hosts = {w['outlet']: w for w in wins}
     seen = {h: {} for h in hosts}   # host -> {label: {'llms': set, 'url': url}}
