@@ -5172,17 +5172,23 @@ def _outlet_url_recount(outlet, brand, rival, all_responses):
     presence, using the same matcher as the rest of the report). The stored
     outlet_sov counts ALSO credit answers that merely name the outlet with no link —
     right for share-of-voice, but a 'what AI pulls' claim must survive a recipient
-    counting the citation links, so the wins use this conservative URL count."""
+    counting the citation links, so the wins use this conservative URL count.
+
+    Uses distinctive-token presence matching (NOT the corpus-gated _count_brand_mentions,
+    which undercounts a short-form brand on a per-answer basis — e.g. an answer saying
+    'JetBlue', not 'JetBlue Airways')."""
+    bforms = _brand_match_forms(brand)
+    rforms = _brand_match_forms(rival) if rival else []
     n = bp = cp = 0
     for r in (all_responses or []):
         hosts = [(c.get('domain') or '').lower() for c in (r.get('citations') or [])]
         if not any(h == outlet or h.endswith('.' + outlet) for h in hosts):
             continue
         n += 1
-        one = [r]
-        if _count_brand_mentions(brand, one, is_primary_brand=True) > 0:
+        txt = _response_text(r)
+        if _brand_present_in_text(bforms, txt):
             bp += 1
-        if rival and _count_brand_mentions(rival, one) > 0:
+        if rforms and _brand_present_in_text(rforms, txt):
             cp += 1
     return n, bp, cp
 
@@ -5243,9 +5249,14 @@ def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_artic
                 if label:
                     slot = seen[h].setdefault(label, {'llms': set(), 'url': u})
                     slot['llms'].add(llm)
+    brand_tokens = [f.lower() for f in _brand_match_forms(brand) if ' ' not in f]  # URL-matchable forms
     for w in wins:
         ranked = sorted(seen[w['outlet']].items(), key=lambda x: -len(x[1]['llms']))[:max_articles]
-        w['articles'] = [{'label': lbl, 'url': v['url'], 'llms': sorted(x for x in v['llms'] if x)}
+        w['articles'] = [{'label': lbl, 'url': v['url'], 'llms': sorted(x for x in v['llms'] if x),
+                          # a brand-specific article (URL names the brand, e.g.
+                          # .../jetblue-domestic-first-class-cabin) is far better
+                          # sample coverage than a generic category listicle
+                          'brand_relevant': any(t in (v['url'] or '').lower() for t in brand_tokens)}
                          for lbl, v in ranked]
     return {
         'placements': len(wins),
@@ -5307,7 +5318,11 @@ def _attach_wins_recency(earned_wins, recent_days=120):
             elif a.get('age_days') is not None and a['age_days'] <= 365:
                 base += 1
             return base
-        cands.sort(key=lambda a: (-_score(a), a.get('age_days') if a.get('age_days') is not None else 99999))
+        # Brand-specific articles (URL names the brand — a dedicated piece about YOUR
+        # brand/launch) are the best sample coverage, so they rank ahead of even a
+        # heavily-cited generic category listicle; then by recency/breadth score.
+        cands.sort(key=lambda a: (0 if a.get('brand_relevant') else 1, -_score(a),
+                                  a.get('age_days') if a.get('age_days') is not None else 99999))
         w['articles'] = cands[:2]
         if any(a.get('recent') for a in w['articles']):
             recent_total += 1
@@ -5361,8 +5376,12 @@ def _brand_match_forms(brand):
         if sig:
             forms.append(max(sig, key=len))
     out = []
-    for f in forms:
-        if f and len(f) >= 3 and f.lower() not in {x.lower() for x in out}:
+    for i, f in enumerate(forms):
+        if not f:
+            continue
+        if i > 0 and len(f) < 3:        # keep the full name regardless; derived tokens need >=3
+            continue
+        if f.lower() not in {x.lower() for x in out}:
             out.append(f)
     return out
 
