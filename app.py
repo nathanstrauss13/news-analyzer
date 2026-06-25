@@ -5330,6 +5330,84 @@ def _attach_wins_recency(earned_wins, recent_days=120):
     return earned_wins
 
 
+def _compute_launch_landing(brand, product_name, all_responses, competitors=None):
+    """Launch-landing metrics for the Announcement-Anchored mode: did the brand and
+    its SPECIFIC product surface organically in the category, how AI frames it (new vs
+    absent), who leads the field, and a negative-narrative flag for operator review.
+    Deterministic (reuses the distinctive-token matcher). Returns None on no responses;
+    the 'launch not yet detected' empty case is handled by the caller/template."""
+    resp = [r for r in (all_responses or []) if _response_text(r)]
+    total = len(resp)
+    if not total:
+        return None
+    bforms = _brand_match_forms(brand)
+    pforms = _brand_match_forms(product_name) if (product_name or '').strip() else []
+    NEW_RE = re.compile(
+        r"\b(new|newly|launch\w*|debut\w*|introduc\w+|unveil\w*|upcoming|coming soon|"
+        r"rolling out|roll out|set to (?:launch|debut|offer|introduce)|just announced|"
+        r"recently announced|will (?:offer|launch|introduce|debut|add)|plans to)\b", re.I)
+    NEG_RE = re.compile(
+        r"\b(cut\w*|reduc\w+|shrink\w*|smaller|downgrad\w*|criticism|backlash|complaint\w*|"
+        r"controvers\w+|disappoint\w*|slash\w*|removed|loses?|losing|worse)\b", re.I)
+    EXC_RE = re.compile(
+        r"\b(doesn'?t|does not|don'?t|do not|no longer|lacks?|without|unlike|"
+        r"not (?:offer|have|available|yet))\b", re.I)
+    from collections import defaultdict
+    brand_ans = product_ans = framed_new = neg_ans = exc_ans = 0
+    brand_by_llm = defaultdict(lambda: [0, 0])
+    product_llms = set()
+    neg_snippets = []
+    for r in resp:
+        txt = _response_text(r)
+        llm = r.get('llm') or '?'
+        brand_by_llm[llm][1] += 1
+        b = _brand_present_in_text(bforms, txt)
+        p = bool(pforms) and _brand_present_in_text(pforms, txt)
+        if b:
+            brand_ans += 1
+            brand_by_llm[llm][0] += 1
+        if p:
+            product_ans += 1
+            product_llms.add(llm)
+        # New / negative / exception framing only counts when the term sits NEAR a
+        # brand or product mention (<=110 chars), so a competitor's complaints in the
+        # same answer aren't miscounted as the brand's.
+        bpos = [m.start() for f in (bforms + pforms)
+                for m in re.finditer(r'\b' + re.escape(f) + r'\b', txt, re.I)]
+        if not bpos:
+            continue
+
+        def _near(rx, _txt=txt, _bpos=bpos):
+            for m in rx.finditer(_txt):
+                if any(abs(m.start() - bp) <= 110 for bp in _bpos):
+                    return m
+            return None
+        if _near(NEW_RE):
+            framed_new += 1
+        nm = _near(NEG_RE)
+        if nm:
+            neg_ans += 1
+            if len(neg_snippets) < 3:
+                s, e = max(0, nm.start() - 70), min(len(txt), nm.end() + 70)
+                neg_snippets.append('…' + re.sub(r'\s+', ' ', txt[s:e]).strip() + '…')
+        if b and _near(EXC_RE):
+            exc_ans += 1
+    leaders = sorted([(c.get('name'), c.get('mention_count') or 0)
+                      for c in (competitors or []) if c.get('name')], key=lambda x: -x[1])[:5]
+    field = sorted(leaders + [(brand, brand_ans)], key=lambda x: -x[1])
+    brand_rank = next((i + 1 for i, (n, _) in enumerate(field) if n == brand), None)
+    return {
+        'product_name': (product_name or '').strip(),
+        'landed_answers': brand_ans, 'total': total,
+        'product_answers': product_ans, 'product_llms': sorted(product_llms),
+        'brand_by_llm': {l: v[0] for l, v in brand_by_llm.items()},
+        'framed_as_new': framed_new, 'as_exception': exc_ans,
+        'negative_flag': neg_ans > 0, 'negative_answers': neg_ans, 'negative_snippets': neg_snippets,
+        'leaders': [{'name': n, 'mentions': m} for n, m in leaders],
+        'brand_rank': brand_rank, 'field_size': len(field),
+    }
+
+
 # Assistants whose answers are grounded in live web search (so a brand can
 # surface there from RECENT press / its own site even if the base model has
 # never "heard of" it). The others answer mostly from parametric knowledge, so
@@ -9035,6 +9113,16 @@ def view_signal_report(slug):
         _attach_wins_recency(data['earned_wins'])   # dates + recency bias from CitedPage
     except Exception as _we:
         print("earned wins compute failed (continuing):", str(_we)[:120])
+
+    # Announcement-Anchored mode — launch-landing metrics atop the report (only when
+    # the audit was run as an announcement audit, i.e. it carries a product_name).
+    if data.get('product_name') or data.get('mode') == 'announcement':
+        try:
+            data['launch_landing'] = _compute_launch_landing(
+                data.get('brand') or '', data.get('product_name') or '',
+                data.get('all_responses') or [], data.get('competitors') or [])
+        except Exception as _lle:
+            print("launch landing compute failed (continuing):", str(_lle)[:120])
 
     share_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=slug)
     pdf_url = request.url_root.rstrip('/') + url_for('signal_report_pdf', slug=slug)

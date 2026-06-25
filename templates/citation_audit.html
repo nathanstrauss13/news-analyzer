@@ -383,6 +383,23 @@
         .win-date { font-size: 10.5px; color: #9ab0a4; background: #11201a; border: 1px solid #1c3a2a; padding: 1px 6px; border-radius: 4px; margin-left: 6px; white-space: nowrap; }
         .win-date.recent { color: #0a140d; background: #5aff8a; border-color: #5aff8a; font-weight: 700; }
         .wins-foot { font-size: 12px; color: #7e8f83; margin-top: 14px; line-height: 1.5; font-style: italic; }
+        /* 'Did the launch land?' — Announcement-Anchored mode */
+        .launch-panel { margin: 4px 0 30px; padding: 22px 24px; background: #0c1622; border: 1px solid #1f3a5a; border-left: 4px solid #5ab0ff; border-radius: 14px; }
+        .launch-title { font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #7ac0ff; margin-bottom: 10px; }
+        .launch-lead { font-size: 16px; line-height: 1.5; color: #e8f0fa; margin-bottom: 16px; }
+        .launch-lead strong { color: #fff; }
+        .launch-empty { color: #c8b88a; }
+        .launch-grid { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+        .launch-metric { flex: 1; min-width: 130px; background: #0f1f31; border: 1px solid #1c3553; border-radius: 10px; padding: 12px 14px; }
+        .lm-num { font-size: 26px; font-weight: 800; color: #7ac0ff; line-height: 1; }
+        .lm-label { font-size: 12px; color: #9fb6cf; margin-top: 6px; line-height: 1.4; }
+        .lm-sub { display: block; font-size: 10.5px; color: #6f87a0; margin-top: 3px; }
+        .launch-leaders { font-size: 13px; color: #aab9c9; margin-bottom: 10px; }
+        .ll-label { text-transform: uppercase; font-size: 10.5px; letter-spacing: 1px; color: #6f87a0; margin-right: 6px; }
+        .ll-n { color: #7ac0ff; font-weight: 600; }
+        .launch-flag { font-size: 12.5px; color: #d8c08a; background: #1f1808; border: 1px solid #4a3a12; border-radius: 9px; padding: 10px 13px; line-height: 1.55; }
+        .lf-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #1f1808; background: #d8a93a; padding: 2px 7px; border-radius: 5px; margin-right: 8px; }
+        .lf-snip { color: #c9b48a; font-style: italic; }
         /* Verdict-grouped sections */
         .verdict-group { margin-bottom: 36px; }
         .verdict-group-header {
@@ -2079,6 +2096,23 @@
                         </div>
                     ` : ''}
                 </div>
+                ${data.launch_landing ? `
+                    <div class="launch-panel">
+                        <div class="launch-title">Did the launch land?</div>
+                        ${data.launch_landing.landed_answers > 0 ? `
+                            <div class="launch-lead">Yes — AI names <strong>${esc(data.brand || 'the brand')}</strong> in <strong>${data.launch_landing.landed_answers}</strong> of ${data.launch_landing.total} answers to unbranded ${esc(data.category || 'category')} questions${data.launch_landing.brand_rank ? `, placing it <strong>#${data.launch_landing.brand_rank}</strong> of ${data.launch_landing.field_size} in the category` : ''}.</div>
+                            <div class="launch-grid">
+                                <div class="launch-metric"><div class="lm-num">${data.launch_landing.product_answers}</div><div class="lm-label">answers name ${data.launch_landing.product_name ? `&ldquo;${esc(data.launch_landing.product_name)}&rdquo;` : 'the product'}${(data.launch_landing.product_llms && data.launch_landing.product_llms.length) ? `<span class="lm-sub">${data.launch_landing.product_llms.join(' · ')}</span>` : ''}</div></div>
+                                <div class="launch-metric"><div class="lm-num">${data.launch_landing.framed_as_new}</div><div class="lm-label">frame it as new / launching</div></div>
+                                ${data.launch_landing.as_exception ? `<div class="launch-metric"><div class="lm-num">${data.launch_landing.as_exception}</div><div class="lm-label">note it's not yet available</div></div>` : ''}
+                            </div>
+                            ${(data.launch_landing.leaders && data.launch_landing.leaders.length) ? `<div class="launch-leaders"><span class="ll-label">Category leaders</span>${data.launch_landing.leaders.map(l => ` ${esc(l.name)} <span class="ll-n">${l.mentions}</span>`).join(' · ')}</div>` : ''}
+                            ${data.launch_landing.negative_flag ? `<div class="launch-flag"><span class="lf-tag">Review</span>Negative framing detected near the brand in ${data.launch_landing.negative_answers} answer${data.launch_landing.negative_answers !== 1 ? 's' : ''}: ${data.launch_landing.negative_snippets.map(s => `<span class="lf-snip">${esc(s)}</span>`).join(' &nbsp; ')}</div>` : ''}
+                        ` : `
+                            <div class="launch-lead launch-empty"><strong>Not yet.</strong> AI doesn't surface <strong>${esc(data.brand || 'the brand')}</strong> in answers to ${esc(data.category || 'category')} questions — the launch hasn't propagated into AI yet (too recent, or its coverage isn't being retrieved). A clean re-run in a few weeks will show movement.</div>
+                        `}
+                    </div>
+                ` : ''}
                 ${data.executive_summary ? `
                     <div class="briefing-summary">
                         <div class="briefing-summary-label">What we found</div>
