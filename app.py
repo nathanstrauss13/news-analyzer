@@ -2983,6 +2983,15 @@ def run_outreach_digest():
     except Exception as e:
         print("run_outreach_digest error:", e)
 
+
+def run_daily_traffic_digest():
+    """Daily prospect-opens digest (cron 8:10 UTC). Thin wrapper; late-binds to
+    the impl defined later in the file."""
+    try:
+        _run_daily_traffic_digest()
+    except Exception as e:
+        print("run_daily_traffic_digest error:", e)
+
 # Start scheduler (guard against double-start under reloader)
 if BackgroundScheduler:
     try:
@@ -2991,6 +3000,7 @@ if BackgroundScheduler:
             scheduler.add_job(run_realtime_alerts, 'interval', minutes=10)
             scheduler.add_job(run_daily_alerts, 'cron', hour=8, minute=0)
             scheduler.add_job(run_outreach_digest, 'cron', hour=8, minute=5)
+            scheduler.add_job(run_daily_traffic_digest, 'cron', hour=8, minute=10)
             scheduler.start()
             app._alerts_scheduler_started = True
             print("Alert scheduler started.")
@@ -9251,6 +9261,95 @@ def _send_outreach_digest_email(due):
         SendGridAPIClient(sg_key).send(msg)
     except Exception as e:
         print("outreach digest email failed:", e)
+
+
+def _run_daily_traffic_digest():
+    """Daily roll-up of prospect report opens in the last 24h, emailed to the
+    operator. Human opens only (link-preview bots excluded). Stays quiet on a
+    zero-open day so the inbox only lights up when something happened."""
+    with app.app_context():
+        since = datetime.utcnow() - timedelta(hours=24)
+        clicks = (LinkClick.query
+                  .filter(LinkClick.clicked_at >= since, LinkClick.is_bot.is_(False))
+                  .order_by(LinkClick.clicked_at.asc()).all())
+        if not clicks:
+            return
+        by_token = {}
+        for c in clicks:
+            by_token.setdefault(c.token, []).append(c)
+        rows = []
+        for token, cs in by_token.items():
+            o = Outreach.query.filter_by(link_token=token).first()
+            tl = TrackedLink.query.filter_by(token=token).first()
+            who = (o.prospect_name if o else None) or (tl.recipient if tl else None) or f"link {token}"
+            slug = (o.slug if o else None) or (tl.slug if tl else '')
+            company = (o.company if o else None) or slug
+            # A genuine human open before this window => "repeat", else a first-time opener.
+            prior = (LinkClick.query
+                     .filter(LinkClick.token == token, LinkClick.is_bot.is_(False),
+                             LinkClick.clicked_at < since).first())
+            rows.append({
+                'who': who, 'company': company, 'slug': slug,
+                'opens': len(cs), 'last': cs[-1].clicked_at, 'is_new': prior is None,
+            })
+        rows.sort(key=lambda r: (-int(r['is_new']), -r['opens']))
+        _send_daily_traffic_email(rows, len(clicks))
+
+
+def _send_daily_traffic_email(rows, total_opens):
+    """'Who opened your reports in the last 24h' digest. Skipped silently if
+    SENDGRID_API_KEY or the operator address is unset."""
+    to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not to or not sg_key:
+        return
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+        root = os.environ.get("PUBLIC_BASE_URL", "https://signal.innatec3.com").rstrip('/')
+        n = len(rows)
+        new_n = sum(1 for r in rows if r['is_new'])
+        subject = f"📈 {n} prospect{'s' if n != 1 else ''} opened a report in the last 24h"
+        txt, htm = [], []
+        for r in rows:
+            tag = 'NEW opener' if r['is_new'] else 'repeat'
+            txt.append(
+                f"{r['who']} ({r['company']}) — {r['opens']} open{'s' if r['opens'] != 1 else ''} "
+                f"· {tag} · last {_fmt_et(r['last'])}\n  {root}/signal/{r['slug']}")
+            htm.append(
+                '<tr>'
+                f'<td style="padding:6px 14px 6px 0"><strong>{html.escape(r["who"])}</strong>'
+                f'<span style="color:#888"> · {html.escape(r["company"])}</span></td>'
+                f'<td style="padding:6px 14px;text-align:center">{r["opens"]}</td>'
+                f'<td style="padding:6px 14px;color:{"#1a7f37" if r["is_new"] else "#888"};font-weight:'
+                f'{"600" if r["is_new"] else "400"}">{tag}</td>'
+                f'<td style="padding:6px 0;color:#666">{html.escape(_fmt_et(r["last"]))}</td></tr>'
+            )
+        board = f"{root}/outreach"
+        text_body = (
+            f"{total_opens} human open{'s' if total_opens != 1 else ''} across {n} "
+            f"prospect{'s' if n != 1 else ''} in the last 24h ({new_n} first-time).\n\n"
+            + "\n".join(txt) + f"\n\nBoard: {board}")
+        html_body = (
+            f'<p style="font-size:15px"><strong>{total_opens}</strong> human open'
+            f'{"s" if total_opens != 1 else ""} across <strong>{n}</strong> '
+            f'prospect{"s" if n != 1 else ""} in the last 24h — {new_n} opening for the first time.</p>'
+            '<table style="font-size:13px;border-collapse:collapse">'
+            '<tr style="color:#999;text-align:left;font-size:11px;text-transform:uppercase">'
+            '<td style="padding:0 14px 4px 0">Prospect</td>'
+            '<td style="padding:0 14px 4px;text-align:center">Opens</td>'
+            '<td style="padding:0 14px 4px">First/repeat</td>'
+            '<td style="padding:0 0 4px">Last open</td></tr>'
+            + "".join(htm) + '</table>'
+            f'<p style="font-size:12px;margin-top:14px"><a href="{board}">Open the outreach board →</a></p>')
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[to], subject=subject,
+            plain_text_content=text_body, html_content=html_body,
+        )
+        SendGridAPIClient(sg_key).send(msg)
+    except Exception as e:
+        print("daily traffic digest email failed:", e)
 
 
 def _run_outreach_digest():
