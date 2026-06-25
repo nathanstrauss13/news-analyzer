@@ -6504,6 +6504,22 @@ def _coverage_guard_verdicts(media_targets, outlet_sov, brand):
               f"'opportunity' (no on-page coverage): {', '.join(downgraded[:10])}")
 
 
+def _resort_sample_urls(media_targets, brand):
+    """Surface brand-specific articles first in each outlet's sample_urls. A
+    dedicated piece about the brand/launch (URL names the brand, e.g.
+    .../jetblue-domestic-first-class-cabin) is better sample coverage than a generic
+    category listicle, even one cited more often. Stable sort: preserves the existing
+    (cited-frequency / LLM-selected) order within each group."""
+    tokens = [f.lower() for f in _brand_match_forms(brand) if ' ' not in f]
+    if not tokens:
+        return
+    for t in (media_targets or []):
+        urls = t.get('sample_urls') or []
+        if len(urls) > 1:
+            t['sample_urls'] = sorted(
+                urls, key=lambda u: 0 if any(tk in (u or '').lower() for tk in tokens) else 1)
+
+
 def _category_keywords(category):
     """Pull noun-ish tokens from the category string for substring matching in
     _check_url_topic. Drops common stopwords; lowercases; caps at 10 keywords.
@@ -8098,6 +8114,10 @@ Respond with ONLY valid JSON:
         _coverage_guard_verdicts(analysis.get("media_targets"), analysis.get("outlet_sov"), brand)
     except Exception as _cg_e:
         print("coverage-guard failed (continuing without):", _cg_e)
+    try:
+        _resort_sample_urls(analysis.get("media_targets"), brand)
+    except Exception as _ss_e:
+        print("sample-url resort failed (continuing without):", _ss_e)
     # Rank targets by how prominently the AI surfaces them (responses citing +
     # citation frequency) — relevance + share-of-voice, not coverage tiers.
     try:
@@ -8891,6 +8911,10 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     # Coverage-guard: 'strength' requires on-page coverage; otherwise -> opportunity.
     try:
         _coverage_guard_verdicts(out.get("media_targets"), new_sov, brand)
+    except Exception:
+        pass
+    try:
+        _resort_sample_urls(out.get("media_targets"), brand)
     except Exception:
         pass
     # Rank by AI prominence (responses citing + citation frequency), not coverage.
