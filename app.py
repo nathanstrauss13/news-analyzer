@@ -5167,9 +5167,11 @@ def _wins_article_label(url):
 
 
 def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_articles=6):
-    """The flattering inverse of media-targets: outlets where the brand already
-    OUT-represents rivals in AI's answers — earned coverage that's *working* —
-    ranked page-confirmed first, with the specific articles AI is pulling. Powers
+    """The flattering inverse of media-targets: outlets where the brand's earned
+    coverage is *working* — either it out-cites rivals in AI's answers (leading) or
+    its coverage is verified on the pages AI pulled (page-confirmed present) — so
+    non-dominant brands still show real wins. Ranked verified-first, with the
+    specific articles AI is pulling. Powers
     the report's 'what's working' lead section so a prospect sees validation before
     growth areas. Deterministic, no API. Returns up to max_articles candidate
     articles per outlet (with URLs) so _attach_wins_recency can re-select toward
@@ -5181,15 +5183,25 @@ def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_artic
         cmax = (r.get('top_competitor_at_outlet') or {}).get('mentions_at_outlet') or 0
         pe = r.get('page_evidence') or {}
         bp = pe.get('brand_pages') or 0
-        if n < 2 or b < 1 or b < cmax:   # cited >=2x AND brand leads/ties the top rival
+        leads = b >= cmax
+        # Two tiers, both genuine 'working coverage': the brand OUT-cites rivals at
+        # the outlet (leading), OR its coverage is verified on the pages AI actually
+        # pulled (page-confirmed present) even if a rival is cited more. The second
+        # tier is what lets non-dominant brands show real, honest wins.
+        if n < 2 or b < 1 or not (leads or bp > 0):
             continue
         wins.append({
             'outlet': r.get('domain'), 'answers': n, 'brand_mentions': b,
             'rival_mentions': cmax, 'page_confirmed': bp,
-            'pages_checked': pe.get('pages_ok') or 0, 'articles': [],
+            'pages_checked': pe.get('pages_ok') or 0,
+            'leads': leads, 'tier': 'leading' if leads else 'present', 'articles': [],
         })
-    wins.sort(key=lambda w: (-(1 if w['page_confirmed'] else 0), -w['answers'],
-                             -(w['brand_mentions'] - w['rival_mentions'])))
+    # Lead with the most flattering-yet-credible: outlets the brand leads AND are
+    # page-confirmed, then leading, then page-confirmed-present, then by reach. So
+    # the section never opens on a deficit number when a 'you lead here' win exists.
+    wins.sort(key=lambda w: (-(1 if (w['leads'] and w['page_confirmed']) else 0),
+                             -(1 if w['leads'] else 0), -(1 if w['page_confirmed'] else 0),
+                             -w['answers']))
     wins = wins[:max_wins]
     hosts = {w['outlet']: w for w in wins}
     seen = {h: {} for h in hosts}   # host -> {label: {'llms': set, 'url': url}}

@@ -375,6 +375,7 @@
             color: #7acc7a; background: #0d1a0d; border: 1px solid #1a3a1a;
             padding: 2px 7px; border-radius: 5px;
         }
+        .win-badge.lead { color: #0a140d; background: #5aff8a; border-color: #5aff8a; }
         .win-stat { font-size: 12.5px; color: #b9c4bd; }
         .win-stat strong { color: #eafff0; }
         .win-arts { font-size: 12px; color: #8aa394; margin-top: 5px; line-height: 1.55; }
@@ -2106,11 +2107,11 @@
                 ${(data.earned_wins && data.earned_wins.placements) ? `
                     <div class="wins-panel">
                         <div class="wins-title">Earned coverage AI is already pulling from</div>
-                        <div class="wins-sub">${data.earned_wins.placements} ${data.earned_wins.placements === 1 ? 'placement is' : 'placements are'} doing real work — outlets where AI cites this category and names <strong>${esc(data.brand || 'your brand')}</strong> ahead of rivals, feeding <strong>${data.earned_wins.total_answers}</strong> of the AI answers we sampled${data.earned_wins.page_confirmed ? `, with your coverage verified on the actual pages AI retrieved at <strong>${data.earned_wins.page_confirmed}</strong> of them` : ''}.${data.earned_wins.recent_placements ? ` <strong>${data.earned_wins.recent_placements}</strong> ${data.earned_wins.recent_placements === 1 ? 'is' : 'are'} pulling coverage from the last few months.` : ''}</div>
+                        <div class="wins-sub">${data.earned_wins.placements} ${data.earned_wins.placements === 1 ? 'placement is' : 'placements are'} doing real work — outlets where AI cites this category and <strong>${esc(data.brand || 'your brand')}</strong>'s coverage shows up in the answers, feeding <strong>${data.earned_wins.total_answers}</strong> of the AI answers we sampled${data.earned_wins.page_confirmed ? `, verified on the actual pages AI retrieved at <strong>${data.earned_wins.page_confirmed}</strong> of them` : ''}.${data.earned_wins.recent_placements ? ` <strong>${data.earned_wins.recent_placements}</strong> ${data.earned_wins.recent_placements === 1 ? 'is' : 'are'} pulling coverage from the last few months.` : ''}</div>
                         ${data.earned_wins.wins.map(w => `
                             <div class="win-row">
-                                <div class="win-outlet"><span class="win-domain">${esc(w.outlet)}</span>${w.page_confirmed ? `<span class="win-badge">&check; on-page confirmed</span>` : ''}</div>
-                                <div class="win-stat">Cited in <strong>${w.answers}</strong> AI answers · ${esc(data.brand || 'Brand')} named <strong>${w.brand_mentions}&times;</strong>${w.rival_mentions ? ` vs nearest rival ${w.rival_mentions}&times;` : ''}</div>
+                                <div class="win-outlet"><span class="win-domain">${esc(w.outlet)}</span>${w.leads ? `<span class="win-badge lead">you lead here</span>` : ''}${w.page_confirmed ? `<span class="win-badge">&check; on-page confirmed</span>` : ''}</div>
+                                <div class="win-stat">Cited in <strong>${w.answers}</strong> AI answers · ${esc(data.brand || 'Brand')} named <strong>${w.brand_mentions}&times;</strong>${w.rival_mentions ? ` vs nearest rival ${w.rival_mentions}&times;` : ''}${w.page_confirmed ? ` · verified on <strong>${w.page_confirmed}/${w.pages_checked}</strong> pages AI pulled` : ''}</div>
                                 ${(w.articles && w.articles.length) ? `<div class="win-arts">AI is pulling ${w.articles.slice(0, 2).map(a => `&ldquo;${esc(a.label)}&rdquo;${a.date_label ? `<span class="win-date${a.recent ? ' recent' : ''}">${esc(a.date_label)}</span>` : ''}<span class="win-llms">${a.llms.map(esc).join(' · ')}</span>`).join(' &nbsp; ')}</div>` : ''}
                             </div>
                         `).join('')}
