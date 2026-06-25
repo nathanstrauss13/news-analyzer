@@ -5241,6 +5241,10 @@ def _attach_wins_recency(earned_wins, recent_days=120):
             h = hashlib.sha1((a.get('url') or '').encode()).hexdigest()
             m = meta.get(h) or {}
             t = m.get('title') or ''
+            if t:
+                t = html.unescape(t)                 # decode &#039; etc. (esc() re-escapes on render)
+                # strip a trailing " | Site" / " - Site" / " — Site" suffix (outlet shown already)
+                t = re.sub(r'\s*[|–—\-]\s*[^|–—\-]{1,30}$', '', t).strip() or t
             if 4 < len(t) <= 110:
                 a['label'] = t                       # real headline beats the URL slug
             age = None
@@ -5257,9 +5261,9 @@ def _attach_wins_recency(earned_wins, recent_days=120):
             a['recent'] = (age is not None and 0 <= age <= recent_days)
 
         def _score(a):
-            base = len(a.get('llms') or [])
+            base = len(a.get('llms') or []) * 2      # citation breadth = relevance signal
             if a.get('recent'):
-                base += 4
+                base += 4                            # strong recency bias, but breadth still counts
             elif a.get('age_days') is not None and a['age_days'] <= 365:
                 base += 1
             return base
