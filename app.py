@@ -5335,18 +5335,62 @@ SEARCH_GROUNDED_LLMS = {'Gemini', 'Perplexity'}
 ALL_GROUNDED = os.environ.get("ALL_GROUNDED", "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _compute_per_llm_visibility(brand, all_responses):
-    """Per-assistant brand visibility: for each LLM, how many of ITS responses
-    mention the brand. A headline "20% mindshare" can hide the real story —
-    e.g. a brand cited in 9/10 Gemini responses but 0/10 on ChatGPT/Claude/Grok
-    is concentrated in one (search-grounded) assistant, not broadly embedded.
+_BRAND_GENERIC_TOKENS = {
+    'the', 'and', 'inc', 'corp', 'co', 'llc', 'ltd', 'plc', 'group', 'holding', 'holdings',
+    'company', 'companies', 'airways', 'airlines', 'technologies', 'technology', 'systems',
+    'international', 'global', 'brands', 'labs', 'studio', 'studios', 'media', 'corporation',
+}
 
-    Returns a list of {llm, mentions, total, rate, grounded} sorted by rate
-    desc. Reuses _count_brand_mentions per-LLM so the counting matches the
-    headline number exactly.
+
+def _brand_match_forms(brand):
+    """Distinctive forms for matching the primary brand in answer text: the full name
+    plus its most distinctive token — a CamelCase/ALLCAPS token like 'JetBlue' or
+    'LEGO', else the longest non-generic token — so 'JetBlue Airways' is found via
+    'JetBlue' and 'The LEGO Group' via 'LEGO'. Needed because the corpus-gated
+    _count_brand_mentions fallback misses these on small per-LLM subsets."""
+    brand = (brand or '').strip()
+    if not brand:
+        return []
+    forms = [brand]
+    toks = re.findall(r"[A-Za-z][\w&'’-]*", brand)
+    distinctive = [t for t in toks if re.search(r'[a-z][A-Z]', t) or (t.isupper() and len(t) >= 3)]
+    if distinctive:
+        forms += distinctive
+    else:
+        sig = [t for t in toks if len(t) >= 4 and t.lower() not in _BRAND_GENERIC_TOKENS]
+        if sig:
+            forms.append(max(sig, key=len))
+    out = []
+    for f in forms:
+        if f and len(f) >= 3 and f.lower() not in {x.lower() for x in out}:
+            out.append(f)
+    return out
+
+
+def _response_text(r):
+    return r.get('response') or r.get('text') or r.get('answer') or ''
+
+
+def _brand_present_in_text(forms, text):
+    """True if any distinctive brand form appears (word-boundary, case-insensitive)."""
+    return any(re.search(r'\b' + re.escape(f) + r'\b', text, re.IGNORECASE) for f in (forms or []))
+
+
+def _compute_per_llm_visibility(brand, all_responses):
+    """Per-assistant brand visibility: for each LLM, in how many of ITS responses
+    the brand appears. A headline "20% mindshare" can hide the real story — e.g. a
+    brand cited in 9/10 Gemini responses but 0/10 on ChatGPT/Claude/Grok is
+    concentrated in one (search-grounded) assistant, not broadly embedded.
+
+    Counts answer-PRESENCE directly from the raw response text via distinctive-token
+    matching (NOT the corpus-gated _count_brand_mentions, which undercounts a brand
+    referred to by short form on a per-LLM subset — e.g. Grok/Perplexity saying
+    'JetBlue', not 'JetBlue Airways'). Returns {llm, mentions, total, rate, grounded}
+    sorted by rate desc.
     """
     if not brand or not all_responses:
         return []
+    forms = _brand_match_forms(brand)
     order = []
     seen = set()
     for r in all_responses:
@@ -5358,7 +5402,7 @@ def _compute_per_llm_visibility(brand, all_responses):
     for l in order:
         subset = [r for r in all_responses if r.get('llm') == l]
         n = len(subset)
-        m = _count_brand_mentions(brand, subset, is_primary_brand=True)
+        m = sum(1 for r in subset if _brand_present_in_text(forms, _response_text(r)))
         # Prefer the per-response `grounded` flag (present on audits run after
         # the grounded-retrieval change): an assistant is "grounded" here if a
         # majority of its responses actually retrieved. Fall back to the static
