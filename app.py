@@ -9330,7 +9330,9 @@ def _followup_text(o):
     if is_last:
         close = "I'll leave it here either way — happy to send the full one-pager if AI visibility ever climbs the priority list."
     else:
-        close = "Happy to send the full one-pager if useful — no pitch, just a lens I think is about to matter."
+        close = ("Quick note on why this isn't just another AI dashboard: I verify the actual pages behind "
+                 "each citation rather than counting mentions, which is how I separate the coverage AI is "
+                 "actually leaning on from the noise and spot the real PR openings. Happy to walk through yours.")
     return f"{opener} {lead}{close}".strip()
 
 
