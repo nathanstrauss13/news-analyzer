@@ -6445,6 +6445,20 @@ def _coverage_guard_verdicts(media_targets, outlet_sov, brand):
         # fetch is a false claim — observed on menshealth.com, which bot-stubs
         # datacenter IPs while its cited roundups feature the brand 100+ times.
         if row.get('verdict') == 'strength' and cov in ('category', 'mention'):
+            # Don't downgrade a DOMINANT presence on a failed/partial page-scrape.
+            # If the brand is named in a strong majority of the answers citing this
+            # outlet, AI clearly ties the brand to its coverage — a sampled scrape
+            # finding the brand on 0 pages is far more likely a bot-stub / JS render
+            # / the brand-specific article not being in the sample than genuine
+            # absence (e.g. JetBlue at thepointsguy.com: in 97% of citing answers,
+            # with a dedicated launch article, yet scraped 0/6). Recommending 'pitch
+            # them' when you're in nearly all their answers is just wrong.
+            n_cit = row.get('responses_citing') or 0
+            b_at = row.get('brand_mentions_at_outlet') or 0
+            presence = (b_at / n_cit) if n_cit else 0.0
+            if presence >= 0.5:
+                row['_guard_skipped'] = f"{cov}@{round(presence, 2)}"
+                continue
             row['_pre_guard_verdict'] = 'strength'  # diagnostic
             row['_guard_reason'] = cov
             row['verdict'] = 'opportunity'
