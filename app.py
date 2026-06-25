@@ -5166,6 +5166,27 @@ def _wins_article_label(url):
     return slug[:1].upper() + slug[1:]
 
 
+def _outlet_url_recount(outlet, brand, rival, all_responses):
+    """Reproducible per-outlet counts for the wins claim: among answers that cite
+    `outlet` via a real URL, how many NAME the brand vs the top rival (per-answer
+    presence, using the same matcher as the rest of the report). The stored
+    outlet_sov counts ALSO credit answers that merely name the outlet with no link —
+    right for share-of-voice, but a 'what AI pulls' claim must survive a recipient
+    counting the citation links, so the wins use this conservative URL count."""
+    n = bp = cp = 0
+    for r in (all_responses or []):
+        hosts = [(c.get('domain') or '').lower() for c in (r.get('citations') or [])]
+        if not any(h == outlet or h.endswith('.' + outlet) for h in hosts):
+            continue
+        n += 1
+        one = [r]
+        if _count_brand_mentions(brand, one, is_primary_brand=True) > 0:
+            bp += 1
+        if rival and _count_brand_mentions(rival, one) > 0:
+            cp += 1
+    return n, bp, cp
+
+
 def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_articles=6):
     """The flattering inverse of media-targets: outlets where the brand's earned
     coverage is *working* — either it out-cites rivals in AI's answers (leading) or
@@ -5178,9 +5199,14 @@ def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_artic
     recent placements; callers/templates display the first ~2."""
     wins = []
     for r in (outlet_sov or []):
-        n = r.get('responses_citing') or 0
-        b = r.get('brand_mentions_at_outlet') or 0
-        cmax = (r.get('top_competitor_at_outlet') or {}).get('mentions_at_outlet') or 0
+        dom = (r.get('domain') or '').lower()
+        # Skip outlets the stored (broader 'cited or named') count already says are
+        # tiny, then RECOUNT the survivors from real URL citations only — so the
+        # displayed 'in N answers / named X' survives a recipient counting the links.
+        if not dom or (r.get('responses_citing') or 0) < 2:
+            continue
+        rival_name = (r.get('top_competitor_at_outlet') or {}).get('name') or ''
+        n, b, cmax = _outlet_url_recount(dom, brand, rival_name, all_responses)
         pe = r.get('page_evidence') or {}
         bp = pe.get('brand_pages') or 0
         leads = b > cmax              # a STRICT lead — a tie is not a lead (badge only)

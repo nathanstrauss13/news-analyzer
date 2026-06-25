@@ -2111,7 +2111,7 @@
                         ${data.earned_wins.wins.map(w => `
                             <div class="win-row">
                                 <div class="win-outlet"><span class="win-domain">${esc(w.outlet)}</span>${w.leads ? `<span class="win-badge lead">you lead here</span>` : ''}${w.page_confirmed ? `<span class="win-badge">&check; on-page confirmed</span>` : ''}</div>
-                                <div class="win-stat">Cited in <strong>${w.answers}</strong> AI answers · ${esc(data.brand || 'Brand')} named <strong>${w.brand_mentions}&times;</strong>${w.rival_mentions ? ` vs nearest rival ${w.rival_mentions}&times;` : ''}${w.page_confirmed ? ` · verified on <strong>${w.page_confirmed}/${w.pages_checked}</strong> pages AI pulled` : ''}</div>
+                                <div class="win-stat">Cited in <strong>${w.answers}</strong> AI answers · ${esc(data.brand || 'Brand')} named in <strong>${w.brand_mentions}</strong> of them${w.rival_mentions ? `, the nearest rival in ${w.rival_mentions}` : ''}${w.page_confirmed ? ` · verified on <strong>${w.page_confirmed}/${w.pages_checked}</strong> pages AI pulled` : ''}</div>
                                 ${(w.articles && w.articles.length) ? `<div class="win-arts">AI is pulling ${w.articles.slice(0, 2).map(a => `&ldquo;${esc(a.label)}&rdquo;${a.date_label ? `<span class="win-date${a.recent ? ' recent' : ''}">${esc(a.date_label)}</span>` : ''}<span class="win-llms">${a.llms.map(esc).join(' · ')}</span>`).join(' &nbsp; ')}</div>` : ''}
                             </div>
                         `).join('')}
