@@ -354,6 +354,32 @@
             line-height: 1.55;
             color: #e8f0e8;
         }
+        /* 'What's working' — earned coverage AI is already pulling from */
+        .wins-panel {
+            margin: 0 0 36px;
+            padding: 20px 22px;
+            background: #0d160f;
+            border: 1px solid #1f4a2a;
+            border-left: 4px solid #5aff8a;
+            border-radius: 12px;
+        }
+        .wins-title { font-size: 16px; font-weight: 700; color: #eafff0; margin-bottom: 6px; }
+        .wins-sub { font-size: 13px; color: #9fc7ad; line-height: 1.5; margin-bottom: 14px; }
+        .wins-sub strong { color: #5aff8a; }
+        .win-row { padding: 12px 0; border-top: 1px solid #16331f; }
+        .win-row:first-of-type { border-top: none; padding-top: 2px; }
+        .win-outlet { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+        .win-domain { font-size: 14px; font-weight: 600; color: #fff; }
+        .win-badge {
+            font-size: 10px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
+            color: #7acc7a; background: #0d1a0d; border: 1px solid #1a3a1a;
+            padding: 2px 7px; border-radius: 5px;
+        }
+        .win-stat { font-size: 12.5px; color: #b9c4bd; }
+        .win-stat strong { color: #eafff0; }
+        .win-arts { font-size: 12px; color: #8aa394; margin-top: 5px; line-height: 1.55; }
+        .win-llms { color: #6f8f7c; font-size: 10.5px; margin-left: 5px; }
+        .wins-foot { font-size: 12px; color: #7e8f83; margin-top: 14px; line-height: 1.5; font-style: italic; }
         /* Verdict-grouped sections */
         .verdict-group { margin-bottom: 36px; }
         .verdict-group-header {
@@ -2073,6 +2099,20 @@
                             }).join('')}
                         </div>
                         ${data.per_llm_read ? `<div class="ai-visibility-read">${esc(data.per_llm_read)}</div>` : ''}
+                    </div>
+                ` : ''}
+                ${(data.earned_wins && data.earned_wins.placements) ? `
+                    <div class="wins-panel">
+                        <div class="wins-title">Earned coverage AI is already pulling from</div>
+                        <div class="wins-sub">${data.earned_wins.placements} ${data.earned_wins.placements === 1 ? 'placement is' : 'placements are'} doing real work — outlets where AI cites this category and names <strong>${esc(data.brand || 'your brand')}</strong> ahead of rivals, feeding <strong>${data.earned_wins.total_answers}</strong> of the AI answers we sampled${data.earned_wins.page_confirmed ? `, with your coverage verified on the actual pages AI retrieved at <strong>${data.earned_wins.page_confirmed}</strong> of them` : ''}.</div>
+                        ${data.earned_wins.wins.map(w => `
+                            <div class="win-row">
+                                <div class="win-outlet"><span class="win-domain">${esc(w.outlet)}</span>${w.page_confirmed ? `<span class="win-badge">&check; on-page confirmed</span>` : ''}</div>
+                                <div class="win-stat">Cited in <strong>${w.answers}</strong> AI answers · ${esc(data.brand || 'Brand')} named <strong>${w.brand_mentions}&times;</strong>${w.rival_mentions ? ` vs nearest rival ${w.rival_mentions}&times;` : ''}</div>
+                                ${(w.articles && w.articles.length) ? `<div class="win-arts">AI is pulling ${w.articles.map(a => `&ldquo;${esc(a.label)}&rdquo;<span class="win-llms">${a.llms.map(esc).join(' · ')}</span>`).join(' &nbsp; ')}</div>` : ''}
+                            </div>
+                        `).join('')}
+                        <div class="wins-foot">Your team's earned media, reverse-engineered from what AI actually cites — the coverage already shaping how assistants describe your category. The targets below are where to extend it.</div>
                     </div>
                 ` : ''}
                 ${data.headline_move ? `

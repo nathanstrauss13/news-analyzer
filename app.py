@@ -5143,6 +5143,73 @@ def _enrich_owned_recommendations(brand, category, owned):
     return owned
 
 
+def _wins_article_label(url):
+    """A readable article label from a cited URL's slug (the citation data carries
+    no title). Returns '' for homepages/section roots so they're skipped."""
+    import urllib.parse
+    try:
+        p = urllib.parse.urlparse(url or '')
+    except Exception:
+        return ''
+    segs = [s for s in p.path.split('/') if s and s.lower() not in ('index.html', 'amp')]
+    if not segs:
+        return ''
+    slug = re.sub(r'\.(html?|php|aspx)$', '', segs[-1])
+    slug = re.sub(r'[?#].*$', '', slug)
+    slug = re.sub(r'[-_]+', ' ', slug)
+    slug = re.sub(r'\b\d{4,}\b', '', slug)          # strip trailing numeric IDs from slugs
+    slug = re.sub(r'\s+', ' ', slug).strip()
+    if len(slug) < 4:
+        return ''
+    if len(slug) > 56:
+        slug = slug[:56].rsplit(' ', 1)[0] + '…'
+    return slug[:1].upper() + slug[1:]
+
+
+def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_articles=2):
+    """The flattering inverse of media-targets: outlets where the brand already
+    OUT-represents rivals in AI's answers — earned coverage that's *working* —
+    ranked page-confirmed first, with the specific articles AI is pulling. Powers
+    the report's 'what's working' lead section so a prospect sees validation before
+    growth areas. Deterministic, no API."""
+    wins = []
+    for r in (outlet_sov or []):
+        n = r.get('responses_citing') or 0
+        b = r.get('brand_mentions_at_outlet') or 0
+        cmax = (r.get('top_competitor_at_outlet') or {}).get('mentions_at_outlet') or 0
+        pe = r.get('page_evidence') or {}
+        bp = pe.get('brand_pages') or 0
+        if n < 2 or b < 1 or b < cmax:   # cited >=2x AND brand leads/ties the top rival
+            continue
+        wins.append({
+            'outlet': r.get('domain'), 'answers': n, 'brand_mentions': b,
+            'rival_mentions': cmax, 'page_confirmed': bp,
+            'pages_checked': pe.get('pages_ok') or 0, 'articles': [],
+        })
+    wins.sort(key=lambda w: (-(1 if w['page_confirmed'] else 0), -w['answers'],
+                             -(w['brand_mentions'] - w['rival_mentions'])))
+    wins = wins[:max_wins]
+    hosts = {w['outlet']: w for w in wins}
+    seen = {h: {} for h in hosts}
+    for r in (all_responses or []):
+        llm = r.get('llm')
+        for c in (r.get('citations') or []):
+            h = (c.get('domain') or '').lower()
+            if h in hosts:
+                label = _wins_article_label(c.get('url') or '')
+                if label:
+                    seen[h].setdefault(label, set()).add(llm)
+    for w in wins:
+        ranked = sorted(seen[w['outlet']].items(), key=lambda x: -len(x[1]))[:max_articles]
+        w['articles'] = [{'label': lbl, 'llms': sorted(x for x in llms if x)} for lbl, llms in ranked]
+    return {
+        'placements': len(wins),
+        'total_answers': sum(w['answers'] for w in wins),
+        'page_confirmed': sum(1 for w in wins if w['page_confirmed']),
+        'wins': wins,
+    }
+
+
 # Assistants whose answers are grounded in live web search (so a brand can
 # surface there from RECENT press / its own site even if the base model has
 # never "heard of" it). The others answer mostly from parametric knowledge, so
@@ -8698,6 +8765,14 @@ def view_signal_report(slug):
                   f"(operator, summary_regen={want_refresh})")
         except Exception as e:
             print(f"[rerender] failed for slug={slug}: {e}")
+
+    # 'What's working' lead section — computed on the fly so every report (incl.
+    # frozen/older ones) shows it without a re-render. Deterministic, no API.
+    try:
+        data['earned_wins'] = _compute_earned_wins(
+            data.get('brand') or '', data.get('outlet_sov') or [], data.get('all_responses') or [])
+    except Exception as _we:
+        print("earned wins compute failed (continuing):", str(_we)[:120])
 
     share_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=slug)
     pdf_url = request.url_root.rstrip('/') + url_for('signal_report_pdf', slug=slug)
