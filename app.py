@@ -5166,12 +5166,14 @@ def _wins_article_label(url):
     return slug[:1].upper() + slug[1:]
 
 
-def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_articles=2):
+def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_articles=6):
     """The flattering inverse of media-targets: outlets where the brand already
     OUT-represents rivals in AI's answers — earned coverage that's *working* —
     ranked page-confirmed first, with the specific articles AI is pulling. Powers
     the report's 'what's working' lead section so a prospect sees validation before
-    growth areas. Deterministic, no API."""
+    growth areas. Deterministic, no API. Returns up to max_articles candidate
+    articles per outlet (with URLs) so _attach_wins_recency can re-select toward
+    recent placements; callers/templates display the first ~2."""
     wins = []
     for r in (outlet_sov or []):
         n = r.get('responses_citing') or 0
@@ -5190,24 +5192,83 @@ def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_artic
                              -(w['brand_mentions'] - w['rival_mentions'])))
     wins = wins[:max_wins]
     hosts = {w['outlet']: w for w in wins}
-    seen = {h: {} for h in hosts}
+    seen = {h: {} for h in hosts}   # host -> {label: {'llms': set, 'url': url}}
     for r in (all_responses or []):
         llm = r.get('llm')
         for c in (r.get('citations') or []):
             h = (c.get('domain') or '').lower()
             if h in hosts:
-                label = _wins_article_label(c.get('url') or '')
+                u = c.get('url') or ''
+                label = _wins_article_label(u)
                 if label:
-                    seen[h].setdefault(label, set()).add(llm)
+                    slot = seen[h].setdefault(label, {'llms': set(), 'url': u})
+                    slot['llms'].add(llm)
     for w in wins:
-        ranked = sorted(seen[w['outlet']].items(), key=lambda x: -len(x[1]))[:max_articles]
-        w['articles'] = [{'label': lbl, 'llms': sorted(x for x in llms if x)} for lbl, llms in ranked]
+        ranked = sorted(seen[w['outlet']].items(), key=lambda x: -len(x[1]['llms']))[:max_articles]
+        w['articles'] = [{'label': lbl, 'url': v['url'], 'llms': sorted(x for x in v['llms'] if x)}
+                         for lbl, v in ranked]
     return {
         'placements': len(wins),
         'total_answers': sum(w['answers'] for w in wins),
         'page_confirmed': sum(1 for w in wins if w['page_confirmed']),
         'wins': wins,
     }
+
+
+def _attach_wins_recency(earned_wins, recent_days=120):
+    """Enrich win articles with publication date + real title from the CitedPage
+    cache, then re-select the 2 strongest per outlet biased toward RECENT placements
+    (a piece from the last few months lands harder than a 2-year-old evergreen) and
+    surface the date. Graceful: undated articles keep their slug label and sort after
+    dated ones; on any lookup failure each outlet's candidates are simply trimmed to
+    2 by citation breadth. Requires a DB/app context (CitedPage)."""
+    import hashlib
+    wins = (earned_wins or {}).get('wins') or []
+    urls = [a.get('url') for w in wins for a in (w.get('articles') or []) if a.get('url')]
+    meta = {}
+    if urls:
+        try:
+            hl = {hashlib.sha1(u.encode()).hexdigest(): u for u in urls}
+            for r in CitedPage.query.filter(CitedPage.url_hash.in_(list(hl.keys()))).all():
+                meta[r.url_hash] = {'title': (r.title or '').strip(), 'published': (r.published or '').strip()}
+        except Exception as e:
+            print("wins recency lookup failed (continuing):", str(e)[:120])
+    now = datetime.utcnow()
+    recent_total = 0
+    for w in wins:
+        cands = w.get('articles') or []
+        for a in cands:
+            h = hashlib.sha1((a.get('url') or '').encode()).hexdigest()
+            m = meta.get(h) or {}
+            t = m.get('title') or ''
+            if 4 < len(t) <= 110:
+                a['label'] = t                       # real headline beats the URL slug
+            age = None
+            pub = m.get('published') or ''
+            if pub:
+                try:
+                    dt = parse(pub, fuzzy=True, ignoretz=True)
+                    if 1990 < dt.year <= now.year + 1:
+                        age = (now - dt).days
+                        a['date_label'] = dt.strftime('%b %Y')
+                except Exception:
+                    pass
+            a['age_days'] = age
+            a['recent'] = (age is not None and 0 <= age <= recent_days)
+
+        def _score(a):
+            base = len(a.get('llms') or [])
+            if a.get('recent'):
+                base += 4
+            elif a.get('age_days') is not None and a['age_days'] <= 365:
+                base += 1
+            return base
+        cands.sort(key=lambda a: (-_score(a), a.get('age_days') if a.get('age_days') is not None else 99999))
+        w['articles'] = cands[:2]
+        if any(a.get('recent') for a in w['articles']):
+            recent_total += 1
+    earned_wins['recent_placements'] = recent_total
+    return earned_wins
 
 
 # Assistants whose answers are grounded in live web search (so a brand can
@@ -8771,6 +8832,7 @@ def view_signal_report(slug):
     try:
         data['earned_wins'] = _compute_earned_wins(
             data.get('brand') or '', data.get('outlet_sov') or [], data.get('all_responses') or [])
+        _attach_wins_recency(data['earned_wins'])   # dates + recency bias from CitedPage
     except Exception as _we:
         print("earned wins compute failed (continuing):", str(_we)[:120])
 
