@@ -5183,12 +5183,14 @@ def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=6, max_artic
         cmax = (r.get('top_competitor_at_outlet') or {}).get('mentions_at_outlet') or 0
         pe = r.get('page_evidence') or {}
         bp = pe.get('brand_pages') or 0
-        leads = b >= cmax
-        # Two tiers, both genuine 'working coverage': the brand OUT-cites rivals at
-        # the outlet (leading), OR its coverage is verified on the pages AI actually
-        # pulled (page-confirmed present) even if a rival is cited more. The second
-        # tier is what lets non-dominant brands show real, honest wins.
-        if n < 2 or b < 1 or not (leads or bp > 0):
+        leads = b > cmax              # a STRICT lead — a tie is not a lead (badge only)
+        confirmed = bp > 0
+        # A win must be VERIFIED on the pages AI pulled (any margin), OR carry real
+        # answer-level weight: brand cited at least as often as the top rival AND >=3
+        # times. The >=3 floor drops a 2-vs-2 tie at the noise floor (Lumen's lone
+        # unverified techtarget row) while keeping a meaningful co-lead (a 7-vs-7 at a
+        # top outlet). 'leads' (strict) only drives the 'you lead here' badge.
+        if n < 2 or b < 1 or not (confirmed or (b >= cmax and b >= 3)):
             continue
         wins.append({
             'outlet': r.get('domain'), 'answers': n, 'brand_mentions': b,
