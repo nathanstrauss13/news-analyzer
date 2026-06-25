@@ -8829,7 +8829,7 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
         out['owned'] = _compute_owned_analysis(brand, competitor_counts, _related, ranked_domains,
                                                all_responses, brand_domain_hints=brand_domain_hints)
         if regenerate_summary:
-            _enrich_owned_recommendations(brand, category, out['owned'])
+            _enrich_owned_recommendations(brand, out.get('category') or data.get('category'), out['owned'])
     except Exception as _oe:
         print(f"[rerender] owned analysis failed (continuing): {_oe}")
     competitor_stems = _competitor_domain_stems(competitor_counts)
