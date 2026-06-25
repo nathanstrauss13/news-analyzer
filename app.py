@@ -7361,6 +7361,61 @@ Respond with ONLY valid JSON in this exact format:
     }
 
 
+def _generate_announcement_prompts(brand, announcement_text, product_name=None, tier="free"):
+    """Announcement-Anchored mode: from a specific launch/announcement, derive the
+    SPECIFIC consumer category it enters (the report's scope — auto-fixes the generic-
+    title problem) and generate brand-agnostic category prompts, so the brand and its
+    new product surface ORGANICALLY in AI answers only if the launch actually landed.
+    Returns {brand, category, product_name, announcement_summary, prompts}. Same
+    unbranded discipline as _generate_audit_prompts."""
+    cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
+    prompt_count = cfg["prompt_count"]
+    pname = (product_name or '').strip()
+    resp = anthropic.messages.create(
+        model=CLAUDE_SONNET,
+        max_tokens=4000 if prompt_count > 20 else 2000,
+        messages=[{"role": "user", "content": f"""You are an AI citation strategist measuring whether a specific product ANNOUNCEMENT has propagated into AI assistants' answers.
+
+Brand: "{brand}"
+{f'New product / launch name: "{pname}"' if pname else ''}
+The announcement:
+\"\"\"{(announcement_text or '')[:4000]}\"\"\"
+
+Today's date is {_today_label()}. Frame prompts as a real person searching right now (so "latest"/"current" pulls the past 12 months).
+
+Your job:
+1. From the announcement, identify the SPECIFIC consumer CATEGORY the launch competes in — the narrow category a shopper actually searches, NOT the broad industry. (e.g. a new lie-flat domestic premium seat -> "domestic first class", not "airlines"; a new telehealth GLP-1 program -> "online weight-loss prescriptions", not "healthcare".) This is the report's scope.
+2. Write a one-sentence neutral SUMMARY of what was announced.
+3. Generate exactly {prompt_count} brand-agnostic prompts a real person would type when researching THAT category — so the brand surfaces organically only if the launch has landed in AI answers.
+
+CRITICAL — EVERY PROMPT MUST BE BRAND-AGNOSTIC (name NO brands: NOT "{brand}", NOT the product "{pname}", NOT any competitor):
+- Naming the brand or product guarantees AI echoes it back, inflating the result and destroying it as a "did the launch land organically" signal.
+- Write the underlying category question: "best [category] for [audience]", "what's new in [category] {_today_label()}", "most [attribute] [category] options this year", "which [category] should I choose".
+- Several prompts SHOULD probe what's NEW / recently launched / changed in the category (so a just-launched entrant can surface) — WITHOUT naming it.
+
+Respond with ONLY valid JSON:
+{{
+  "brand": "{brand}",
+  "category": "the specific consumer category",
+  "product_name": "{pname}",
+  "announcement_summary": "one neutral sentence",
+  "prompts": ["prompt 1", "... up to prompt {prompt_count}"]
+}}"""}]
+    )
+    txt = resp.content[0].text
+    m = re.search(r'\{.*\}', txt, re.DOTALL)
+    if not m:
+        raise ValueError("Failed to parse announcement prompt generation response")
+    data = json.loads(m.group())
+    return {
+        "brand": data.get("brand") or brand,
+        "category": data.get("category") or "",
+        "product_name": data.get("product_name") or pname,
+        "announcement_summary": data.get("announcement_summary") or "",
+        "prompts": [p for p in (data.get("prompts") or []) if isinstance(p, str) and p.strip()][:prompt_count],
+    }
+
+
 def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts_override=None):
     """Full agent pipeline: one prompt in, ranked media/partnership/analyst lists out.
 
