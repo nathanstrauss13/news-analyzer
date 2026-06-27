@@ -5008,44 +5008,48 @@ _COMPETITOR_SUBBRAND_PARENTS = {
 
 def _merge_competitor_subbrands(competitor_counts, all_responses):
     """Fold a sub-brand competitor into its parent so AI's asset/ETF answers don't list
-    the same firm twice (e.g. 'SPDR' is State Street's ETF brand). The parent's count is
-    recounted as the union of parent+sub-brand over the raw answers; the sub-brand entry
-    is dropped. Uses a curated map (see above) rather than an LLM to stay deterministic."""
+    the same firm twice (e.g. 'SPDR' is State Street's ETF brand). Idempotent across
+    re-renders: a parent's count is ALWAYS recounted as the union of the parent + its
+    known sub-brands over the raw answers — whether or not the sub-brand is still a
+    separate row — so repeatedly re-rendering doesn't quietly drop the merge once the
+    sub-brand entry has been removed. Curated map (above), not an LLM, to stay
+    deterministic. (Symmetry: the parent house is credited parent+sub-brand just as the
+    audited brand is, e.g. State Street+SPDR == BlackRock+iShares.)"""
     if not competitor_counts or len(competitor_counts) < 2:
         return competitor_counts
-    by_name = {c.get('name'): c for c in competitor_counts if c.get('name')}
+    # Reverse the curated map: parent (lowercased) -> set of known sub-brand tokens.
+    parent_to_subs = {}
+    for sub, parent in _COMPETITOR_SUBBRAND_PARENTS.items():
+        parent_to_subs.setdefault(parent.lower(), set()).add(sub)
+    present = {(c.get('name') or '').lower() for c in competitor_counts}
 
-    def _find_parent(parent_name):
-        if parent_name in by_name:
-            return parent_name
-        pl = parent_name.lower()
-        for nm in by_name:                       # tolerate "State Street Global Advisors" etc.
-            low = nm.lower()
-            if low == pl or low.startswith(pl) or pl.startswith(low):
-                return nm
+    def _subs_for_parent(name_lower):
+        for pl, subs in parent_to_subs.items():
+            if name_lower == pl or name_lower.startswith(pl + ' '):   # "State Street Global Advisors"
+                return subs
         return None
 
-    parents = {}
+    def _parent_present(parent_lower):
+        return any(nl == parent_lower or nl.startswith(parent_lower + ' ') for nl in present)
+
+    drop = []
     for c in competitor_counts:
         nm = c.get('name') or ''
-        target = _COMPETITOR_SUBBRAND_PARENTS.get(nm.lower())
-        if not target:
-            continue
-        parent = _find_parent(target)
-        if parent and parent != nm:
-            parents.setdefault(parent, []).append(nm)
-    if not parents:
-        return competitor_counts
-
-    drop = set()
-    for parent, kids in parents.items():
-        forms = _brand_match_forms(parent)
-        for k in kids:
-            forms += _brand_match_forms(k)
-        union = sum(1 for r in (all_responses or []) if _brand_present_in_text(forms, _response_text(r)))
-        by_name[parent]['mention_count'] = max(by_name[parent].get('mention_count') or 0, union)
-        drop.update(kids)
-    print(f"[merge] folded sub-brand competitors {sorted(drop)} into parents")
+        nml = nm.lower()
+        # Parent row: recount union(parent + its known sub-brands) every time.
+        subs = _subs_for_parent(nml)
+        if subs and all_responses:
+            forms = _brand_match_forms(nm)
+            for s in subs:
+                forms += _brand_match_forms(s)
+            union = sum(1 for r in all_responses if _brand_present_in_text(forms, _response_text(r)))
+            c['mention_count'] = max(c.get('mention_count') or 0, union)
+        # Sub-brand row: drop it, but only when its parent is present to fold into.
+        parent_of = _COMPETITOR_SUBBRAND_PARENTS.get(nml)
+        if parent_of and _parent_present(parent_of.lower()):
+            drop.append(nm)
+    if drop:
+        print(f"[merge] folded sub-brand competitors {sorted(drop)} into parents")
     return [c for c in competitor_counts if c.get('name') not in drop]
 
 
