@@ -4973,6 +4973,60 @@ def _resolve_brand_domains(brand):
     return out
 
 
+# Curated sub-brand -> parent map for de-duplicating the competitor list. Hand-maintained
+# on purpose: an LLM resolver hallucinated false parents (e.g. PIMCO -> Capital Group) and
+# missed real ones, which would corrupt client-facing competitor counts. High-confidence
+# entries only — the key is matched case-insensitively against each competitor name.
+_COMPETITOR_SUBBRAND_PARENTS = {
+    'spdr': 'State Street',
+    'spdrs': 'State Street',
+    'ishares': 'BlackRock',
+}
+
+
+def _merge_competitor_subbrands(competitor_counts, all_responses):
+    """Fold a sub-brand competitor into its parent so AI's asset/ETF answers don't list
+    the same firm twice (e.g. 'SPDR' is State Street's ETF brand). The parent's count is
+    recounted as the union of parent+sub-brand over the raw answers; the sub-brand entry
+    is dropped. Uses a curated map (see above) rather than an LLM to stay deterministic."""
+    if not competitor_counts or len(competitor_counts) < 2:
+        return competitor_counts
+    by_name = {c.get('name'): c for c in competitor_counts if c.get('name')}
+
+    def _find_parent(parent_name):
+        if parent_name in by_name:
+            return parent_name
+        pl = parent_name.lower()
+        for nm in by_name:                       # tolerate "State Street Global Advisors" etc.
+            low = nm.lower()
+            if low == pl or low.startswith(pl) or pl.startswith(low):
+                return nm
+        return None
+
+    parents = {}
+    for c in competitor_counts:
+        nm = c.get('name') or ''
+        target = _COMPETITOR_SUBBRAND_PARENTS.get(nm.lower())
+        if not target:
+            continue
+        parent = _find_parent(target)
+        if parent and parent != nm:
+            parents.setdefault(parent, []).append(nm)
+    if not parents:
+        return competitor_counts
+
+    drop = set()
+    for parent, kids in parents.items():
+        forms = _brand_match_forms(parent)
+        for k in kids:
+            forms += _brand_match_forms(k)
+        union = sum(1 for r in (all_responses or []) if _brand_present_in_text(forms, _response_text(r)))
+        by_name[parent]['mention_count'] = max(by_name[parent].get('mention_count') or 0, union)
+        drop.update(kids)
+    print(f"[merge] folded sub-brand competitors {sorted(drop)} into parents")
+    return [c for c in competitor_counts if c.get('name') not in drop]
+
+
 def _owned_peer_competitors(competitors):
     """Owned analysis compares against brand PEERS only — retailers/marketplaces
     sell many brands' goods, so their owned sites aren't a like-for-like content
@@ -7769,6 +7823,7 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     # when the brand is 'Ultimate (Zendesk Ultimate)') so the analysis never frames
     # the brand as a rival of its own parent. Kept separately as related_brands.
     competitor_counts, related_brands = _split_self_referential_competitors(brand, competitor_counts)
+    competitor_counts = _merge_competitor_subbrands(competitor_counts, all_responses)  # SPDR -> State Street
     # Classify each as brand_peer / retailer / marketplace so the SoV math and
     # the UI can treat them differently — retailers aren't real PR competitors.
     competitor_counts = _classify_competitor_types(brand, category, competitor_counts)
@@ -8955,6 +9010,7 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     # the brand as losing to its own parent. Done AFTER the recount so the parent's
     # mention total is known (passed to the summary as context, not as a rival).
     competitor_counts, _related = _split_self_referential_competitors(brand, competitor_counts)
+    competitor_counts = _merge_competitor_subbrands(competitor_counts, all_responses)  # SPDR -> State Street
     out['competitors'] = competitor_counts
     out['related_brands'] = _related
     if _related:
