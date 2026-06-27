@@ -4249,7 +4249,7 @@ RESPONSES:
         return []
 
 
-def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, editorial_domains, max_outlets=10):
+def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, editorial_domains, max_outlets=10, brand_aliases=None):
     """For each top EDITORIAL MEDIA TARGET, compute the brand's and each
     competitor's mention rate WITHIN the subset of responses that cite that
     outlet, and compare to each brand's overall mention rate across all
@@ -4356,6 +4356,8 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
         return [full_pat, first_pat]
 
     brand_patterns = _patterns_for(brand or '', is_primary=True)
+    for _al in (brand_aliases or []):     # fold sub-brand aliases (e.g. iShares) into the brand's SoV
+        brand_patterns = brand_patterns + _patterns_for(_al, is_primary=True)
     competitor_pat_map = {
         c['name']: _patterns_for(c['name'])
         for c in (competitor_counts or [])
@@ -4893,6 +4895,45 @@ def _registrable_root(dom):
     return parts[-2] if len(parts) >= 2 else (parts[0] if parts else '')
 
 
+_BRAND_ALIASES_CACHE = {}
+
+
+def _resolve_brand_aliases(brand):
+    """Best-effort SUB-BRAND / product-brand names that AI uses interchangeably with the
+    brand (e.g. 'iShares' for BlackRock, 'SPDR' for State Street, 'Google' for Alphabet)
+    via one cheap Haiku call — so the brand isn't undercounted when an answer names only
+    the sub-brand. Returns a list of distinct sub-brand strings; [] on any failure.
+    Cached per-process by brand."""
+    if not brand:
+        return []
+    key = brand.strip().lower()
+    if key in _BRAND_ALIASES_CACHE:
+        return _BRAND_ALIASES_CACHE[key]
+    out = []
+    try:
+        resp = anthropic.messages.create(
+            model=CLAUDE_HAIKU, max_tokens=200,
+            messages=[{"role": "user", "content": (
+                f'The company/brand "{brand}" may have well-known SUB-BRANDS or product-line brands '
+                f'that people and AI assistants use to refer to its products INSTEAD of the company '
+                f'name — e.g. BlackRock\'s ETF brand is "iShares", State Street\'s is "SPDR", '
+                f'Alphabet\'s is "Google". List ONLY such distinct sub-brand names for "{brand}" that '
+                f'an AI answer might use without naming "{brand}" itself. Be conservative — most '
+                f'brands have none. Reply ONLY as a JSON array of strings, e.g. ["iShares"]; if none, [].'
+            )}])
+        txt = (resp.content[0].text or "").strip()
+        m = re.search(r'\[.*\]', txt, re.DOTALL)
+        if m:
+            for a in json.loads(m.group()):
+                if isinstance(a, str) and a.strip() and a.strip().lower() != key and a.strip() not in out:
+                    out.append(a.strip())
+    except Exception as e:
+        print("brand-alias resolve failed (continuing):", str(e)[:120])
+    out = out[:6]
+    _BRAND_ALIASES_CACHE[key] = out
+    return out
+
+
 def _resolve_brand_domains(brand):
     """Best-effort official domain(s) for the brand via one cheap Haiku call, so the
     owned analysis can credit corporate/abbreviation domains that name-matching can't
@@ -5166,7 +5207,7 @@ def _wins_article_label(url):
     return slug[:1].upper() + slug[1:]
 
 
-def _outlet_url_recount(outlet, brand, rival, all_responses):
+def _outlet_url_recount(outlet, brand, rival, all_responses, brand_aliases=None):
     """Reproducible per-outlet counts for the wins claim: among answers that cite
     `outlet` via a real URL, how many NAME the brand vs the top rival (per-answer
     presence, using the same matcher as the rest of the report). The stored
@@ -5177,7 +5218,7 @@ def _outlet_url_recount(outlet, brand, rival, all_responses):
     Uses distinctive-token presence matching (NOT the corpus-gated _count_brand_mentions,
     which undercounts a short-form brand on a per-answer basis — e.g. an answer saying
     'JetBlue', not 'JetBlue Airways')."""
-    bforms = _brand_match_forms(brand)
+    bforms = _brand_match_forms(brand, brand_aliases)
     rforms = _brand_match_forms(rival) if rival else []
     n = bp = cp = 0
     for r in (all_responses or []):
@@ -5193,7 +5234,7 @@ def _outlet_url_recount(outlet, brand, rival, all_responses):
     return n, bp, cp
 
 
-def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=8, max_articles=6):
+def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=8, max_articles=6, brand_aliases=None):
     """The flattering inverse of media-targets: outlets where the brand's earned
     coverage is *working* — either it out-cites rivals in AI's answers (leading) or
     its coverage is verified on the pages AI pulled (page-confirmed present) — so
@@ -5212,7 +5253,7 @@ def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=8, max_artic
         if not dom or (r.get('responses_citing') or 0) < 2:
             continue
         rival_name = (r.get('top_competitor_at_outlet') or {}).get('name') or ''
-        n, b, cmax = _outlet_url_recount(dom, brand, rival_name, all_responses)
+        n, b, cmax = _outlet_url_recount(dom, brand, rival_name, all_responses, brand_aliases=brand_aliases)
         pe = r.get('page_evidence') or {}
         bp = pe.get('brand_pages') or 0
         leads = b > cmax              # a STRICT lead — a tie is not a lead
@@ -5249,7 +5290,7 @@ def _compute_earned_wins(brand, outlet_sov, all_responses, max_wins=8, max_artic
                 if label:
                     slot = seen[h].setdefault(label, {'llms': set(), 'url': u})
                     slot['llms'].add(llm)
-    brand_tokens = [f.lower() for f in _brand_match_forms(brand) if ' ' not in f]  # URL-matchable forms
+    brand_tokens = [f.lower() for f in _brand_match_forms(brand, brand_aliases) if ' ' not in f]  # URL-matchable forms
     for w in wins:
         ranked = sorted(seen[w['outlet']].items(), key=lambda x: -len(x[1]['llms']))[:max_articles]
         w['articles'] = [{'label': lbl, 'url': v['url'], 'llms': sorted(x for x in v['llms'] if x),
@@ -5330,7 +5371,7 @@ def _attach_wins_recency(earned_wins, recent_days=120):
     return earned_wins
 
 
-def _compute_launch_landing(brand, product_name, all_responses, competitors=None):
+def _compute_launch_landing(brand, product_name, all_responses, competitors=None, brand_aliases=None):
     """Launch-landing metrics for the Announcement-Anchored mode: did the brand and
     its SPECIFIC product surface organically in the category, how AI frames it (new vs
     absent), who leads the field, and a negative-narrative flag for operator review.
@@ -5340,7 +5381,7 @@ def _compute_launch_landing(brand, product_name, all_responses, competitors=None
     total = len(resp)
     if not total:
         return None
-    bforms = _brand_match_forms(brand)
+    bforms = _brand_match_forms(brand, brand_aliases)
     pforms = _brand_match_forms(product_name) if (product_name or '').strip() else []
     NEW_RE = re.compile(
         r"\b(new|newly|launch\w*|debut\w*|introduc\w+|unveil\w*|upcoming|coming soon|"
@@ -5435,12 +5476,14 @@ _BRAND_GENERIC_TOKENS = {
 }
 
 
-def _brand_match_forms(brand):
+def _brand_match_forms(brand, aliases=None):
     """Distinctive forms for matching the primary brand in answer text: the full name
     plus its most distinctive token — a CamelCase/ALLCAPS token like 'JetBlue' or
     'LEGO', else the longest non-generic token — so 'JetBlue Airways' is found via
-    'JetBlue' and 'The LEGO Group' via 'LEGO'. Needed because the corpus-gated
-    _count_brand_mentions fallback misses these on small per-LLM subsets."""
+    'JetBlue' and 'The LEGO Group' via 'LEGO'. Plus any resolved SUB-BRAND aliases (e.g.
+    'iShares' for BlackRock) and their distinctive tokens, so the brand isn't
+    undercounted when an answer names only the sub-brand. Needed because the corpus-
+    gated _count_brand_mentions fallback misses these on small per-LLM subsets."""
     brand = (brand or '').strip()
     if not brand:
         return []
@@ -5461,6 +5504,10 @@ def _brand_match_forms(brand):
             continue
         if f.lower() not in {x.lower() for x in out}:
             out.append(f)
+    for al in (aliases or []):          # fold in sub-brand aliases + their distinctive tokens
+        for f in _brand_match_forms(al):
+            if f and f.lower() not in {x.lower() for x in out}:
+                out.append(f)
     return out
 
 
@@ -5473,7 +5520,7 @@ def _brand_present_in_text(forms, text):
     return any(re.search(r'\b' + re.escape(f) + r'\b', text, re.IGNORECASE) for f in (forms or []))
 
 
-def _compute_per_llm_visibility(brand, all_responses):
+def _compute_per_llm_visibility(brand, all_responses, aliases=None):
     """Per-assistant brand visibility: for each LLM, in how many of ITS responses
     the brand appears. A headline "20% mindshare" can hide the real story — e.g. a
     brand cited in 9/10 Gemini responses but 0/10 on ChatGPT/Claude/Grok is
@@ -5487,7 +5534,7 @@ def _compute_per_llm_visibility(brand, all_responses):
     """
     if not brand or not all_responses:
         return []
-    forms = _brand_match_forms(brand)
+    forms = _brand_match_forms(brand, aliases)
     order = []
     seen = set()
     for r in all_responses:
@@ -7691,11 +7738,13 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     # Allowlist-gated, so it cannot introduce non-editorial noise.
     ranked_domains = _augment_citations_with_named_outlets(ranked_domains, all_responses)
     total_citations = sum(d['count'] for d in ranked_domains)
-    brand_mention_count = _count_brand_mentions(brand, all_responses, is_primary_brand=True)
+    brand_aliases = _resolve_brand_aliases(brand)   # sub-brands (e.g. iShares for BlackRock)
+    brand_mention_count = sum(1 for r in all_responses
+                              if _brand_present_in_text(_brand_match_forms(brand, brand_aliases), _response_text(r)))
     # Per-assistant visibility — computed here (before the analysis prompt) so
     # the summary can call out lopsided concentration. (Re-stored on the
     # analysis dict below for the UI.)
-    _per_llm_vis = _compute_per_llm_visibility(brand, all_responses)
+    _per_llm_vis = _compute_per_llm_visibility(brand, all_responses, aliases=brand_aliases)
     _per_llm_read = _llm_visibility_read(brand, _per_llm_vis)
     _per_llm_facts = "; ".join(f"{x['llm']} {x['mentions']}/{x['total']}" for x in _per_llm_vis) or "(n/a)"
     emit("extract", f"Found {total_citations} citations across {len(ranked_domains)} domains · brand cited in {brand_mention_count}/{len(all_responses)} responses", extract_total, extract_total)
@@ -8208,7 +8257,7 @@ Respond with ONLY valid JSON:
         _peer_competitors = [c for c in competitor_counts if c.get('type', 'brand_peer') == 'brand_peer']
         analysis["outlet_sov"] = _compute_outlet_share_of_voice(
             brand, _peer_competitors, all_responses, _sov_eds,
-            max_outlets=max(10, len(_sov_eds))
+            max_outlets=max(10, len(_sov_eds)), brand_aliases=brand_aliases
         )
     except Exception as _sov_e:
         print("outlet share-of-voice computation failed (continuing without):", _sov_e)
@@ -8273,8 +8322,9 @@ Respond with ONLY valid JSON:
         print("headline-move computation failed (continuing without):", _hm_e)
         analysis["headline_move"] = None
     # Per-assistant visibility — which of the 5 AIs actually surface the brand.
+    analysis["brand_aliases"] = brand_aliases
     try:
-        analysis["per_llm_visibility"] = _compute_per_llm_visibility(brand, all_responses)
+        analysis["per_llm_visibility"] = _compute_per_llm_visibility(brand, all_responses, aliases=brand_aliases)
         analysis["per_llm_read"] = _llm_visibility_read(brand, analysis["per_llm_visibility"])
     except Exception as _pv_e:
         print("per-LLM visibility computation failed (continuing without):", _pv_e)
@@ -8837,13 +8887,19 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     editorial_domains = [d for d in ranked_domains if classify_citation_domain(d['domain']) == 'editorial']
     editorial_domains = [d for d in editorial_domains if not _is_brand_own_domain(d['domain'], brand)]
 
-    # Recount the brand's own mention total so the headline number reflects
-    # the current guardrails (e.g. a brand named "On" was previously inflated
-    # to 47/50 by the common-word collision; now correctly 17/50).
+    # Sub-brand aliases (e.g. iShares for BlackRock) — resolve once, reuse if stored.
+    if 'brand_aliases' in data:
+        brand_aliases = data.get('brand_aliases') or []
+    else:
+        brand_aliases = _resolve_brand_aliases(brand)
+    out['brand_aliases'] = brand_aliases
+    # Recount the brand's own mention total (alias-aware, so iShares counts toward
+    # BlackRock) so the headline reflects current guardrails + the brand's sub-brands.
     if all_responses and brand:
-        new_brand_count = _count_brand_mentions(brand, all_responses, is_primary_brand=True)
+        _bforms = _brand_match_forms(brand, brand_aliases)
+        new_brand_count = sum(1 for r in all_responses if _brand_present_in_text(_bforms, _response_text(r)))
         if new_brand_count != (data.get('brand_mention_count') or 0):
-            print(f"[rerender] brand_mention_count recount: "
+            print(f"[rerender] brand_mention_count (alias-aware) recount: "
                   f"{data.get('brand_mention_count')} -> {new_brand_count}")
         out['brand_mention_count'] = new_brand_count
     # Sync the denominator to the cleaned response set so mindshare % is over
@@ -8923,7 +8979,7 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     # Per-assistant visibility — pure-python over cached responses, so the
     # ?fresh/?refresh rerender surfaces it on existing audits too.
     try:
-        out['per_llm_visibility'] = _compute_per_llm_visibility(brand, all_responses)
+        out['per_llm_visibility'] = _compute_per_llm_visibility(brand, all_responses, aliases=brand_aliases)
         out['per_llm_read'] = _llm_visibility_read(brand, out['per_llm_visibility'])
     except Exception:
         out['per_llm_visibility'] = []
@@ -9008,7 +9064,7 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
         _peer_competitors = [c for c in competitor_counts if c.get('type', 'brand_peer') == 'brand_peer']
         new_sov = _compute_outlet_share_of_voice(
             brand, _peer_competitors, all_responses, _sov_eds,
-            max_outlets=max(10, len(_sov_eds)))
+            max_outlets=max(10, len(_sov_eds)), brand_aliases=brand_aliases)
     except Exception as e:
         print(f"[rerender] SoV failed: {e}")
         new_sov = data.get('outlet_sov') or []
@@ -9109,7 +9165,8 @@ def view_signal_report(slug):
     # frozen/older ones) shows it without a re-render. Deterministic, no API.
     try:
         data['earned_wins'] = _compute_earned_wins(
-            data.get('brand') or '', data.get('outlet_sov') or [], data.get('all_responses') or [])
+            data.get('brand') or '', data.get('outlet_sov') or [], data.get('all_responses') or [],
+            brand_aliases=data.get('brand_aliases'))
         _attach_wins_recency(data['earned_wins'])   # dates + recency bias from CitedPage
     except Exception as _we:
         print("earned wins compute failed (continuing):", str(_we)[:120])
@@ -9120,7 +9177,8 @@ def view_signal_report(slug):
         try:
             data['launch_landing'] = _compute_launch_landing(
                 data.get('brand') or '', data.get('product_name') or '',
-                data.get('all_responses') or [], data.get('competitors') or [])
+                data.get('all_responses') or [], data.get('competitors') or [],
+                brand_aliases=data.get('brand_aliases'))
         except Exception as _lle:
             print("launch landing compute failed (continuing):", str(_lle)[:120])
 
