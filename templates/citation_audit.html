@@ -2157,26 +2157,6 @@
                         ${data.per_llm_read ? `<div class="ai-visibility-read">${esc(data.per_llm_read)}</div>` : ''}
                     </div>
                 ` : ''}
-                ${(data.earned_wins && data.earned_wins.placements) ? `
-                    <div style="margin:0 0 30px">
-                        <div class="defend-title">Strengths to defend</div>
-                        <div class="defend-sub">The outlets whose coverage AI <strong>already pulls</strong> when it answers about ${esc(data.category || 'this category')} — and where ${esc(data.brand || 'your brand')} is named. This earned media is doing the heavy lifting for your AI visibility; protect these relationships before competitors close the gap.</div>
-                        ${data.earned_wins.wins.map(w => {
-                            const a = (w.articles && w.articles.length) ? w.articles[0] : null;
-                            return `
-                            <div class="dcard">
-                                <div class="dc-head">
-                                    <span class="dc-outlet">${esc(w.outlet)}</span>
-                                    <span class="dc-tags">${w.page_confirmed ? `<span class="dtag verified">on the page</span>` : ''}<span class="dtag defend">defend</span></span>
-                                </div>
-                                ${a ? `<div class="dc-article">AI is pulling <span class="q">&ldquo;${esc(a.label)}&rdquo;</span>${a.date_label ? `<span class="dc-date${a.recent ? '' : ' old'}">${esc(a.date_label)}</span>` : ''}</div>` : ''}
-                                <div class="dc-stat">${esc(data.brand || 'Your brand')} is named in <strong>${w.brand_mentions} of the ${w.answers}</strong> answers that cite ${esc(w.outlet)}${w.page_confirmed ? `, verified on <strong>${w.page_confirmed} of ${w.pages_checked}</strong> pages AI retrieved` : ''}.</div>
-                                ${(a && a.llms && a.llms.length) ? `<div class="dc-llms">pulled by ${a.llms.map(esc).join(' · ')}</div>` : ''}
-                            </div>`;
-                        }).join('')}
-                        <div class="dc-foot">Your team's earned media, reverse-engineered from what AI actually cites. Where to grow is below.</div>
-                    </div>
-                ` : ''}
                 ${data.headline_move ? `
                     <div class="headline-move">
                         <span class="headline-move-verb">${esc(data.headline_move.verb || 'Do')}</span>
@@ -2222,6 +2202,13 @@
             const sovByDomain = {};
             for (const row of (data.outlet_sov || [])) {
                 if (row && row.domain) sovByDomain[row.domain.toLowerCase()] = row;
+            }
+            // Heavy-lifting placements keyed by outlet, so any card whose outlet
+            // is a "win" can surface the specific named article (title, date,
+            // which assistants pulled it) instead of a generic example URL.
+            const winByDomain = {};
+            for (const w of (((data.earned_wins || {}).wins) || [])) {
+                if (w && w.outlet) winByDomain[w.outlet.toLowerCase()] = w;
             }
 
             const brandLabel = data.brand || 'Brand';
@@ -2349,6 +2336,21 @@
                     if (label.length > 70) label = label.slice(0, 67) + '…';
                     exUrlBlock = `<div class="media-example-url">Example cited page: <a href="${esc(exUrl)}" target="_blank" rel="noopener">${esc(label)} ↗</a></div>`;
                 }
+                // If this outlet is a heavy-lifting placement, surface the
+                // specific named article (title, date, which assistants pulled
+                // it) in place of the generic example-cited-page line — keeps the
+                // placement recognition while the card matches the other groups.
+                const win = winByDomain[(t.domain || '').toLowerCase()];
+                const winArt = (win && win.articles && win.articles.length) ? win.articles[0] : null;
+                if (winArt && winArt.label) {
+                    let aLabel = winArt.url || '';
+                    try { const u = new URL(winArt.url); aLabel = u.hostname.replace(/^www\./, '') + u.pathname; } catch {}
+                    if (aLabel.length > 70) aLabel = aLabel.slice(0, 67) + '…';
+                    const datePill = winArt.date_label ? `<span class="dc-date${winArt.recent ? '' : ' old'}">${esc(winArt.date_label)}</span>` : '';
+                    const linkLine = winArt.url ? `<div class="media-example-url">Heavy-lifting placement: <a href="${esc(winArt.url)}" target="_blank" rel="noopener">${esc(aLabel)} ↗</a></div>` : '';
+                    const pulled = (winArt.llms && winArt.llms.length) ? `<div class="dc-llms">pulled by ${winArt.llms.map(esc).join(' · ')}</div>` : '';
+                    exUrlBlock = `<div class="dc-article" style="margin-top:8px">AI is pulling <span class="q">&ldquo;${esc(winArt.label)}&rdquo;</span>${datePill}</div>${linkLine}${pulled}`;
+                }
                 // Authority bar: a tiny gray track showing this outlet's citation
                 // volume vs. the most-cited outlet in this audit. Verdict color
                 // appears as a thin cap at the right edge of the fill — so
@@ -2389,6 +2391,8 @@
             // answers name, and where competitors out-cite them.)
             const buckets = {};
             const groupDefs = [
+                { key: 'strength', icon: '🛡️', title: 'Strengths to defend',
+                  intro: `Outlets whose AI answers already name ${esc(brandLabel)} as much as — or more than — rivals when they're cited. This earned media is doing the heavy lifting for your AI visibility; protect these relationships before competitors close the gap.` },
                 { key: 'opportunity', icon: '🎯', title: 'Opportunities to pitch',
                   intro: `Outlets where competitors out-cite ${esc(brandLabel)} — the AI names rivals, not you, when it cites them. This is where earned media will move your AI mindshare the most.` },
                 { key: 'neutral', icon: '⚖️', title: 'Holding steady',
@@ -2397,11 +2401,7 @@
                   intro: `Outlets cited only once or twice — too thin to score yet, but worth cultivating early before competitors lock them in.` },
             ];
             groupDefs.forEach(g => buckets[g.key] = []);
-            // Outlets already shown in "Strengths to defend" above are excluded here so
-            // each outlet appears once (defend = strong; the groups below = where to grow).
-            const defendDomains = new Set(((data.earned_wins && data.earned_wins.wins) || []).map(w => (w.outlet || '').toLowerCase()));
             for (const t of targets) {
-                if (defendDomains.has((t.domain || '').toLowerCase())) continue;
                 const sov = sovByDomain[(t.domain || '').toLowerCase()];
                 const v = (sov && buckets[sov.verdict]) ? sov.verdict : 'neutral';
                 buckets[v].push(t);
