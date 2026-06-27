@@ -4534,6 +4534,13 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
         # 10pp slip (e.g. 83% at an outlet) is signal — the brand is essentially
         # ubiquitous everywhere except a few specific places, and those places
         # are where targeted earned media moves the needle the most.
+        # Contested co-lead: an outlet where the brand is a strong named voice
+        # (>= floor of its answers) and over-indexes vs its own baseline, but a
+        # rival narrowly edges it. Relative-only logic buries this as 'neutral';
+        # it's really a strength to DEFEND while closing a small gap.
+        CONTESTED_ABS_FLOOR = 0.65     # named in >= 65% of the outlet's answers
+        CONTESTED_OVERINDEX_PP = 0.05  # and at least 5pp above the brand's own baseline
+        CONTESTED_GAP_PP = 0.15        # and within 15pp of the leader
         verdict = "neutral"
         verdict_label = (
             f"Aligned — {brand} performs in line with its overall AI mindshare here. "
@@ -4603,6 +4610,21 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
                         f"{brand} owns this outlet ({brand_at} of {n_at_outlet} responses) with "
                         f"no competitor present — lock it in with follow-up coverage."
                     )
+            # CONTESTED CO-LEAD: strong, over-indexing presence at an influential
+            # outlet where a rival is only narrowly ahead — a strength to defend,
+            # not the 'neutral' the lead-only test would assign. (e.g. brand named
+            # in 80% of an outlet's answers, +16pp over its baseline, leader at 93%.)
+            elif (brand_patterns and n_at_outlet >= LEAD_MIN_RESPONSES
+                  and brand_sov_at >= CONTESTED_ABS_FLOOR
+                  and brand_diff >= CONTESTED_OVERINDEX_PP
+                  and leader_comp and (comp_sov - brand_sov_at) <= CONTESTED_GAP_PP):
+                verdict = "strength"
+                verdict_label = (
+                    f"{brand} is a dominant named voice here ({brand_at} of {n_at_outlet} "
+                    f"responses, {brand_sov_at:.0%}), over-indexing vs its overall mindshare — "
+                    f"{leader_comp['name']} is only narrowly ahead. Defend this relationship "
+                    f"while you close the gap."
+                )
             elif leader_comp:
                 comp_lead = comp_sov - brand_sov_at
                 if comp_lead >= OPPORTUNITY_PP or (brand_at == 0 and leader_comp["mentions_at_outlet"] >= 2):
