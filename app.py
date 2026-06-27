@@ -8191,7 +8191,11 @@ Respond with ONLY valid JSON:
 
     # Owned Signal Finder lens — same data, owned-media focus.
     try:
-        brand_domain_hints = _resolve_brand_domains(brand)
+        brand_domain_hints = list(_resolve_brand_domains(brand))
+        for _al in (brand_aliases or []):   # sub-brand owned sites (e.g. ishares.com)
+            for _dd in _resolve_brand_domains(_al):
+                if _dd not in brand_domain_hints:
+                    brand_domain_hints.append(_dd)
         analysis['brand_domains'] = brand_domain_hints
         analysis['owned'] = _compute_owned_analysis(
             brand, competitor_counts, related_brands, ranked_domains, all_responses,
@@ -8958,7 +8962,14 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
               f"{', '.join(c.get('name') for c in _related)}")
     # Owned Signal Finder lens — same data, owned-media focus.
     try:
-        brand_domain_hints = out.get('brand_domains') or _resolve_brand_domains(brand)
+        if out.get('brand_domains'):
+            brand_domain_hints = out['brand_domains']
+        else:
+            brand_domain_hints = list(_resolve_brand_domains(brand))
+            for _al in (brand_aliases or []):   # sub-brand owned sites (e.g. ishares.com)
+                for _dd in _resolve_brand_domains(_al):
+                    if _dd not in brand_domain_hints:
+                        brand_domain_hints.append(_dd)
         out['brand_domains'] = brand_domain_hints
         out['owned'] = _compute_owned_analysis(brand, competitor_counts, _related, ranked_domains,
                                                all_responses, brand_domain_hints=brand_domain_hints)
