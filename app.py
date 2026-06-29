@@ -4726,6 +4726,24 @@ def _compute_outlet_share_of_voice(brand, competitor_counts, all_responses, edit
     return out[:max_outlets]
 
 
+# Marquee outlets a PR pro prioritizes as NAMED targets in a multi-outlet "Build"
+# move — established publications with real newsrooms. Used ONLY to rank the named
+# expansion targets (major trades ahead of niche newsletters / blogs); it does not
+# gate which outlets become cards. Citation volume breaks ties within this set.
+MAJOR_TRADE_OUTLETS = {
+    # deep-tech / telecom / 5G / robotics trade press
+    'lightreading.com', 'rcrwireless.com', 'fierce-network.com', 'fiercewireless.com',
+    'telecoms.com', 'telecomtv.com', 'mobileworldlive.com', 'sdxcentral.com',
+    'therobotreport.com', 'spectrum.ieee.org', 'thenewstack.io',
+    # mainstream tech / business / general press
+    'techradar.com', 'technologyreview.com', 'techcrunch.com', 'theverge.com',
+    'wired.com', 'arstechnica.com', 'zdnet.com', 'venturebeat.com', 'engadget.com',
+    'cnet.com', 'reuters.com', 'bloomberg.com', 'wsj.com', 'nytimes.com',
+    'forbes.com', 'fortune.com', 'cnbc.com', 'axios.com', 'ft.com',
+    'businessinsider.com', 'theinformation.com',
+}
+
+
 def _compute_headline_move(brand, outlet_sov, media_targets=None):
     """Pick THE single highest-priority action from the outlet share-of-voice
     data and return a {verb, outlet, text} dict (or None).
@@ -4853,8 +4871,15 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
         # most-cited pitchable outlets to expand into (the lead excluded), so the
         # move reads as "widen across the category press", not a single pitch.
         _gap_pp = max(1, round((_comp_overall - _brand_overall) * 100))
-        _others = sorted((r for r in sov if (r.get('domain') or '') != _topdom and _n(r) >= 1),
-                         key=lambda r: (_n(r), _brand_at(r)), reverse=True)
+        # Rank named expansion targets: established trades (MAJOR_TRADE_OUTLETS)
+        # ahead of niche newsletters/blogs, THEN by citation volume. A PR pro
+        # would rather pitch Light Reading than a robotics newsletter that AI
+        # happened to cite more.
+        _others = sorted(
+            (r for r in sov if (r.get('domain') or '') != _topdom and _n(r) >= 1),
+            key=lambda r: (1 if (r.get('domain') or '').lower() in MAJOR_TRADE_OUTLETS else 0,
+                           _n(r), _brand_at(r)),
+            reverse=True)
         _targets = [r.get('domain') for r in _others[:3] if r.get('domain')]
 
         def _join(names):
