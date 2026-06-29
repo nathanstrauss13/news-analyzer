@@ -9729,7 +9729,9 @@ def _followup_text(o):
             close = ("Quick note on why this isn't just another AI dashboard: I verify the actual pages behind "
                      "each citation rather than counting mentions, which is how I separate the coverage AI is "
                      "actually leaning on from the noise and spot the real PR openings. Happy to walk through yours.")
-    if rel:
+    # Lead with the shared-connection hook, EXCEPT on an opened follow-up where the
+    # hook is a long sentence — there it just restates the original message's opener.
+    if rel and not (o.status == 'opened' and len(rel) > 55):
         # relationship is its own warm clause; capitalize the body that follows.
         sep = '' if rel[-1] in '.!?' else '.'
         opener = f"Hi {first}, {rel}{sep} {body[:1].upper()}{body[1:]}"
@@ -10469,8 +10471,10 @@ def outreach_board():
             '<button type="submit" class="act del" title="Delete prospect">Delete</button></form>')
 
         show_text = o.status in _OUTREACH_ACTIVE
-        proposed = (f'<div class="prop"><span class="lbl">proposed follow-up:</span><br>'
-                    f'{html.escape(_followup_text(o))}</div>') if show_text else ''
+        fu = _followup_text(o) if show_text else ''
+        proposed = (f'<div class="prop"><span class="lbl">proposed follow-up:</span> '
+                    f'<button type="button" class="act" data-v="{html.escape(fu)}" onclick="cpV(this)">Copy</button>'
+                    f'<br>{html.escape(fu)}</div>') if show_text else ''
         rel_show = _clean_relationship(o.relationship)
         rel_badge = (f'<span class="hookbadge">🤝 {html.escape(rel_show)}</span>' if rel_show else '')
 
