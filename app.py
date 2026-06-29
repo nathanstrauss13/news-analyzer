@@ -9707,27 +9707,34 @@ def _followup_text(o):
     opened the link, soft break-up on the final step, and opens with the shared-
     connection hook (UO alum, ex-colleague, mutual contact) when one is set."""
     first = _outreach_first_name(o)
-    insight = (o.insight or '').strip()
     rel = _clean_relationship(o.relationship)
-    steps = _cadence_days(o.cadence)
-    is_last = o.followup_count >= len(steps) - 1
-    lead = f"{insight} " if insight else ""
-    body = ("saw you had a chance to glance at the read; would love your quick reaction."
-            if o.status == 'opened'
-            else "floating this back up in case it got buried.")
+    if o.status == 'opened':
+        # Soft, relationship-first note for prospects who opened but haven't replied:
+        # thank them, no heavy insight, frame it as an illustrative preview, invite a chat.
+        lead = ""
+        body = ("thanks for taking a look. Hope a few of the PR targets and ideas in there were useful, "
+                "maybe even a little counterintuitive.")
+        close = ("It's purely an illustrative preview of the kind of insight a deeper, consultative AI "
+                 "citation analysis can surface. I'd love to chat about how you're thinking about AI "
+                 "visibility from a comms standpoint.")
+    else:
+        insight = (o.insight or '').strip()
+        lead = f"{insight} " if insight else ""
+        steps = _cadence_days(o.cadence)
+        is_last = o.followup_count >= len(steps) - 1
+        body = "floating this back up in case it got buried."
+        if is_last:
+            close = "I'll leave it here either way, happy to send the full one-pager if AI visibility ever climbs the priority list."
+        else:
+            close = ("Quick note on why this isn't just another AI dashboard: I verify the actual pages behind "
+                     "each citation rather than counting mentions, which is how I separate the coverage AI is "
+                     "actually leaning on from the noise and spot the real PR openings. Happy to walk through yours.")
     if rel:
-        # relationship is its own warm clause; don't double up terminal
-        # punctuation, and capitalize the body that follows.
+        # relationship is its own warm clause; capitalize the body that follows.
         sep = '' if rel[-1] in '.!?' else '.'
-        opener = f"Hi {first} — {rel}{sep} {body[:1].upper()}{body[1:]}"
+        opener = f"Hi {first}, {rel}{sep} {body[:1].upper()}{body[1:]}"
     else:
-        opener = f"Hi {first} — {body}"
-    if is_last:
-        close = "I'll leave it here either way — happy to send the full one-pager if AI visibility ever climbs the priority list."
-    else:
-        close = ("Quick note on why this isn't just another AI dashboard: I verify the actual pages behind "
-                 "each citation rather than counting mentions, which is how I separate the coverage AI is "
-                 "actually leaning on from the noise and spot the real PR openings. Happy to walk through yours.")
+        opener = f"Hi {first}, {body}"
     return f"{opener} {lead}{close}".strip()
 
 
