@@ -8460,7 +8460,9 @@ Respond with ONLY valid JSON:
 
 
 # MVP branch: free-tier rate limit + client-IP helper.
-FREE_DAILY_CAP = 10
+# Free audits allowed per client IP per day — the primary cost control now that
+# email is optional. Tunable via FREE_DAILY_CAP env var without a redeploy.
+FREE_DAILY_CAP = max(1, int(os.environ.get("FREE_DAILY_CAP", "3") or "3"))
 
 # Comma-separated list of client IPs exempt from the per-day cap. Set on Render
 # (Environment tab) when you want unlimited audits from a specific IP — your own
