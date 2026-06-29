@@ -10212,6 +10212,17 @@ def outreach_action(oid, action):
     if not _operator_ok():
         abort(404)
     o = Outreach.query.get(oid)
+    if o and action == 'delete':
+        # hard-delete the prospect, its tracked link, and that link's click history
+        tok = o.link_token
+        if tok:
+            LinkClick.query.filter_by(token=tok).delete()
+            tl = TrackedLink.query.filter_by(token=tok).first()
+            if tl:
+                db.session.delete(tl)
+        db.session.delete(o)
+        db.session.commit()
+        return redirect(url_for('outreach_board') + _outreach_keyq())
     if o and action in ('sent', 'followup', 'replied', 'call', 'won', 'cold', 'passed', 'reopen'):
         _outreach_mark(o, action)
         db.session.commit()
@@ -10282,6 +10293,7 @@ _OUTREACH_BOARD_CSS = (
     '.actions form{display:inline}.actions .setlbl{font-size:11px;color:#999}'
     '.statussel{font-size:12px;padding:4px 7px;border:1px solid #ccc;border-radius:5px;background:#fff}'
     '.act{font-size:12px;padding:4px 9px;border:1px solid #ccc;border-radius:5px;background:#fff}.act:hover{background:#f0f0f0}'
+    '.delform{margin-left:auto}.act.del{color:#b00020;border-color:#f0c0c0}.act.del:hover{background:#fdecea}'
     '.emptymsg{color:#999;font-size:13px}'
     '</style>'
 )
@@ -10450,6 +10462,11 @@ def outreach_board():
             for s, lbl in _OUTREACH_STATUS_LABELS.items())
         status_sel = (f'<select class="statussel" data-action="{_set_action(o.id)}" '
                       f'onchange="setStatus(this)" title="Set status manually">{opts}</select>')
+        del_btn = (
+            f'<form method="post" action="{root}/outreach/{o.id}/delete{keyq}" class="delform" '
+            'onsubmit="return confirm(\'Delete this prospect entirely? This permanently removes the '
+            'card and its tracked link, and cannot be undone.\');">'
+            '<button type="submit" class="act del" title="Delete prospect">Delete</button></form>')
 
         show_text = o.status in _OUTREACH_ACTIVE
         proposed = (f'<div class="prop"><span class="lbl">proposed follow-up:</span><br>'
@@ -10498,7 +10515,7 @@ def outreach_board():
             f'<div class="dashrow"><a href="{root}/signal/{html.escape(o.slug)}" target="_blank">📊 Open dashboard</a> '
             '<span class="muted">(preview — doesn\'t count as an open)</span></div>'
             f'{hook_block}{msg_block}{notes_block}{proposed}'
-            f'<div class="actions"><span class="setlbl">Status</span>{status_sel}{"".join(btns)}</div>'
+            f'<div class="actions"><span class="setlbl">Status</span>{status_sel}{"".join(btns)}{del_btn}</div>'
             '</div>'
         )
 
