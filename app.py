@@ -8562,15 +8562,12 @@ def citation_audit():
         except Exception:
             prompts_override = None
 
-    # Two-layer cap on free audits:
-    #   1. Email gate (primary): required email, with a hard lifetime cap per
-    #      email (EMAIL_AUDIT_CAP, default 1). This is the main control against
-    #      runaway LLM spend on shared links — each audit costs real money.
-    #      Also doubles as our lead capture (we know who's running audits and
-    #      what brand they're investigating).
-    #   2. Per-IP per-day cap (secondary): abuse protection on top of the email
-    #      gate, so one browser can't burn through dozens of fake emails.
-    # IPs in FREE_AUDIT_BYPASS_IPS skip BOTH gates — operator self-testing +
+    # Cost control on free audits (email is OPTIONAL — not required to run):
+    #   1. Per-IP per-day cap (primary): FREE_DAILY_CAP audits per IP per day —
+    #      the main control against runaway LLM spend now that email isn't gated.
+    #   2. Per-email lifetime cap (only when an email is voluntarily provided):
+    #      EMAIL_AUDIT_CAP (default 1), and we capture the lead.
+    # IPs in FREE_AUDIT_BYPASS_IPS skip BOTH caps — operator self-testing +
     # close-partner walkthroughs don't pollute the lead table.
     today = date.today()
     ip = _client_ip()
@@ -8578,33 +8575,31 @@ def citation_audit():
     if _ip_is_exempt_from_cap(ip):
         print(f"[audit] FREE_AUDIT_BYPASS_IPS hit: {ip} (unlimited)")
     else:
-        # Email gate — captures the lead before any LLM call.
+        # Email is optional. If one is provided (e.g. a future opt-in field or
+        # the demo flow), capture it as a lead and honor the per-email lifetime
+        # cap. With no email, the per-IP/day cap below is the sole cost control.
         lead_email = _normalize_email(request.form.get('email', ''))
-        if not lead_email:
-            return jsonify({
-                "error": "Please enter a valid email so we can send you the report and any updates.",
-                "code": "email_required",
-            }), 400
-        lead = AuditLead.query.filter_by(email=lead_email).first()
-        if lead and lead.audit_count >= _EMAIL_AUDIT_CAP:
-            return jsonify({
-                "error": ("You've already used your free audit. For more, talk to us about a bespoke "
-                          "audit — we'll cover your category in depth and walk through the findings live."),
-                "code": "email_rate_limited",
-            }), 429
-        if lead:
-            lead.audit_count += 1
-            lead.last_seen = datetime.utcnow()
-            lead.last_ip = ip
-            lead.last_problem_statement = problem_statement[:1000]
-        else:
-            lead = AuditLead(
-                email=lead_email, audit_count=1,
-                first_seen=datetime.utcnow(), last_seen=datetime.utcnow(),
-                last_ip=ip, last_problem_statement=problem_statement[:1000],
-            )
-            db.session.add(lead)
-        # Per-IP per-day abuse cap.
+        if lead_email:
+            lead = AuditLead.query.filter_by(email=lead_email).first()
+            if lead and lead.audit_count >= _EMAIL_AUDIT_CAP:
+                return jsonify({
+                    "error": ("You've already used your free audit. For more, talk to us about a bespoke "
+                              "audit — we'll cover your category in depth and walk through the findings live."),
+                    "code": "email_rate_limited",
+                }), 429
+            if lead:
+                lead.audit_count += 1
+                lead.last_seen = datetime.utcnow()
+                lead.last_ip = ip
+                lead.last_problem_statement = problem_statement[:1000]
+            else:
+                lead = AuditLead(
+                    email=lead_email, audit_count=1,
+                    first_seen=datetime.utcnow(), last_seen=datetime.utcnow(),
+                    last_ip=ip, last_problem_statement=problem_statement[:1000],
+                )
+                db.session.add(lead)
+        # Per-IP per-day abuse cap — the primary cost control now email is optional.
         use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
         if use and use.count >= FREE_DAILY_CAP:
             return jsonify({
@@ -8617,7 +8612,7 @@ def citation_audit():
             use = FreeAuditUse(ip=ip, day=today, count=1)
             db.session.add(use)
         db.session.commit()
-        print(f"[audit] lead capture: {lead_email} (audit #{lead.audit_count})")
+        print(f"[audit] {'lead capture: ' + lead_email if lead_email else 'anonymous audit'} ip={ip}")
 
     user_id = user.id if user else None
     cfg = TIER_CONFIG[tier]

@@ -1593,9 +1593,7 @@
 
         <div class="form-section" id="formSection">
             <div class="input-group">
-                <input id="emailInput" type="email" placeholder="Your work email" autocomplete="email" inputmode="email" style="width:100%;padding:14px 16px;background:#0f1117;border:1px solid #2a2a3a;border-radius:10px;color:#e8e8f0;font-size:14px;font-family:inherit;box-sizing:border-box;margin-bottom:10px">
                 <textarea id="problemInput" placeholder="e.g. I want ACME Ventures to be known as the go-to VC for early-stage climate founders" rows="3"></textarea>
-                <div style="margin-top:8px;font-size:12px;color:#777;text-align:center">We'll send your report link to this address. One free audit per email — for more, talk to us.</div>
             </div>
 
             <!-- MVP branch: tier picker removed. Audit is always anonymous free tier.
@@ -1930,17 +1928,10 @@
             if (!input) return;
             const tier = 'free';
 
-            // Email gate: required, basic format check client-side (server
-            // re-validates). One free audit per email — see footer copy.
+            // Email is optional — sent if an opt-in field is present, otherwise
+            // blank. The audit runs either way (server enforces the per-IP cap).
             const emailEl = document.getElementById('emailInput');
             const email = (emailEl ? emailEl.value : '').trim();
-            const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
-            if (!emailOk) {
-                document.getElementById('errorMsg').textContent = 'Please enter a valid work email so we can send you the report.';
-                document.getElementById('errorMsg').classList.add('active');
-                if (emailEl) emailEl.focus();
-                return;
-            }
 
             lastAuditContext = { slug: null, problem_statement: input, tier: tier, email: email };
 
@@ -1981,13 +1972,6 @@
                         document.getElementById('errorMsg').classList.add('active');
                         // Auto-open the bespoke modal so they see the upsell.
                         setTimeout(() => openDemoModal(), 800);
-                        return;
-                    }
-                    if (data.code === 'email_required') {
-                        document.getElementById('errorMsg').textContent = data.error;
-                        document.getElementById('errorMsg').classList.add('active');
-                        const _ee = document.getElementById('emailInput');
-                        if (_ee) _ee.focus();
                         return;
                     }
                     document.getElementById('errorMsg').textContent = data.error || 'Something went wrong.';
