@@ -9714,11 +9714,10 @@ def _followup_text(o):
         # Soft, relationship-first note for prospects who opened but haven't replied:
         # thank them, no heavy insight, frame it as an illustrative preview, invite a chat.
         lead = ""
-        body = ("thanks for taking a look. Hope a few of the PR targets and ideas in there were useful, "
-                "maybe even a little counterintuitive.")
-        close = ("It's purely an illustrative preview of the kind of insight a deeper, consultative AI "
-                 "citation analysis can surface. I'd love to chat about how you're thinking about AI "
-                 "visibility from a comms standpoint.")
+        body = "thanks for taking a look. Hope it piqued your interest."
+        close = ("It's purely an illustrative preview of the kind of insights consultative AI citation "
+                 "analysis can surface. I'd love to chat about how you're thinking about AI visibility "
+                 "from a comms standpoint.")
     else:
         insight = (o.insight or '').strip()
         lead = f"{insight} " if insight else ""
