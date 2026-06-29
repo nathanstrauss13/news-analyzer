@@ -9659,16 +9659,18 @@ def link_stats():
 
 _OUTREACH_STATUS_LABELS = {
     'queued': 'Queued', 'sent': 'Sent', 'opened': 'Opened',
+    'followed_up': 'Followed up',
     'replied': 'Replied', 'call_scheduled': 'Call scheduled',
     'won': 'Won', 'cold': 'Cold', 'passed': 'Passed',
 }
 _OUTREACH_STATUS_COLORS = {
     'queued': '#9aa0a6', 'sent': '#2356c7', 'opened': '#1db954',
+    'followed_up': '#e8820c',
     'replied': '#0a8a6f', 'call_scheduled': '#7a3ff2',
     'won': '#0a8a0a', 'cold': '#b00020', 'passed': '#9aa0a6',
 }
 # Statuses still "in play" for follow-up reminders.
-_OUTREACH_ACTIVE = ('sent', 'opened')
+_OUTREACH_ACTIVE = ('sent', 'opened', 'followed_up')
 
 
 def _cadence_days(cadence):
@@ -9750,6 +9752,7 @@ def _outreach_mark(o, action):
         o.followup_count = 0
         o.next_followup_due = _outreach_compute_due(o)
     elif action == 'followup':
+        o.status = 'followed_up'
         o.followup_count = (o.followup_count or 0) + 1
         o.next_followup_due = _outreach_compute_due(o)
     elif action == 'replied':
@@ -9777,7 +9780,7 @@ def _outreach_apply_status(o, status):
     now = datetime.utcnow()
     o.last_activity_at = now
     o.status = status
-    if status in ('sent', 'opened'):
+    if status in ('sent', 'opened', 'followed_up'):
         o.sent_at = o.sent_at or now
         o.next_followup_due = _outreach_compute_due(o)
     elif status == 'queued':
@@ -10238,6 +10241,8 @@ _OUTREACH_ACTIONS = {
              ('call', 'Call set'), ('cold', 'Cold'), ('passed', 'Pass')],
     'opened': [('followup', 'Logged follow-up'), ('replied', 'Replied'),
                ('call', 'Call set'), ('cold', 'Cold'), ('passed', 'Pass')],
+    'followed_up': [('followup', 'Logged another follow-up'), ('replied', 'Replied'),
+                    ('call', 'Call set'), ('cold', 'Cold'), ('passed', 'Pass')],
     'replied': [('call', 'Call set'), ('won', 'Won'), ('passed', 'Pass')],
     'call_scheduled': [('won', 'Won'), ('passed', 'Pass')],
     'won': [('reopen', 'Reopen')],
