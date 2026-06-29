@@ -3094,9 +3094,24 @@ NON_EDITORIAL_DOMAINS = {
     # Job boards
     'indeed.com', 'glassdoor.com', 'ziprecruiter.com',
     # Pure research / not pitchable as editorial
-    'pubmed.ncbi.nlm.nih.gov', 'ncbi.nlm.nih.gov', 'who.int', 'cdc.gov',
+    'pubmed.ncbi.nlm.nih.gov', 'ncbi.nlm.nih.gov', 'pmc.ncbi.nlm.nih.gov',
+    'who.int', 'cdc.gov',
     'arxiv.org', 'researchgate.net', 'sciencedirect.com', 'springer.com',
-    'jstor.org', 'nature.com', 'science.org',
+    'link.springer.com', 'jstor.org', 'nature.com', 'science.org',
+    # Academic publishers & preprint servers (LLMs lean on these heavily for
+    # deep-tech categories, but they are not pitchable earned media).
+    'mdpi.com', 'ieeexplore.ieee.org', 'wiley.com', 'onlinelibrary.wiley.com',
+    'tandfonline.com', 'dl.acm.org', 'acm.org', 'semanticscholar.org',
+    'iopscience.iop.org', 'frontiersin.org', 'preprints.org', 'biorxiv.org',
+    'medrxiv.org', 'ssrn.com', 'iscience.org',
+    # NOTE: keep technologyreview.com and spectrum.ieee.org as editorial — those
+    # ARE pitchable. Only the academic-paper subdomains above are excluded.
+    # Standards bodies & industry associations (partnership/speaking targets, not
+    # pitchable earned media).
+    '3gpp.org', 'gsma.com', 'bluetooth.com', 'ietf.org', 'etsi.org', 'itu.int',
+    'o-ran.org', 'ieee802.org', 'iso.org', 'wi-fi.org',
+    # Patent databases
+    'uspto.gov', 'patents.uspto.gov', 'image-ppubs.uspto.gov', 'patents.google.com',
     # Hotel-industry SaaS + consortium + promotional sites (not pitchable editorial)
     'engine.com',                       # corporate booking SaaS
     'fcmtravel.com',                    # corporate travel SaaS
