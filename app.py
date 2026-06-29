@@ -4813,17 +4813,37 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
     # its one lead to opportunity, yet Maintain fired and falsely claimed it
     # "leads at the outlets AI cites most"). Require a real lead instead.
     _present = any(r.get('verdict') == 'strength' for r in sov)
+    # "Maintain" claims the brand is top-tier — so it must actually lead (or sit
+    # within a hair of) the field by OVERALL mindshare, not merely lead its few
+    # sampled outlets. A brand that leads where it's cited but trails badly
+    # overall (e.g. ZaiNar 14% vs Ericsson 24%) is broadly-discoverable-but-
+    # behind: the honest move is BUILD (grow reach), not "hold, nothing urgent."
+    _overall_leader = _brand_overall >= (_comp_overall - 0.03)
     if (not _material_move) and (not _clear_leader) and _present:
         _won = sorted((r for r in sov if _brand_at(r) > 0),
                       key=lambda r: (_n(r), _brand_at(r)), reverse=True)
         _top = _won[0] if _won else None
-        _where = (f" — keep your cadence at {_top.get('domain')} and the other outlets where "
-                  f"you already lead" if _top else "")
-        text = (f"Maintain. {b} already holds top-tier AI visibility in this category — it leads "
-                f"or ties the field at the outlets AI cites most, and no competitor is pulling "
-                f"away. There's no urgent earned-media lever right now{_where}; re-audit next "
-                f"quarter to catch any shift early.")
-        return {"verb": "Maintain", "outlet": (_top.get('domain') if _top else None), "text": text}
+        _topdom = _top.get('domain') if _top else None
+        if _overall_leader:
+            _where = (f" — keep your cadence at {_topdom} and the other outlets where "
+                      f"you already lead" if _topdom else "")
+            text = (f"Maintain. {b} already holds top-tier AI visibility in this category — it leads "
+                    f"or ties the field at the outlets AI cites most, and no competitor is pulling "
+                    f"away. There's no urgent earned-media lever right now{_where}; re-audit next "
+                    f"quarter to catch any shift early.")
+            return {"verb": "Maintain", "outlet": _topdom, "text": text}
+        # Broadly discoverable but trailing overall — grow reach, don't "hold."
+        _gap_pp = max(1, round((_comp_overall - _brand_overall) * 100))
+        if _topdom:
+            _tail = (f" Hold your cadence at {_topdom} where you already lead, then widen the "
+                     f"aperture; re-audit next quarter to track the climb.")
+        else:
+            _tail = " Re-audit next quarter to track the climb."
+        text = (f"Build. {b} is broadly discoverable — named by AI across the category — but it "
+                f"appears in only a minority of answers and trails the category leader by ~{_gap_pp} "
+                f"points. The lever isn't any single outlet; it's expanding earned coverage into the "
+                f"category questions where AI names competitors instead.{_tail}")
+        return {"verb": "Build", "outlet": _topdom, "text": text}
 
     move_pool = opportunities + contested_strengths
     if move_pool:
@@ -8207,7 +8227,7 @@ Respond with ONLY valid JSON:
       "analyst_play": "One sentence on the specific analyst relations move: which evaluation to target, briefing cadence to establish, sponsored research, or client subscription that would shift citations"
     }}
   ],
-  "executive_summary": "EXACTLY 3 sentences — this is the 'What we found' headline a comms director will paste into a CMO briefing. Each sentence must carry a specific, non-obvious finding tied to the actual numbers. Lead with the single most important insight, not a throat-clearing preamble. STRUCTURE:\n  Sentence 1 — THE POSITION: {brand}'s AI mindshare ({brand_mention_count} of {len(all_responses)} responses) framed against the top competitor's count. If {brand} >= top competitor, lead with strength ('{brand} leads/holds the AI conversation in [category]…'); if behind, lead with the gap. NEVER say 'lacks authority' if the brand out-mentions competitors.\n  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. STRONGLY PREFER the PER-ASSISTANT VISIBILITY finding when it's lopsided — if the brand surfaces on only one or two of the five assistants and is absent from the rest, lead the surprise with that (e.g. 'almost all of {brand}'s visibility is Gemini; it's absent from ChatGPT, Claude, and Grok'), because it means the brand is search-surfaced but not embedded in the models people use most. Otherwise: a specific outlet where the brand is absent but a competitor owns it; analyst firms (Gartner/Forrester/etc.) dominating citations over editorial press; a competitor you'd expect to lead that doesn't. Name the specific entity + number.\n  Sentence 3 — THE MOVE: the one highest-leverage action this data points to. Tie it to a named outlet or a named competitive dynamic from the strengths/opportunities lists. If the brand is already top-tier with no material lever (no real gap to pitch, no genuine lead to defend, no competitor running away), say so honestly — the play is to MAINTAIN and extend, NOT a manufactured pitch. Use action verbs: defend, displace, cultivate, pitch, maintain.\n  RULES: No filler ('this audit reveals…', 'in today's landscape…'). No generic 'competitors dominate' unless the per-outlet data supports it (empty competitors_citing = open whitespace, not a bloodbath). Discuss analysts ONLY if analyst_targets has entries OR analyst firms appear heavily in the citation data; silence is fine for consumer categories. Write it so a CMO who reads ONLY these 3 sentences still walks away with the strategic takeaway."
+  "executive_summary": "EXACTLY 3 sentences — this is the 'What we found' headline a comms director will paste into a CMO briefing. Each sentence must carry a specific, non-obvious finding tied to the actual numbers. Lead with the single most important insight, not a throat-clearing preamble. STRUCTURE:\n  Sentence 1 — THE POSITION: {brand}'s AI mindshare ({brand_mention_count} of {len(all_responses)} responses) framed against the top competitor's count. If {brand} >= top competitor, lead with strength ('{brand} leads/holds the AI conversation in [category]…'); if behind, lead with the gap. NEVER say 'lacks authority' if the brand out-mentions competitors.\n  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. STRONGLY PREFER the PER-ASSISTANT VISIBILITY finding when it's lopsided — if the brand surfaces on only one or two of the five assistants and is absent from the rest, lead the surprise with that (e.g. 'almost all of {brand}'s visibility is Gemini; it's absent from ChatGPT, Claude, and Grok'), because it means the brand is search-surfaced but not embedded in the models people use most. Otherwise: a specific outlet where the brand is absent but a competitor owns it; analyst firms (Gartner/Forrester/etc.) dominating citations over editorial press; a competitor you'd expect to lead that doesn't. Name the specific entity + number.\n  Sentence 3 — THE MOVE: the one highest-leverage action this data points to. Tie it to a named outlet or a named competitive dynamic from the strengths/opportunities lists. Say MAINTAIN/hold ONLY if the brand LEADS or co-leads the category by overall mindshare with no material lever; if the brand TRAILS the leader overall (lower mindshare) — even when it leads the few outlets that cite it — it is NOT top-tier, so the move is to BUILD/GROW reach (expand earned coverage into the lanes where AI names competitors instead), never 'maintain' or 'no urgent lever'. Use action verbs: defend, displace, cultivate, pitch, build, maintain.\n  RULES: No filler ('this audit reveals…', 'in today's landscape…'). No generic 'competitors dominate' unless the per-outlet data supports it (empty competitors_citing = open whitespace, not a bloodbath). Discuss analysts ONLY if analyst_targets has entries OR analyst firms appear heavily in the citation data; silence is fine for consumer categories. Write it so a CMO who reads ONLY these 3 sentences still walks away with the strategic takeaway."
 }}"""
 
     # Retry once with reduced output budget on APITimeoutError. The most common
@@ -8925,7 +8945,7 @@ THE #1 MOVE (already computed from this data — Sentence 3 MUST reflect THIS mo
 Write EXACTLY 3 sentences. Lead with the single most important insight, no preamble.
   Sentence 1 — THE POSITION: {brand}'s mindshare framed against the top competitor's count. If {brand} >= top competitor, lead with strength; if behind, lead with the gap. NEVER say 'lacks authority' if {brand} out-mentions competitors.
   Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. STRONGLY PREFER the per-assistant concentration when it's lopsided — e.g. "{brand}'s visibility is almost entirely one assistant (Gemini 9/10) and absent from ChatGPT, Claude, and Grok". Otherwise surface the sharpest share-of-voice gap — name a specific OUTLET and the competitor out-citing {brand} there (but NOT the #1-move outlet — save that for Sentence 3).
-  Sentence 3 — THE MOVE: build this around THE #1 MOVE above. If its verb is "Maintain" (the brand is top-tier with no urgent lever), say the brand already wins broadly and the play is to HOLD and extend — do NOT manufacture a pitch or name a competitor to displace. Otherwise name the outlet and the competitor to act on. Use action verbs: pitch, displace, defend, cultivate, maintain.
+  Sentence 3 — THE MOVE: build this around THE #1 MOVE above. If its verb is "Maintain" (brand LEADS or co-leads the category by overall mindshare), say the brand already wins broadly and the play is to HOLD and extend — do NOT manufacture a pitch. If its verb is "Build" (brand is broadly discoverable but TRAILS the leader overall — it may lead the few outlets that cite it, but is NOT top-tier), frame the move as GROWING reach: expanding earned coverage into the category lanes where AI names competitors instead. In the Build case NEVER call the brand 'top-tier' and NEVER say 'maintain' or 'no urgent lever' — that contradicts a trailing mindshare. Otherwise name the outlet and the competitor to act on. Use action verbs: pitch, displace, defend, cultivate, build, maintain.
 FRAMING RULE (critical): these are AI-citation SHARE-OF-VOICE signals — how often each AI names {brand} vs competitors when it cites an outlet — NOT press clips. Never say an outlet "covers", "features", or "wrote about" {brand}; say {brand} "over-indexes at", "is out-cited at", or "is absent from" the outlet.
 BANNED: filler like 'this audit reveals', 'in today's landscape'. Discuss analysts only if they actually dominate the source domains above. Respond with ONLY the 3 sentences — no preamble, no JSON, no labels."""
 
