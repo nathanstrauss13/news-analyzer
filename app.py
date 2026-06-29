@@ -3714,6 +3714,22 @@ def aggregate_citations(all_responses):
 #          is unambiguous. This deliberately trades a little recall for zero
 #          false positives on common nouns.
 EDITORIAL_OUTLETS = {
+    # ---- Telecom / 5G / IoT / robotics / deep-tech trade press ----
+    "lightreading.com": {"name": "Light Reading", "ci": ["Light Reading"], "abbr": []},
+    "rcrwireless.com": {"name": "RCR Wireless News", "ci": ["RCR Wireless"], "abbr": ["RCR"]},
+    "fierce-network.com": {"name": "Fierce Network", "ci": ["Fierce Network", "FierceWireless", "Fierce Wireless", "FierceTelecom"], "abbr": []},
+    "fiercewireless.com": {"name": "FierceWireless", "ci": ["FierceWireless", "Fierce Wireless"], "abbr": []},
+    "telecoms.com": {"name": "Telecoms.com", "ci": ["Telecoms.com"], "abbr": []},
+    "telecomtv.com": {"name": "TelecomTV", "ci": ["TelecomTV"], "abbr": []},
+    "mobileworldlive.com": {"name": "Mobile World Live", "ci": ["Mobile World Live"], "abbr": ["MWL"]},
+    "sdxcentral.com": {"name": "SDxCentral", "ci": ["SDxCentral"], "abbr": []},
+    "iotbusinessnews.com": {"name": "IoT Business News", "ci": ["IoT Business News"], "abbr": []},
+    "iotworldtoday.com": {"name": "IoT World Today", "ci": ["IoT World Today"], "abbr": []},
+    "therobotreport.com": {"name": "The Robot Report", "ci": ["The Robot Report"], "abbr": []},
+    "thenewstack.io": {"name": "The New Stack", "ci": ["The New Stack"], "abbr": []},
+    "unmannedsystemstechnology.com": {"name": "Unmanned Systems Technology", "ci": ["Unmanned Systems Technology"], "abbr": []},
+    "criticalcomms.com.au": {"name": "Critical Comms", "ci": ["Critical Comms"], "abbr": []},
+    "spectrum.ieee.org": {"name": "IEEE Spectrum", "ci": ["IEEE Spectrum"], "abbr": []},
     # ---- Beauty / fashion ----
     "wwd.com": {"name": "WWD", "ci": ["Women's Wear Daily"], "abbr": ["WWD"]},
     "businessoffashion.com": {"name": "Business of Fashion", "ci": ["Business of Fashion"], "abbr": ["BoF"]},
@@ -4833,17 +4849,36 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
                     f"quarter to catch any shift early.")
             return {"verb": "Maintain", "outlet": _topdom, "text": text}
         # Broadly discoverable but trailing overall — grow reach, don't "hold."
+        # Build is inherently MULTI-OUTLET: name the lead to anchor + the next
+        # most-cited pitchable outlets to expand into (the lead excluded), so the
+        # move reads as "widen across the category press", not a single pitch.
         _gap_pp = max(1, round((_comp_overall - _brand_overall) * 100))
+        _others = sorted((r for r in sov if (r.get('domain') or '') != _topdom and _n(r) >= 1),
+                         key=lambda r: (_n(r), _brand_at(r)), reverse=True)
+        _targets = [r.get('domain') for r in _others[:3] if r.get('domain')]
+
+        def _join(names):
+            names = [n for n in names if n]
+            if len(names) <= 1:
+                return names[0] if names else ""
+            return ", ".join(names[:-1]) + " and " + names[-1]
+
+        if _topdom and _targets:
+            text = (f"Build. {b} leads at {_topdom} but appears in only a minority of category "
+                    f"answers — trailing the leader by ~{_gap_pp} points. Expand earned coverage "
+                    f"into the other outlets where AI names competitors instead: {_join(_targets)}. "
+                    f"Re-audit next quarter to track the climb.")
+            return {"verb": "Build", "outlet": _topdom, "outlets": [_topdom] + _targets, "text": text}
         if _topdom:
-            _tail = (f" Hold your cadence at {_topdom} where you already lead, then widen the "
-                     f"aperture; re-audit next quarter to track the climb.")
-        else:
-            _tail = " Re-audit next quarter to track the climb."
-        text = (f"Build. {b} is broadly discoverable — named by AI across the category — but it "
-                f"appears in only a minority of answers and trails the category leader by ~{_gap_pp} "
-                f"points. The lever isn't any single outlet; it's expanding earned coverage into the "
-                f"category questions where AI names competitors instead.{_tail}")
-        return {"verb": "Build", "outlet": _topdom, "text": text}
+            text = (f"Build. {b} is broadly discoverable but appears in only a minority of answers, "
+                    f"trailing the leader by ~{_gap_pp} points. Hold your cadence at {_topdom} where "
+                    f"you already lead, then widen the aperture into the category outlets where AI "
+                    f"names competitors instead; re-audit next quarter to track the climb.")
+            return {"verb": "Build", "outlet": _topdom, "text": text}
+        text = (f"Build. {b} is broadly discoverable but appears in only a minority of answers, "
+                f"trailing the leader by ~{_gap_pp} points. Expand earned coverage into the category "
+                f"outlets where AI names competitors instead; re-audit next quarter to track the climb.")
+        return {"verb": "Build", "outlet": None, "text": text}
 
     move_pool = opportunities + contested_strengths
     if move_pool:
@@ -8426,13 +8461,13 @@ Respond with ONLY valid JSON:
         _sort_targets_by_prominence(analysis.get("media_targets"), analysis.get("outlet_sov"))
     except Exception as _st_e:
         print("target prominence sort failed (continuing):", _st_e)
-    # Cap to top 5 pitch opportunities — fewer, sharper picks > a long list of
-    # noisy options. The full ranked editorial set is still in
-    # raw_citation_domains for the CSV.
+    # Cap to top 8 pitch targets — enough to name a multi-outlet "build" play in
+    # thin deep-tech categories (where everything is cited 2-3x), without a long
+    # noisy list. The full ranked editorial set is still in raw_citation_domains.
     _mt = analysis.get("media_targets") or []
-    if len(_mt) > 5:
-        analysis["media_targets"] = _mt[:5]
-        print(f"capped media_targets {len(_mt)} -> 5 (raw set kept in CSV)")
+    if len(_mt) > 8:
+        analysis["media_targets"] = _mt[:8]
+        print(f"capped media_targets {len(_mt)} -> 8 (raw set kept in CSV)")
     # Single highest-priority action — gives every dashboard one unmistakable
     # next step even when it's all-strength or all-emerging.
     try:
@@ -9173,7 +9208,7 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
             # appended again, duplicating the prior card.)
             continue
         new_media.append(t)
-        if len(new_media) >= 5:
+        if len(new_media) >= 8:
             break
     for i, t in enumerate(new_media):
         t['rank'] = i + 1
