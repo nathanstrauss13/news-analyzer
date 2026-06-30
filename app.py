@@ -9347,6 +9347,22 @@ def view_signal_report(slug):
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
 
+    # Always drop vendor / competitor / non-pitchable domains from the DISPLAYED
+    # outlet lists. A report's saved outlet_sov/media_targets can predate a
+    # NON_EDITORIAL_DOMAINS addition (e.g. alaan.com, approvalmax.com surfaced in
+    # the fintech audits); this cheap pure-Python filter keeps the cards + the
+    # on-the-fly earned_wins clean without re-running the audit. Raw all_responses
+    # and citations are left intact (the CSV/JSON export still shows everything).
+    try:
+        def _ed_ok(o):
+            return classify_citation_domain((o.get('domain') or '')) not in ('non_editorial', 'retail', 'defunct')
+        if isinstance(data.get('outlet_sov'), list):
+            data['outlet_sov'] = [o for o in data['outlet_sov'] if _ed_ok(o)]
+        if isinstance(data.get('media_targets'), list):
+            data['media_targets'] = [o for o in data['media_targets'] if _ed_ok(o)]
+    except Exception as _fe:
+        print("display editorial-filter skipped:", str(_fe)[:120])
+
     want_fresh = request.args.get('fresh') == '1'
     want_refresh = request.args.get('refresh') == '1'
     if (want_fresh or want_refresh) and _ip_is_exempt_from_cap(_client_ip()):
