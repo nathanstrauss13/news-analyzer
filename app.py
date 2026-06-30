@@ -3138,6 +3138,17 @@ NON_EDITORIAL_DOMAINS = {
     'towardsdatascience.com',           # Medium-hosted UGC publication
     'hackernoon.com',                   # Same model — UGC tech blog
     'dev.to',                           # UGC developer community
+    # B2B-software vendor blogs + direct competitors surfaced in fintech / payroll /
+    # AP-automation / ediscovery audits (Ramp, Gusto, Everlaw). Vendor content
+    # marketing or a rival's own site — not pitchable earned media.
+    'approvalmax.com', 'medius.com', 'nexusap.com',   # AP-automation vendor blogs
+    'alaan.com', 'surepayroll.com',                   # direct competitors (spend / payroll)
+    'workable.com',                                    # HR-vendor content (resources.workable.com)
+    'adamsbrowncpa.com',                               # CPA-firm blog, not media
+    'lighthouseglobal.com',                            # ediscovery services vendor
+    'nbi-sems.com',                                    # legal CLE seminars vendor
+    'expertinsights.com',                              # B2B software review listicle (G2-tier)
+    'wifitalents.com',                                 # statistics content-farm
 }
 
 # B2B vendors, software marketplaces, and review platforms that LLMs sometimes cite
