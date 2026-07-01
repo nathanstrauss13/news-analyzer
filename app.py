@@ -4203,6 +4203,45 @@ def _dedupe_competitors(competitor_counts, all_responses=None):
     return out
 
 
+# Component / chip / hardware SUPPLIERS that routinely get extracted as top
+# "competitors" for a data-center / cloud / AI-infrastructure OPERATOR — but the
+# operator BUYS from them, it doesn't compete with them (observed: NVIDIA #2 and
+# AMD top-10 "competitors" to IREN, an AI data-center company). Matched
+# case-insensitively against the exact competitor name.
+_COMPONENT_SUPPLIERS = {
+    'nvidia', 'amd', 'intel', 'tsmc', 'arm', 'arm holdings', 'broadcom',
+    'micron', 'sk hynix', 'supermicro', 'super micro', 'super micro computer',
+}
+
+
+def _drop_supplier_noncompetitors(brand, category, competitor_counts):
+    """Remove component/chip suppliers from the competitive set of an infra/cloud/
+    data-center operator — they're suppliers, not competitors. Kept UNLESS the
+    audited brand is itself a chip/hardware maker (then they ARE peers), and only
+    applied in infrastructure-style categories where the confusion happens."""
+    if not competitor_counts:
+        return competitor_counts
+    cat = (category or '').lower()
+    brand_l = (brand or '').strip().lower()
+    # Brand is itself a hardware/chip maker -> suppliers are legitimate peers.
+    if brand_l in _COMPONENT_SUPPLIERS or any(
+            w in cat for w in ('chip', 'semiconductor', 'processor', 'silicon',
+                               'hardware maker', 'gpu maker', 'chipmaker')):
+        return competitor_counts
+    # Only prune in infra / cloud / data-center / compute contexts.
+    if not any(w in cat for w in ('data center', 'data centre', 'data-center', 'datacenter',
+                                  'cloud', 'infrastructure', 'compute', 'hosting',
+                                  'colocation', 'colo', 'gpu')):
+        return competitor_counts
+    kept, dropped = [], []
+    for c in competitor_counts:
+        (dropped if (c.get('name') or '').strip().lower() in _COMPONENT_SUPPLIERS else kept).append(c)
+    if dropped:
+        print(f"_drop_supplier_noncompetitors: removed {[c.get('name') for c in dropped]} "
+              f"(supplier, not competitor; brand={brand})")
+    return kept
+
+
 def _classify_competitor_types(brand, category, competitor_counts):
     """Classify each extracted competitor as a brand peer, retailer, or
     marketplace so the report treats them differently.
@@ -5110,16 +5149,20 @@ def _resolve_brand_aliases(brand):
     return out
 
 
-def _resolve_brand_domains(brand):
+def _resolve_brand_domains(brand, category=None):
     """Best-effort official domain(s) for the brand via one cheap Haiku call, so the
     owned analysis can credit corporate/abbreviation domains that name-matching can't
     catch (e.g. elcompanies.com for 'Estée Lauder', whose label shares no letters with
     the brand name). Returns a list of bare registrable domains; [] on any failure, in
     which case the owned analysis falls back to pure name-matching (no regression).
-    Cached per-process by brand."""
+
+    Passing the brand's CATEGORY disambiguates same-name companies: 'IREN' the
+    AI-data-center firm resolves to iren.com, not the Italian utility Iren S.p.A.
+    at iren.it. Without it, Haiku picks the better-known namesake and poisons the
+    owned attribution. Cached per (brand, category) per process."""
     if not brand:
         return []
-    key = brand.strip().lower()
+    key = (brand.strip().lower(), (category or '').strip().lower())
     if key in _BRAND_DOMAINS_CACHE:
         return _BRAND_DOMAINS_CACHE[key]
     out = []
@@ -5128,6 +5171,7 @@ def _resolve_brand_domains(brand):
             model=CLAUDE_HAIKU, max_tokens=200,
             messages=[{"role": "user", "content": (
                 f'What are the official website domain(s) owned by the company/brand "{brand}"? '
+                f'{("It operates in: " + category + ". If this name is shared by unrelated companies, use that category to identify the RIGHT one. ") if category else ""}'
                 f'Include its main consumer site and its corporate/investor site if they differ. '
                 f'Reply ONLY with a JSON array of bare registrable domains (no paths, no "www"), '
                 f'e.g. ["esteelauder.com","elcompanies.com"]. If you are not confident, reply [].'
@@ -7996,6 +8040,9 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         if cnt > 0:
             competitor_counts.append({"name": name, "mention_count": cnt})
     competitor_counts.sort(key=lambda c: c["mention_count"], reverse=True)
+    # Drop chip/hardware suppliers (NVIDIA, AMD...) BEFORE the top-10 cut so real
+    # competitors backfill the freed slots instead of being crowded out.
+    competitor_counts = _drop_supplier_noncompetitors(brand, category, competitor_counts)
     competitor_counts = competitor_counts[:10]
     # Merge same-entity duplicates (e.g. 'JPMorgan' + 'J.P. Morgan Asset Management').
     competitor_counts = _dedupe_competitors(competitor_counts, all_responses)
@@ -8426,9 +8473,9 @@ Respond with ONLY valid JSON:
 
     # Owned Signal Finder lens — same data, owned-media focus.
     try:
-        brand_domain_hints = list(_resolve_brand_domains(brand))
+        brand_domain_hints = list(_resolve_brand_domains(brand, category))
         for _al in (brand_aliases or []):   # sub-brand owned sites (e.g. ishares.com)
-            for _dd in _resolve_brand_domains(_al):
+            for _dd in _resolve_brand_domains(_al, category):
                 if _dd not in brand_domain_hints:
                     brand_domain_hints.append(_dd)
         analysis['brand_domains'] = brand_domain_hints
@@ -9357,6 +9404,7 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     # mention total is known (passed to the summary as context, not as a rival).
     competitor_counts, _related = _split_self_referential_competitors(brand, competitor_counts)
     competitor_counts = _merge_competitor_subbrands(competitor_counts, all_responses)  # SPDR -> State Street
+    competitor_counts = _drop_supplier_noncompetitors(brand, data.get('category'), competitor_counts)
     out['competitors'] = competitor_counts
     out['related_brands'] = _related
     if _related:
@@ -9367,9 +9415,9 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
         if out.get('brand_domains'):
             brand_domain_hints = out['brand_domains']
         else:
-            brand_domain_hints = list(_resolve_brand_domains(brand))
+            brand_domain_hints = list(_resolve_brand_domains(brand, data.get('category')))
             for _al in (brand_aliases or []):   # sub-brand owned sites (e.g. ishares.com)
-                for _dd in _resolve_brand_domains(_al):
+                for _dd in _resolve_brand_domains(_al, data.get('category')):
                     if _dd not in brand_domain_hints:
                         brand_domain_hints.append(_dd)
         out['brand_domains'] = brand_domain_hints
