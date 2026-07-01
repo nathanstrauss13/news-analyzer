@@ -10752,6 +10752,41 @@ def outreach_action(oid, action):
     return _outreach_redirect(oid)
 
 
+@app.route('/admin/run-audit', methods=['POST'])
+def _admin_run_audit():
+    """TEMPORARY one-off: run a fresh audit with a curated problem_statement +
+    custom prompts, bypassing the public per-IP cap. Operator-gated. Saves to the
+    given slug and returns a summary. Remove this route after use.
+    Body JSON: {ps, slug, prompts?}"""
+    if not _operator_ok():
+        abort(404)
+    import json as _json
+    body = request.get_json(silent=True) or {}
+    ps = (body.get('ps') or '').strip()
+    slug = (body.get('slug') or '').strip()
+    prompts = body.get('prompts') or None
+    if not ps or not slug:
+        return jsonify({"error": "need {ps, slug, prompts?}"}), 400
+    if SharedResult.query.filter_by(slug=slug).first():
+        return jsonify({"error": f"slug {slug} already exists"}), 409
+    try:
+        result = run_citation_audit(ps, tier="free", prompts_override=prompts)
+    except Exception as e:
+        return jsonify({"error": str(e)[:400]}), 500
+    result['slug'] = slug
+    result['tier'] = 'free'
+    db.session.add(SharedResult(slug=slug, payload=_json.dumps(result, default=str)))
+    db.session.commit()
+    return jsonify({
+        "slug": slug, "brand": result.get('brand'), "category": result.get('category'),
+        "brand_domains": result.get('brand_domains'),
+        "mindshare": f"{result.get('brand_mention_count')}/{result.get('total_responses')}",
+        "per_llm": [f"{x.get('llm')} {x.get('mentions')}/{x.get('total')}" for x in (result.get('per_llm_visibility') or [])],
+        "competitors": [f"{c.get('name')} ({c.get('mention_count')})" for c in (result.get('competitors') or [])],
+        "prompts_used": result.get('prompts_used'),
+    })
+
+
 # Action buttons offered per current status.
 _OUTREACH_ACTIONS = {
     'queued': [('sent', 'Mark sent')],
