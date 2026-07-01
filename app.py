@@ -10681,6 +10681,81 @@ def outreach_action(oid, action):
     return _outreach_redirect(oid)
 
 
+@app.route('/admin/consolidate-ramp')
+def _admin_consolidate_ramp():
+    """TEMPORARY one-off: consolidate the two Ramp audits into slug 'ramp'.
+    Operator-gated. ?apply=1 creates 'ramp' (copy of the clean cards/expense
+    audit + reconciled narrative) and repoints Lindsay's outreach card;
+    &delete_old=1 then deletes the two source reports + their outreach cards.
+    Bare ?key= is a dry run. Remove this route after use."""
+    if not _operator_ok():
+        abort(404)
+    import json as _json
+    NEW_SLUG, SRC = 'ramp', '4fda2cc55d'
+    OLD = ['49776fadd6', '4fda2cc55d']
+    SUMMARY = ("When people ask the five leading AI assistants which corporate-card and expense-management "
+        "platform to use, Ramp is named more often than any other brand — cited in 44 of 50 responses (88%), "
+        "ahead of Brex at 78% — and it leads on the exact outlets AI trusts most, appearing in every answer that "
+        "cites Forbes Advisor, NerdWallet, and Bankrate. The one uneven signal is platform distribution: Ramp "
+        "surfaces in 10 of 10 responses on Gemini, Grok, and Claude and 8 of 10 on Perplexity, but only 6 of 10 on "
+        "ChatGPT — the assistant reaching the broadest general-business audience and the clearest place to convert "
+        "headroom into share. Ramp already owns the earned-media narrative in cards and expense; the adjacent "
+        "accounts-payable and spend-automation conversation, where legacy vendors still shape AI's answers, is the "
+        "open frontier. Every figure here was re-verified against the raw text of all 50 AI responses.")
+    MOVE = {"verb": "Extend", "text": (
+        "Ramp already leads at the outlets AI cites most — Forbes Advisor, NerdWallet, and Bankrate, where it "
+        "appears in every answer that references them. The highest-leverage next move is ChatGPT: Ramp's one soft "
+        "assistant (6/10, versus 10/10 on Gemini, Grok, and Claude) and the one reaching the broadest business "
+        "audience. In parallel, press the advantage into the accounts-payable and spend-automation conversation, "
+        "where legacy vendors still shape AI's answers and Ramp has room to take the lead.")}
+    out = {}
+    src = SharedResult.query.filter_by(slug=SRC).first()
+    if not src:
+        return jsonify({"error": f"source report {SRC} not found"}), 404
+    if request.args.get('apply') == '1':
+        p = _json.loads(src.payload)
+        p['executive_summary'] = SUMMARY
+        p['headline_move'] = MOVE
+        p['slug'] = NEW_SLUG
+        rec = SharedResult.query.filter_by(slug=NEW_SLUG).first()
+        if rec:
+            rec.payload = _json.dumps(p); out['shared'] = 'updated'
+        else:
+            db.session.add(SharedResult(slug=NEW_SLUG, payload=_json.dumps(p))); out['shared'] = 'created'
+        db.session.commit()
+        cards = Outreach.query.filter(Outreach.slug.in_(OLD)).all()
+        if cards:
+            s = cards[0]
+            o = _outreach_upsert(s.prospect_name, NEW_SLUG, title=s.prospect_title, company=s.company,
+                                 insight=s.insight, relationship=s.relationship, cadence=s.cadence)
+            if s.message and not o.message:
+                o.message = s.message; db.session.commit()
+            out['new_outreach'] = {"id": o.id, "name": o.prospect_name, "slug": o.slug, "token": o.link_token}
+    if request.args.get('delete_old') == '1':
+        deleted = []
+        for o in Outreach.query.filter(Outreach.slug.in_(OLD)).all():
+            if o.link_token:
+                LinkClick.query.filter_by(token=o.link_token).delete()
+                tl = TrackedLink.query.filter_by(token=o.link_token).first()
+                if tl:
+                    db.session.delete(tl)
+            deleted.append(f"outreach#{o.id}({o.slug})")
+            db.session.delete(o)
+        for sl in OLD:
+            r = SharedResult.query.filter_by(slug=sl).first()
+            if r:
+                db.session.delete(r); deleted.append(f"shared:{sl}")
+        db.session.commit()
+        out['deleted'] = deleted
+    out['state'] = {
+        "ramp_exists": bool(SharedResult.query.filter_by(slug=NEW_SLUG).first()),
+        "old_shared_remaining": [s for s in OLD if SharedResult.query.filter_by(slug=s).first()],
+        "outreach_ramp": [{"id": o.id, "name": o.prospect_name} for o in Outreach.query.filter_by(slug=NEW_SLUG).all()],
+        "outreach_old": [{"id": o.id, "name": o.prospect_name, "slug": o.slug} for o in Outreach.query.filter(Outreach.slug.in_(OLD)).all()],
+    }
+    return jsonify(out)
+
+
 # Action buttons offered per current status.
 _OUTREACH_ACTIONS = {
     'queued': [('sent', 'Mark sent')],
