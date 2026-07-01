@@ -41,6 +41,14 @@
     The problem statement is the lead — the brand + what they want AI to recommend them for.
   </div>
 
+  {% if sources %}
+  <div class="counts" style="margin-top:-10px">
+    <span style="color:#7a7a88">Sources:</span>
+    {% for name, c in sources %}<span class="src {{ 'linkedin' if name|lower=='linkedin' else ('direct' if name=='direct' else 'other') }}" style="margin:0 4px">{{ name }} · {{ c }}</span>{% endfor %}
+    <span style="color:#7a7a88">&nbsp;·&nbsp;</span><a href="/inbound.csv" style="color:#7acbff;text-decoration:none">Download CSV ↓</a>
+  </div>
+  {% endif %}
+
   {% if rows %}
   <table>
     <thead>

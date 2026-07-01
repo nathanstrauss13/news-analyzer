@@ -9868,7 +9868,39 @@ def inbound_view():
     n24 = InboundAudit.query.filter(InboundAudit.created_at >= now - timedelta(hours=24)).count()
     n7d = InboundAudit.query.filter(InboundAudit.created_at >= now - timedelta(days=7)).count()
     total = InboundAudit.query.count()
-    return render_template('inbound.html', rows=rows, n24=n24, n7d=n7d, total=total)
+    # Source roll-up (all-time) for the header — LinkedIn vs direct vs other.
+    try:
+        src_rows = (db.session.query(InboundAudit.utm_source, db.func.count(InboundAudit.id))
+                    .group_by(InboundAudit.utm_source).all())
+        sources = sorted(((s or 'direct', c) for s, c in src_rows), key=lambda x: -x[1])[:6]
+    except Exception:
+        sources = []
+    return render_template('inbound.html', rows=rows, n24=n24, n7d=n7d, total=total, sources=sources)
+
+
+@app.route('/inbound.csv')
+def inbound_csv():
+    """Operator: export the inbound pipeline as CSV to work in a spreadsheet."""
+    if not _operator_ok():
+        abort(404)
+    import csv
+    import io
+    rows = InboundAudit.query.order_by(InboundAudit.created_at.desc()).limit(5000).all()
+    root = os.environ.get("PUBLIC_BASE_URL", "https://signal.innatec3.com").rstrip('/')
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(['created_utc', 'brand', 'category', 'problem_statement', 'utm_source',
+                'utm_medium', 'utm_campaign', 'referrer', 'geo', 'ip', 'slug', 'report_url'])
+    for r in rows:
+        w.writerow([
+            r.created_at.strftime('%Y-%m-%d %H:%M:%S') if r.created_at else '',
+            r.brand or '', r.category or '', (r.problem_statement or '')[:1000],
+            r.utm_source or '', r.utm_medium or '', r.utm_campaign or '',
+            r.referrer or '', r.geo or '', r.ip or '', r.slug or '',
+            f"{root}/signal/{r.slug}" if r.slug else '',
+        ])
+    return Response(buf.getvalue(), mimetype='text/csv',
+                    headers={'Content-Disposition': 'attachment; filename=inbound_audits.csv'})
 
 
 @app.route('/r-new')
