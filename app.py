@@ -232,6 +232,28 @@ class AuditRun(db.Model):
     problem_statement = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
+
+class InboundAudit(db.Model):
+    """One row per self-serve audit — the operator's warm-lead pipeline. The
+    problem_statement IS the lead: it names the brand + what they want AI to
+    surface them for. Attribution (UTM / external referrer) is captured on the
+    landing GET via the session; coarse geo is derived from the IP. Surfaced only
+    at the operator-gated /inbound view + the daily digest; never public."""
+    __tablename__ = 'inbound_audits'
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    slug = db.Column(db.String(32), nullable=True, index=True)
+    brand = db.Column(db.String(200), nullable=True)
+    category = db.Column(db.String(400), nullable=True)
+    problem_statement = db.Column(db.Text, nullable=True)
+    ip = db.Column(db.String(64), nullable=True)
+    geo = db.Column(db.String(160), nullable=True)
+    utm_source = db.Column(db.String(120), nullable=True, index=True)
+    utm_medium = db.Column(db.String(120), nullable=True)
+    utm_campaign = db.Column(db.String(120), nullable=True)
+    referrer = db.Column(db.String(400), nullable=True)
+
+
 class LoginToken(db.Model):
     __tablename__ = 'login_tokens'
     id = db.Column(db.Integer, primary_key=True)
@@ -2992,6 +3014,15 @@ def run_daily_traffic_digest():
     except Exception as e:
         print("run_daily_traffic_digest error:", e)
 
+
+def run_daily_inbound_digest():
+    """Daily self-serve audit (inbound-lead) digest (cron 8:15 UTC). Thin wrapper;
+    late-binds to the impl defined later in the file."""
+    try:
+        _run_daily_inbound_digest()
+    except Exception as e:
+        print("run_daily_inbound_digest error:", e)
+
 # Start scheduler (guard against double-start under reloader)
 if BackgroundScheduler:
     try:
@@ -3001,6 +3032,7 @@ if BackgroundScheduler:
             scheduler.add_job(run_daily_alerts, 'cron', hour=8, minute=0)
             scheduler.add_job(run_outreach_digest, 'cron', hour=8, minute=5)
             scheduler.add_job(run_daily_traffic_digest, 'cron', hour=8, minute=10)
+            scheduler.add_job(run_daily_inbound_digest, 'cron', hour=8, minute=15)
             scheduler.start()
             app._alerts_scheduler_started = True
             print("Alert scheduler started.")
@@ -8620,6 +8652,31 @@ def _global_audits_today(day):
         print("global-audit-count query failed (allowing):", str(_ge)[:120])
         return 0
 
+
+_GEO_CACHE = {}
+
+
+def _coarse_geo(ip):
+    """Best-effort coarse geo ('City, Region, Country') from an IP via a free
+    lookup. Cached, short timeout, returns '' on any failure — it runs AFTER the
+    audit result is sent, so it never blocks the user or breaks lead capture."""
+    if not ip or ip in ('127.0.0.1', '::1', 'localhost'):
+        return ''
+    if ip in _GEO_CACHE:
+        return _GEO_CACHE[ip]
+    geo = ''
+    try:
+        import urllib.request
+        url = f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city"
+        with urllib.request.urlopen(url, timeout=3) as r:
+            d = json.loads(r.read().decode('utf-8', 'ignore'))
+            if d.get('status') == 'success':
+                geo = ", ".join(x for x in (d.get('city'), d.get('regionName'), d.get('country')) if x)[:160]
+    except Exception:
+        geo = ''
+    _GEO_CACHE[ip] = geo
+    return geo
+
 # Comma-separated list of client IPs exempt from the per-day cap. Set on Render
 # (Environment tab) when you want unlimited audits from a specific IP — your own
 # residential / office IP, a co-worker, a demo machine. Look up the IP from any
@@ -8697,6 +8754,23 @@ def citation_audit():
     credits = current_user_credits(user)
 
     if request.method == 'GET':
+        # Stash attribution for the eventual audit POST (operator inbound view).
+        # The POST is a same-origin fetch, so its Referer is our own page; the
+        # only place to see the external referrer (e.g. linkedin.com) + the UTM
+        # query is this landing GET. Persist in the session; read it on POST.
+        try:
+            _utm = {k: (request.args.get(k) or '')[:120]
+                    for k in ('utm_source', 'utm_medium', 'utm_campaign')}
+            _ext_ref = (request.referrer or '')[:400]
+            if any(_utm.values()) or _ext_ref:
+                session['inbound_attr'] = {
+                    'utm_source': _utm['utm_source'],
+                    'utm_medium': _utm['utm_medium'],
+                    'utm_campaign': _utm['utm_campaign'],
+                    'referrer': _ext_ref,
+                }
+        except Exception:
+            pass
         return render_template(
             'citation_audit.html',
             ga_measurement_id=GA_MEASUREMENT_ID,
@@ -8818,6 +8892,17 @@ def citation_audit():
                 pass
             print("usage increment failed (continuing):", str(_ue)[:120])
 
+    # Attribution for the inbound-lead pipeline. Captured HERE (request context) so
+    # the worker thread — which has no request/session — can persist it after save.
+    _attr = session.get('inbound_attr') or {}
+    _inbound_attr = {
+        'ip': ip,
+        'utm_source': (_attr.get('utm_source') or '')[:120] or None,
+        'utm_medium': (_attr.get('utm_medium') or '')[:120] or None,
+        'utm_campaign': (_attr.get('utm_campaign') or '')[:120] or None,
+        'referrer': (_attr.get('referrer') or '')[:400] or None,
+    }
+
     q = queue.Queue()
 
     def on_progress(step, detail, current, total):
@@ -8867,6 +8952,27 @@ def citation_audit():
                         print("lead slug stamp failed (continuing):", str(_le)[:120])
                 db.session.commit()
             q.put(json.dumps({"type": "result", "data": result}))
+            # Inbound-lead capture (operator pipeline). Runs AFTER the result is
+            # sent, so the geo lookup never delays the user. Best-effort; a failure
+            # here never affects the audit the user already received.
+            try:
+                _geo = _coarse_geo(_inbound_attr.get('ip'))
+                with app.app_context():
+                    db.session.add(InboundAudit(
+                        slug=slug,
+                        brand=result.get('brand'),
+                        category=result.get('category'),
+                        problem_statement=problem_statement[:2000],
+                        ip=_inbound_attr.get('ip'),
+                        geo=_geo or None,
+                        utm_source=_inbound_attr.get('utm_source'),
+                        utm_medium=_inbound_attr.get('utm_medium'),
+                        utm_campaign=_inbound_attr.get('utm_campaign'),
+                        referrer=_inbound_attr.get('referrer'),
+                    ))
+                    db.session.commit()
+            except Exception as _ib_e:
+                print("inbound-audit capture failed (continuing):", str(_ib_e)[:120])
             # Fire the owner debug email AFTER the result is pushed to the
             # queue so the user-visible response never waits on email send.
             duration_seconds = (datetime.utcnow() - start_dt).total_seconds()
@@ -9743,6 +9849,23 @@ def _operator_ok():
     return False
 
 
+@app.route('/inbound')
+def inbound_view():
+    """Operator-gated warm-lead pipeline: every self-serve audit run, newest first.
+    The problem_statement IS the lead (brand + what they want AI to surface them
+    for). Attribution + geo shown per row. Never public — gated on the operator key
+    (/inbound?key=<OPERATOR_KEY>)."""
+    if not _operator_ok():
+        abort(404)
+    from datetime import timedelta
+    now = datetime.utcnow()
+    rows = InboundAudit.query.order_by(InboundAudit.created_at.desc()).limit(300).all()
+    n24 = InboundAudit.query.filter(InboundAudit.created_at >= now - timedelta(hours=24)).count()
+    n7d = InboundAudit.query.filter(InboundAudit.created_at >= now - timedelta(days=7)).count()
+    total = InboundAudit.query.count()
+    return render_template('inbound.html', rows=rows, n24=n24, n7d=n7d, total=total)
+
+
 @app.route('/r-new')
 def mint_tracked_link_route():
     """Operator: mint a tracked link. /r-new?slug=swarovski&to=Jennifer+McGuire"""
@@ -10172,6 +10295,80 @@ def _send_daily_traffic_email(rows, total_opens):
         SendGridAPIClient(sg_key).send(msg)
     except Exception as e:
         print("daily traffic digest email failed:", e)
+
+
+def _run_daily_inbound_digest():
+    """Daily roll-up of self-serve audits run in the last 24h, emailed to the
+    operator — the warm inbound pipeline. The problem_statement is the lead.
+    Stays quiet on a zero-audit day so the inbox only lights up when it matters."""
+    with app.app_context():
+        since = datetime.utcnow() - timedelta(hours=24)
+        items = (InboundAudit.query
+                 .filter(InboundAudit.created_at >= since)
+                 .order_by(InboundAudit.created_at.desc()).all())
+        if not items:
+            return
+        _send_daily_inbound_email(items)
+
+
+def _send_daily_inbound_email(items):
+    """'Who ran the free audit in the last 24h' digest. Skipped silently if
+    SENDGRID_API_KEY or the operator address is unset."""
+    to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not to or not sg_key:
+        return
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+        root = os.environ.get("PUBLIC_BASE_URL", "https://signal.innatec3.com").rstrip('/')
+        n = len(items)
+        li_n = sum(1 for r in items if (r.utm_source or '').lower() == 'linkedin')
+        subject = (f"🧲 {n} inbound audit{'s' if n != 1 else ''} in the last 24h"
+                   + (f" ({li_n} from LinkedIn)" if li_n else ""))
+        txt, htm = [], []
+        for r in items:
+            src = r.utm_source or 'direct'
+            geo = r.geo or '—'
+            txt.append(
+                f"{r.brand or '—'} — {(r.category or '')[:60]} · {src} · {geo} · {_fmt_et(r.created_at)}\n"
+                f'  "{(r.problem_statement or "")[:160]}"\n  {root}/signal/{r.slug}')
+            is_li = (r.utm_source or '').lower() == 'linkedin'
+            htm.append(
+                '<tr>'
+                f'<td style="padding:6px 14px 6px 0;vertical-align:top"><strong>{html.escape(r.brand or "—")}</strong>'
+                f'<div style="color:#888;font-size:12px">{html.escape((r.category or "")[:70])}</div>'
+                f'<div style="color:#555;font-size:12px;max-width:340px">{html.escape((r.problem_statement or "")[:180])}</div></td>'
+                f'<td style="padding:6px 14px;vertical-align:top;color:{"#1a7f37" if is_li else "#666"};'
+                f'font-weight:{"600" if is_li else "400"}">{html.escape(src)}</td>'
+                f'<td style="padding:6px 14px;vertical-align:top;color:#666">{html.escape(geo)}</td>'
+                f'<td style="padding:6px 0;vertical-align:top;color:#666;white-space:nowrap">{html.escape(_fmt_et(r.created_at))}</td></tr>'
+            )
+        board = f"{root}/inbound"
+        text_body = (
+            f"{n} self-serve audit{'s' if n != 1 else ''} in the last 24h ({li_n} from LinkedIn).\n\n"
+            + "\n\n".join(txt) + f"\n\nInbound view: {board}")
+        html_body = (
+            f'<p style="font-size:15px"><strong>{n}</strong> self-serve audit'
+            f'{"s" if n != 1 else ""} in the last 24h'
+            f'{f" — <strong>{li_n}</strong> from LinkedIn" if li_n else ""}.</p>'
+            '<table style="font-size:13px;border-collapse:collapse">'
+            '<tr style="color:#999;text-align:left;font-size:11px;text-transform:uppercase">'
+            '<td style="padding:0 14px 4px 0">Brand / intent (the lead)</td>'
+            '<td style="padding:0 14px 4px">Source</td>'
+            '<td style="padding:0 14px 4px">Geo</td>'
+            '<td style="padding:0 0 4px">When</td></tr>'
+            + "".join(htm) + '</table>'
+            f'<p style="font-size:12px;margin-top:14px"><a href="{board}">Open the inbound view →</a></p>')
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[to], subject=subject,
+            plain_text_content=text_body, html_content=html_body,
+        )
+        SendGridAPIClient(sg_key).send(msg)
+        print(f"[inbound-digest] sent ({n} audits)")
+    except Exception as e:
+        print("daily inbound digest email failed:", str(e)[:160])
 
 
 def _run_outreach_digest():

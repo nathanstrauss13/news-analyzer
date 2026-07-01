@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Inbound audits — Innate C3</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "IBM Plex Sans", Arial, sans-serif; background:#0a0a0a; color:#e6e6ee; margin:0; padding:28px 22px 80px; }
+  .wrap { max-width:1200px; margin:0 auto; }
+  h1 { font-size:22px; font-weight:700; color:#fff; margin:0 0 4px; }
+  .eyebrow { font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:#5aff8a; font-weight:700; margin-bottom:6px; }
+  .counts { font-size:13px; color:#9a9aa8; margin:0 0 20px; }
+  .counts b { color:#e6e6ee; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  thead th { text-align:left; color:#8a8a9a; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.4px; padding:8px 10px; border-bottom:1px solid #262633; position:sticky; top:0; background:#0a0a0a; }
+  tbody td { padding:10px; border-bottom:1px solid #17171f; vertical-align:top; }
+  tbody tr:hover { background:#0f0f16; }
+  .t-time { white-space:nowrap; color:#9a9aa8; font-size:12px; }
+  .t-brand { font-weight:700; color:#fff; }
+  .t-cat { color:#9a9aa8; font-size:12px; max-width:200px; }
+  .t-ps { color:#cfd2dd; max-width:360px; line-height:1.45; }
+  .src { display:inline-block; font-size:11px; font-weight:700; padding:2px 8px; border-radius:5px; }
+  .src.linkedin { color:#0a140d; background:#5aff8a; }
+  .src.other { color:#b8b8c8; background:#1c1c26; border:1px solid #2a2a38; }
+  .src.direct { color:#7a7a88; background:#141420; }
+  .meta { color:#7a7a88; font-size:11px; margin-top:3px; }
+  .ref a, .rep a { color:#7acbff; text-decoration:none; }
+  .ref a:hover, .rep a:hover { text-decoration:underline; }
+  .geo { color:#b8b8c8; font-size:12px; white-space:nowrap; }
+  .empty { color:#7a7a88; padding:40px 10px; text-align:center; }
+  .note { font-size:11px; color:#5a5a68; margin-top:18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Innate C3 · operator</div>
+  <h1>Inbound audits</h1>
+  <div class="counts">
+    <b>{{ n24 }}</b> in the last 24h · <b>{{ n7d }}</b> in 7 days · <b>{{ total }}</b> all-time.
+    The problem statement is the lead — the brand + what they want AI to recommend them for.
+  </div>
+
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>When (UTC)</th>
+        <th>Brand</th>
+        <th>Category</th>
+        <th>What they want AI to surface</th>
+        <th>Source</th>
+        <th>Referrer</th>
+        <th>Geo</th>
+        <th>Report</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="t-time">{{ r.created_at.strftime('%b %d, %H:%M') if r.created_at else '—' }}</td>
+        <td class="t-brand">{{ r.brand or '—' }}</td>
+        <td class="t-cat">{{ r.category or '—' }}</td>
+        <td class="t-ps">{{ r.problem_statement or '—' }}</td>
+        <td>
+          {% set s = (r.utm_source or '')|lower %}
+          {% if s == 'linkedin' %}<span class="src linkedin">LinkedIn</span>
+          {% elif s %}<span class="src other">{{ r.utm_source }}</span>
+          {% else %}<span class="src direct">direct</span>{% endif %}
+          {% if r.utm_medium or r.utm_campaign %}<div class="meta">{{ r.utm_medium }}{% if r.utm_medium and r.utm_campaign %} · {% endif %}{{ r.utm_campaign }}</div>{% endif %}
+        </td>
+        <td class="ref">{% if r.referrer %}<a href="{{ r.referrer }}" target="_blank" rel="noopener">{{ r.referrer|replace('https://','')|replace('http://','')|truncate(34, True, '…') }}</a>{% else %}<span class="meta">—</span>{% endif %}</td>
+        <td class="geo">{{ r.geo or '—' }}</td>
+        <td class="rep">{% if r.slug %}<a href="/signal/{{ r.slug }}" target="_blank" rel="noopener">view ↗</a>{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">No inbound audits yet. They'll appear here the moment someone runs the free audit.</div>
+  {% endif %}
+
+  <div class="note">Operator-only · showing the most recent 300 · geo is coarse (IP-derived) and best-effort.</div>
+</div>
+</body>
+</html>
