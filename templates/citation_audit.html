@@ -1718,6 +1718,8 @@
     .btn-lg:hover{transform:translateY(-2px);box-shadow:0 0 60px -4px var(--coral-g);}
     .home-footer{position:relative;z-index:2;text-align:center;padding:54px 0 10px;border-top:1px solid var(--line);margin-top:24px;}
     .home-footer .big{font-weight:600;font-size:26px;color:var(--ink);margin-bottom:12px;font-family:'Jost',sans-serif;}
+    .home-footer a.big{display:inline-block;text-decoration:none;cursor:pointer;transition:color .2s;}
+    .home-footer a.big:hover{color:#fff;text-shadow:0 0 22px rgba(240,135,106,.4);}
     .home-footer .fc{font-size:14px;color:var(--ink2);}
 
     /* ---- loading / progress ---- */
@@ -2015,7 +2017,7 @@
             <section class="blk" id="how">
                 <div class="shd"><span class="eyebrow">How it works</span></div>
                 <div class="steps">
-                    <div class="step"><span class="n">1</span><h3>Tell it what you want to be known for</h3><p>Name your brand and what you want it known for — "Lululemon, men's running apparel." That's the answer AI should be giving.</p></div>
+                    <div class="step"><span class="n">1</span><h3>Tell it what you want to be known for</h3><p>Name your brand and what you want it known for — "Square, payments and point of sale for small business." That's the answer AI should be giving.</p></div>
                     <div class="step"><span class="n">2</span><h3>We query 5 leading AIs</h3><p>Ten unbranded prompts across ChatGPT, Claude, Gemini, Perplexity and Grok — every citation extracted and classified.</p></div>
                     <div class="step"><span class="n">3</span><h3>Get your PR read</h3><p>The outlets doing the heavy lifting, where rivals out-cite you, and your single highest-leverage move. No dashboards to decode.</p></div>
                 </div>
@@ -2046,8 +2048,8 @@
             </section>
 
             <footer class="home-footer">
-                <div class="big">Start with the preview.</div>
-                <div class="fc">A communications-first take on AI visibility — from innate c³.</div>
+                <a class="big" href="#top" onclick="goHomeTop();return false;">Start with the preview.</a>
+                <div class="fc">A communications-first take on AI visibility compliments of innate c³.</div>
             </footer>
         </div>
     </div>
@@ -3149,6 +3151,13 @@
             if (mkt) mkt.style.display = visible ? '' : 'none';
             document.body.classList.toggle('home', !!visible);
         }
+        // Footer "Start with the preview." → smooth-scroll to the top and land
+        // the cursor in the brand field so it's ready to type.
+        function goHomeTop() {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            const b = document.getElementById('brandInput');
+            if (b) setTimeout(() => b.focus(), 450);
+        }
         // Two visible fields (brand + topic) compose the problem_statement the
         // rest of the pipeline already expects — same shape as the batch runner.
         function _composeStatement() {
@@ -3206,7 +3215,13 @@
         });
         // Rotate example brand + positioning pairs through the two placeholders.
         (function rotateExamples() {
-            const pairs = [["Lululemon", "men's running apparel"], ["Notion", "docs for engineering teams"], ["Ramp", "corporate cards for startups"], ["Oatly", "the default oat milk"], ["Everlaw", "ediscovery for litigation teams"]];
+            const pairs = [
+                ["Ramp", "the easiest way to automate bill payments, streamline approvals, and save time"],
+                ["Notion", "the all-in-one AI workspace for notes, docs, and projects"],
+                ["Square", "the point-of-sale and payments platform that runs your whole business"],
+                ["Oatly", "the oat milk that's better for you and the planet"],
+                ["Everlaw", "the cloud ediscovery platform for litigation and investigations"]
+            ];
             const bEl = document.getElementById('brandInput'), tEl = document.getElementById('topicInput');
             if (!bEl || !tEl) return;
             let i = 0;
