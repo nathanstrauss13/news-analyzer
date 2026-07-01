@@ -9,7 +9,9 @@
     <meta name="robots" content="noindex,nofollow">
     {% endif %}
     <title>AI Citation Audit | PR Signal Finder — INNATE C3</title>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -1572,41 +1574,372 @@
             color: #5aff8a;
             margin-bottom: 8px;
         }
+
+    /* =====================================================================
+       P3 — Elevated design system (Jost + Inter, dark premium palette).
+       Appended last so it re-skins every surface above via the later-wins
+       cascade, without touching the original rules' structure. All ids,
+       classes, JS hooks and endpoints are unchanged.
+       ===================================================================== */
+    :root{
+      --ink:#EDEEF1; --ink2:#9aa1ad; --muted:#6b7280; --line:rgba(255,255,255,.08);
+      --gold:#cbab6d; --gold-g:rgba(203,171,109,.42);
+      --coral:#f0876a; --coral-g:rgba(240,135,106,.36);
+      --cyan:#74d0ff; --cyan-g:rgba(116,208,255,.34);
+      --card:linear-gradient(180deg,#12141b,#0d0f14);
+      --cta:linear-gradient(180deg,#f0916f,#d76a4c);
+    }
+    body{
+      font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
+      background:
+        radial-gradient(1100px 520px at 78% -6%, rgba(203,171,109,.10), transparent 60%),
+        radial-gradient(1000px 560px at 10% 4%, rgba(116,208,255,.07), transparent 55%),
+        #07080b;
+      background-attachment:fixed;
+      color:var(--ink);
+      -webkit-font-smoothing:antialiased;
+    }
+    h1,h2,h3,h4,.eyebrow,.wm,.report-eyebrow,.brand,.stat,.pilltab,.movehd,.chip,.cardhd,
+    .headline-move-verb,.headline-move-label,.verdict-group-title,.wins-title,.defend-title,
+    .briefing-summary-label,.ai-visibility-label,.countdown-time,.pct,.step h3,
+    .bespoke-cta h3,.save-panel h4,.media-outlet,.dc-outlet,.loading-text,.shd h2,.bespoke h2,
+    .ct,.pmove .tag,.peek .pe,.step .n,.pbar .v{font-family:'Jost',sans-serif;}
+    .container{max-width:900px;position:relative;z-index:2;padding:0 24px 72px;}
+
+    /* ---- ambient (homepage only) ---- */
+    .amb,.pglow{display:none;}
+    body.home .amb,body.home .pglow{display:block;}
+    .amb{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;}
+    .amb span{position:absolute;border-radius:50%;filter:blur(64px);opacity:.5;}
+    .amb .a{width:600px;height:600px;left:60%;top:-16%;background:radial-gradient(circle,rgba(203,171,109,.20),transparent 60%);animation:drift1 22s ease-in-out infinite;}
+    .amb .b{width:540px;height:540px;left:-10%;top:8%;background:radial-gradient(circle,rgba(116,208,255,.16),transparent 60%);animation:drift2 26s ease-in-out infinite;}
+    .amb .c{width:520px;height:520px;left:24%;top:54%;background:radial-gradient(circle,rgba(240,135,106,.12),transparent 60%);animation:drift1 30s ease-in-out infinite reverse;}
+    @keyframes drift1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-40px,36px) scale(1.08)}}
+    @keyframes drift2{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(46px,-30px) scale(1.1)}}
+    .pglow{position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(360px 360px at var(--mx,50%) var(--my,22%),rgba(240,135,106,.08),transparent 62%);transition:background .1s linear;}
+
+    /* ---- top nav / header ---- */
+    .signal-header{margin-bottom:0;padding:26px 0;border:0;}
+    .signal-header .wm{font-family:'Inter',sans-serif;font-weight:500;font-size:22px;letter-spacing:-.012em;color:#f4f4f5;text-transform:none;text-decoration:none;}
+    .signal-header .wm sup{font-size:.56em;font-weight:500;margin-left:1px;}
+    .signal-header .auth-cluster{color:var(--ink2);}
+    .signal-header .auth-cluster a{color:#2a1008;background:var(--cta);border:0;padding:9px 16px;border-radius:999px;font-weight:600;box-shadow:0 0 22px -4px var(--coral-g);transition:transform .2s,box-shadow .2s;}
+    .signal-header .auth-cluster a:hover{transform:translateY(-1px);box-shadow:0 0 30px -2px var(--coral-g);background:var(--cta);border-color:transparent;}
+    .sig-tabs{display:flex;gap:8px;}
+    .pilltab{font-size:12px;letter-spacing:.12em;text-transform:uppercase;font-weight:600;padding:7px 14px;border-radius:999px;border:1px solid var(--line);color:var(--ink2);background:rgba(255,255,255,.02);text-decoration:none;}
+    .pilltab.on{color:#2a1008;background:var(--cta);border-color:transparent;box-shadow:0 0 22px -6px var(--coral-g);}
+    .pilltab:hover{color:var(--ink);}
+    .pilltab.on:hover{color:#2a1008;}
+
+    /* ---- hero ---- */
+    .hero{padding:52px 0 26px;text-align:center;}
+    .hero>*{opacity:0;animation:fadeUp .8s cubic-bezier(.2,.7,.2,1) forwards;}
+    .hero .eyebrow{animation-delay:.05s}.hero h1{animation-delay:.16s}.hero .sub{animation-delay:.28s}
+    .hero .form-section{animation-delay:.4s}.hero .microtag{animation-delay:.5s}.hero .assistants{animation-delay:.6s}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+    @media (prefers-reduced-motion:reduce){.hero>*{opacity:1;animation:none}}
+    .eyebrow{display:inline-block;color:var(--gold);letter-spacing:.24em;text-transform:uppercase;font-size:11.5px;font-weight:600;text-shadow:0 0 18px var(--gold-g);}
+    .hero .eyebrow{border:1px solid rgba(203,171,109,.25);border-radius:999px;padding:7px 15px;}
+    .hero h1{font-weight:600;font-size:52px;line-height:1.06;letter-spacing:-.015em;margin:22px 0 18px;color:#fff;}
+    .hero h1 .g{background:linear-gradient(120deg,var(--coral),var(--cyan) 55%,var(--gold));-webkit-background-clip:text;background-clip:text;color:transparent;}
+    .hero .sub,.subtitle.sub{max-width:640px;margin:0 auto 0;font-size:17px;color:var(--ink2);line-height:1.6;}
+    .hero .sub b{color:var(--ink);font-weight:500;}
+
+    /* ---- runner (two-field input) ---- */
+    .runner{margin:30px auto 0;max-width:640px;display:flex;flex-direction:column;gap:16px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px 28px;box-shadow:0 24px 70px -40px #000;transition:border-color .25s,box-shadow .25s;}
+    .runner:focus-within{border-color:rgba(240,135,106,.5);box-shadow:0 0 44px -14px var(--coral-g),0 24px 70px -40px #000;}
+    .sentence{font-family:'Jost',sans-serif;font-weight:500;font-size:21px;line-height:2.05;color:var(--ink2);text-align:center;}
+    .fin{font-family:'Inter',sans-serif;font-weight:500;font-size:18px;color:var(--ink);background:transparent;border:0;border-bottom:2px solid rgba(255,255,255,.16);outline:0;padding:2px 4px 4px;transition:border-color .2s,box-shadow .2s;}
+    .fin.brand{min-width:150px}.fin.topic{min-width:238px}
+    .fin::placeholder{color:#5c626d;font-weight:400}
+    .fin:focus{border-color:var(--coral);box-shadow:0 9px 22px -12px var(--coral-g)}
+    .runner-btns{display:flex;flex-direction:column;align-items:center;gap:10px;}
+
+    /* ---- buttons ---- */
+    .btn{width:100%;font-family:'Jost',sans-serif;font-weight:600;font-size:15px;letter-spacing:.01em;color:#2a1008;background:var(--cta);border:0;border-radius:11px;padding:14px 24px;box-shadow:0 0 26px -6px var(--coral-g);transition:transform .18s,box-shadow .25s,opacity .2s;position:relative;overflow:hidden;}
+    .btn:hover{transform:translateY(-1px);box-shadow:0 0 40px -4px var(--coral-g);opacity:1;}
+    .btn.ghost{background:transparent;color:var(--ink2);border:1px solid var(--line);box-shadow:none;font-family:'Inter',sans-serif;font-weight:500;font-size:13.5px;padding:9px 16px;}
+    .btn.ghost:hover{color:var(--ink);border-color:rgba(203,171,109,.4);box-shadow:0 0 18px -8px var(--gold-g);transform:none;}
+    .runner .btn{width:auto;align-self:center;}
+    .microtag{margin-top:2px;font-size:13.5px;color:var(--muted);text-align:center;}
+    .microtag b{color:var(--gold);font-weight:600;}
+    .form-hint{margin-top:10px;font-size:12.5px;color:var(--muted);text-align:center;line-height:1.5;}
+    .form-hint b{color:var(--ink2);font-weight:500;}
+
+    /* ---- assistant chips (hero) ---- */
+    .assistants{margin-top:30px;display:flex;align-items:center;justify-content:center;gap:11px;flex-wrap:wrap;}
+    .assistants .lab{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-right:4px;}
+    .chip{font-size:13px;color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:8px 15px;background:rgba(255,255,255,.02);transition:color .2s,border-color .2s,box-shadow .3s,transform .2s;}
+    .chip:hover{color:var(--ink);border-color:rgba(203,171,109,.5);box-shadow:0 0 22px -4px var(--gold-g);transform:translateY(-2px);}
+
+    /* ---- how it works / peek / bespoke / footer (homepage) ---- */
+    #homeMarketing{position:relative;z-index:2;}
+    section.blk{padding:60px 0;}
+    .shd{text-align:center;margin-bottom:12px;}
+    .shd h2{font-size:30px;font-weight:600;margin-top:12px;color:#fff;}
+    .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:32px;}
+    .step{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px 24px;transition:transform .28s cubic-bezier(.2,.7,.2,1),border-color .28s,box-shadow .28s;}
+    .step:hover{transform:translateY(-6px);border-color:rgba(240,135,106,.32);box-shadow:0 0 50px -22px var(--coral-g),0 30px 60px -44px #000;}
+    .step .n{font-weight:600;font-size:13px;color:var(--gold);letter-spacing:.1em;border:1px solid rgba(203,171,109,.3);width:34px;height:34px;display:grid;place-items:center;border-radius:9px;box-shadow:0 0 16px -6px var(--gold-g);}
+    .step h3{font-size:19px;font-weight:600;margin:16px 0 8px;color:var(--ink);}
+    .step p{font-size:14.5px;color:var(--ink2);line-height:1.6;}
+    .peek{max-width:660px;margin:32px auto 0;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px 28px;box-shadow:0 30px 80px -46px #000;}
+    .peek .pe{color:var(--gold);letter-spacing:.2em;text-transform:uppercase;font-size:11px;font-weight:600;}
+    .pbar{display:grid;grid-template-columns:96px 1fr 40px;align-items:center;gap:14px;margin:11px 0;}
+    .pbar .l{font-size:13.5px;color:var(--ink);}
+    .pbar .t{height:10px;border-radius:999px;background:rgba(255,255,255,.04);overflow:hidden;}
+    .pbar .f{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#57c4f2,#ecca85);box-shadow:0 0 12px rgba(87,196,242,.4);}
+    .pbar .v{font-weight:500;font-size:13.5px;text-align:right;color:var(--ink);}
+    .pmove{margin-top:18px;background:linear-gradient(180deg,rgba(240,135,106,.07),rgba(240,135,106,.02));border:1px solid rgba(240,135,106,.3);border-radius:12px;padding:15px 18px;box-shadow:inset 0 0 50px -34px var(--coral-g);}
+    .pmove .tag{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:#2a1008;background:var(--cta);border-radius:5px;padding:3px 9px;}
+    .pmove p{font-size:14px;color:#f6ece7;margin-top:9px;line-height:1.55;}
+    .bespoke{max-width:780px;margin:0 auto;text-align:center;background:linear-gradient(180deg,#14161e,#0c0e13);border:1px solid rgba(203,171,109,.26);border-radius:22px;padding:44px 40px;box-shadow:0 0 90px -44px var(--gold-g),0 40px 90px -52px #000;position:relative;overflow:hidden;}
+    .bespoke::before{content:"";position:absolute;inset:0;background:radial-gradient(520px 240px at 50% -12%,rgba(203,171,109,.14),transparent 62%);pointer-events:none;}
+    .bespoke h2{font-size:31px;font-weight:600;margin:14px 0 14px;line-height:1.14;color:#fff;}
+    .bsub{max-width:580px;margin:0 auto;font-size:16px;color:var(--ink2);line-height:1.62;}
+    .bsub b{color:var(--gold);}
+    .compare{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:30px 0 4px;text-align:left;}
+    .col{background:rgba(255,255,255,.02);border:1px solid var(--line);border-radius:14px;padding:20px 22px;}
+    .col.hot{border-color:rgba(240,135,106,.42);box-shadow:0 0 48px -22px var(--coral-g);background:linear-gradient(180deg,rgba(240,135,106,.05),transparent);}
+    .ct{font-weight:600;font-size:13.5px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:12px;}
+    .col.hot .ct{color:var(--coral);}.col:not(.hot) .ct{color:var(--ink2);}
+    .ci{font-size:14px;color:var(--ink);padding:6px 0 6px 22px;position:relative;}
+    .ci::before{content:"";position:absolute;left:0;top:12px;width:7px;height:7px;border-radius:50%;background:var(--gold);box-shadow:0 0 8px var(--gold-g);}
+    .col.hot .ci::before{background:var(--coral);box-shadow:0 0 9px var(--coral);}
+    .btn-lg{display:inline-block;margin-top:26px;color:#2a1008;background:var(--cta);padding:16px 34px;border-radius:13px;font-family:'Jost',sans-serif;font-weight:600;font-size:16px;text-decoration:none;box-shadow:0 0 44px -8px var(--coral-g);transition:transform .18s,box-shadow .25s;cursor:pointer;border:0;}
+    .btn-lg:hover{transform:translateY(-2px);box-shadow:0 0 60px -4px var(--coral-g);}
+    .home-footer{position:relative;z-index:2;text-align:center;padding:54px 0 10px;border-top:1px solid var(--line);margin-top:24px;}
+    .home-footer .big{font-weight:600;font-size:26px;color:var(--ink);margin-bottom:12px;font-family:'Jost',sans-serif;}
+    .home-footer .fc{font-size:14px;color:var(--ink2);}
+
+    /* ---- loading / progress ---- */
+    .loading{padding:44px 0 36px;}
+    .countdown-ring{width:240px;height:240px;margin:0 auto 16px;}
+    .countdown-ring svg{width:240px;height:240px;transform:rotate(-90deg);}
+    .countdown-ring .bg{stroke:rgba(255,255,255,.08);stroke-width:12;}
+    .countdown-ring .progress{stroke:url(#ringGrad);stroke-width:12;stroke-linecap:round;filter:drop-shadow(0 0 7px rgba(240,135,106,.55));transition:stroke-dashoffset 1s cubic-bezier(.3,.7,.3,1);}
+    .ring-halo{position:absolute;inset:22px;border-radius:50%;box-shadow:0 0 46px -20px var(--coral-g);animation:ringpulse 2.6s ease-in-out infinite;pointer-events:none;}
+    @keyframes ringpulse{0%,100%{opacity:.55;transform:scale(.98)}50%{opacity:1;transform:scale(1.02)}}
+    .countdown-time{font-weight:600;font-size:52px;letter-spacing:-.02em;background:linear-gradient(120deg,var(--cyan),var(--gold) 60%,var(--coral));-webkit-background-clip:text;background-clip:text;color:transparent;}
+    .loading-text{font-weight:500;font-size:22px;color:var(--ink);margin-top:6px;}
+    .loading-step{font-size:14px;color:var(--muted);margin-top:14px;min-height:20px;}
+    .countdown-eta{margin-top:8px;font-size:14px;color:var(--ink2);}
+    .countdown-eta b,.loading-step b{color:var(--gold);}
+    .load-assistants{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:24px;}
+    .ac{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:9px 16px;background:rgba(255,255,255,.02);transition:all .3s;}
+    .ac .d{width:8px;height:8px;border-radius:50%;background:var(--muted);}
+    .ac.run{border-color:rgba(116,208,255,.32);color:var(--ink);}
+    .ac.run .d{background:var(--cyan);box-shadow:0 0 10px var(--cyan);animation:blink 1.1s ease-in-out infinite;}
+    .ac.done{border-color:rgba(240,135,106,.34);color:var(--ink);}
+    .ac.done .d{background:var(--coral);box-shadow:0 0 9px var(--coral-g);}
+    @keyframes blink{0%,100%{opacity:.35}50%{opacity:1}}
+
+    /* ---- report: header + hero stat ---- */
+    .results-header{border-bottom:1px solid var(--line);}
+    .report-eyebrow{color:var(--gold);letter-spacing:.24em;text-shadow:0 0 18px var(--gold-g);font-weight:600;font-size:11.5px;}
+    .results-header h2{font-weight:600;font-size:32px;color:#fff;margin:10px 0 14px;}
+    .brand-pill{background:rgba(116,208,255,.08);border:1px solid rgba(116,208,255,.18);color:#cdd6ea;border-radius:999px;padding:7px 16px;font-size:13.5px;}
+    .mention-count{font-size:15px;color:var(--ink2);}
+    .mention-count strong{font-weight:600;font-size:19px;color:var(--coral);text-shadow:0 0 22px var(--coral-g);}
+    .mention-method{color:var(--muted);}
+    .completion-badge{border:1px solid var(--line);background:rgba(255,255,255,.02);color:var(--ink2);}
+    .completion-badge.full{border-color:rgba(240,135,106,.28);background:rgba(240,135,106,.08);color:#f3d2c4;}
+    .completion-badge.full .dot{background:var(--coral);box-shadow:0 0 10px var(--coral);}
+
+    /* ---- report: where AI sees you ---- */
+    .ai-visibility{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 24px;}
+    .ai-visibility-label{color:var(--gold);letter-spacing:.16em;text-shadow:0 0 18px var(--gold-g);font-weight:600;}
+    .ai-vis-name{color:var(--ink);}
+    .ai-vis-tag{color:var(--gold);background:rgba(203,171,109,.06);border:1px solid rgba(203,171,109,.28);}
+    .ai-vis-track{height:11px;background:rgba(255,255,255,.04);border-radius:999px;}
+    .ai-vis-fill{background:linear-gradient(90deg,#57c4f2,#ecca85);box-shadow:0 0 12px rgba(87,196,242,.4);border-radius:999px;}
+    .ai-vis-num{color:var(--ink);font-weight:500;}
+    .ai-visibility-read{color:var(--ink2);border-top:1px solid var(--line);}
+
+    /* ---- report: what we found + #1 move ---- */
+    .briefing-summary{background:var(--card);border:1px solid var(--line);border-radius:16px;}
+    .briefing-summary-label{color:var(--gold);}
+    .briefing-summary-text{color:#dfe2e8;}
+    .executive-summary{background:var(--card);border-left:3px solid var(--coral);}
+    .headline-move{background:linear-gradient(180deg,rgba(240,135,106,.07),rgba(240,135,106,.02));border:1px solid rgba(240,135,106,.32);border-left:1px solid rgba(240,135,106,.32);border-radius:16px;box-shadow:0 0 60px -22px var(--coral-g),inset 0 0 60px -40px var(--coral-g);}
+    .headline-move-verb{color:#2a1008;background:var(--cta);box-shadow:0 0 20px var(--coral-g);font-weight:600;}
+    .headline-move-label{color:var(--coral);}
+    .headline-move-text{color:#f6ece7;}
+
+    /* ---- report: competitors ---- */
+    .section-title{color:var(--muted);letter-spacing:.16em;}
+    .competitor-chip{color:var(--gold);border:1px solid rgba(203,171,109,.34);background:rgba(203,171,109,.05);border-radius:999px;padding:8px 15px;box-shadow:0 0 16px -6px var(--gold-g);transition:transform .2s,box-shadow .2s,border-color .2s;}
+    .competitor-chip:hover{transform:translateY(-2px);border-color:rgba(203,171,109,.5);}
+    .competitor-chip .count{color:#e7d9b3;font-weight:600;margin-left:6px;}
+
+    /* ---- report: verdict groups + outlet cards ---- */
+    .verdict-group-title{color:#fff;font-weight:600;}
+    .verdict-group-count{color:var(--ink2);background:rgba(255,255,255,.02);border:1px solid var(--line);}
+    .verdict-group-icon.strength,.verdict-group-icon.confirmed{background:rgba(203,171,109,.08);border:1px solid rgba(203,171,109,.3);}
+    .verdict-group-icon.opportunity,.verdict-group-icon.category{background:rgba(240,135,106,.08);border:1px solid rgba(240,135,106,.32);}
+    .verdict-group-icon.neutral{background:rgba(255,255,255,.03);border:1px solid var(--line);}
+    .verdict-group-icon.emerging,.verdict-group-icon.unverified,.verdict-group-icon.mention{background:rgba(116,208,255,.06);border:1px solid rgba(116,208,255,.2);}
+    .verdict-group-intro{color:var(--ink2);}
+    .media-card{background:var(--card);border:1px solid var(--line);border-left:2px solid var(--line);border-radius:16px;box-shadow:0 24px 60px -46px #000;transition:transform .28s cubic-bezier(.2,.7,.2,1),box-shadow .3s,border-color .28s;}
+    .media-card:hover{transform:translateY(-3px);border-color:var(--line);}
+    .media-card.strength{border-left-color:var(--gold);}
+    .media-card.strength:hover{box-shadow:0 0 46px -26px var(--gold-g),0 24px 60px -44px #000;}
+    .media-card.opportunity{border-left-color:var(--coral);}
+    .media-card.opportunity:hover{box-shadow:0 0 46px -24px var(--coral-g),0 24px 60px -44px #000;}
+    .media-card.neutral{border-left-color:#4a4f58;}
+    .media-card.emerging{border-left-color:var(--cyan);}
+    .media-outlet{font-weight:600;color:#fff;}
+    .media-domain{color:var(--cyan);font-family:ui-monospace,monospace;}
+    .media-reporter{color:var(--ink2);}
+    .card-badge.strength{background:rgba(203,171,109,.06);color:#e7d2a4;border:1px solid rgba(203,171,109,.4);}
+    .card-badge.opportunity{background:rgba(240,135,106,.06);color:#f3d0c2;border:1px solid rgba(240,135,106,.42);}
+    .card-badge.neutral{background:rgba(255,255,255,.02);color:var(--ink2);border:1px solid var(--line);}
+    .card-badge.emerging{background:rgba(116,208,255,.05);color:#bfe4ff;border:1px solid rgba(116,208,255,.25);}
+    .media-stat{background:rgba(203,171,109,.05);border:1px solid rgba(203,171,109,.2);color:#d9c48f;border-radius:999px;padding:6px 12px;}
+    .media-example-url a{color:var(--cyan);}
+    .media-rationale{color:#dfe2e8;}
+    .card-authority-bar{background:rgba(255,255,255,.045);border-radius:999px;}
+    .verdict-strength{background:linear-gradient(90deg,#e6c583,#cbab6d);}
+    .verdict-opportunity{background:linear-gradient(90deg,#f0916f,#d76a4c);}
+    .verdict-neutral{background:linear-gradient(90deg,#9096a0,#6b7280);}
+    .verdict-emerging{background:linear-gradient(90deg,#5aa8f0,#74d0ff);}
+    .media-sov{border-top:1px solid var(--line);}
+    .media-sov-head{color:var(--muted);}
+    .media-sov-small{color:var(--muted);}
+    .media-sov-row-label{color:var(--ink2);}
+    .media-sov-row-label.brand strong{color:var(--ink);font-weight:600;}
+    .media-sov-row-bar{background:rgba(255,255,255,.05);border-radius:999px;}
+    .media-sov-row-bar .fill{border-radius:999px;}
+    .media-sov-row-bar .fill.brand{background:linear-gradient(90deg,#5aa8f0,#74d0ff);box-shadow:0 0 12px rgba(116,208,255,.4);}
+    .media-sov-row-bar .fill.comp{background:linear-gradient(90deg,#d9a24f,#ecca85);}
+    .media-sov-row-num{color:var(--ink);font-weight:500;}
+    .media-sov-context,.media-sov-more,.media-sov-emerging{color:var(--ink2);}
+    .media-sov-pages{color:var(--ink2);border-top:1px dashed var(--line);}
+    .media-sov-pages strong{color:var(--ink);}
+    .media-sov-pages .pe-flag{color:var(--coral);}
+    .cov-chip.confirmed{background:rgba(203,171,109,.06);color:#e7d2a4;border:1px solid rgba(203,171,109,.3);}
+    .cov-chip.mention{background:rgba(203,171,109,.05);color:#d9c48f;border:1px solid rgba(203,171,109,.24);}
+    .cov-chip.category{background:rgba(240,135,106,.06);color:#f3d0c2;border:1px solid rgba(240,135,106,.3);}
+    .dc-article{color:#dfe2e8;}
+    .dc-article .q{color:#fff;font-weight:600;}
+    .dc-date{color:#2a1008;background:var(--cta);}
+    .dc-date.old{color:var(--ink2);background:rgba(255,255,255,.03);border:1px solid var(--line);}
+    .dc-llms{color:var(--muted);}
+    .section-note{color:var(--muted);}
+
+    /* ---- report: actions / save / bespoke / feedback / misc ---- */
+    .action-btn{background:rgba(255,255,255,.03);border:1px solid var(--line);color:var(--ink);border-radius:10px;}
+    .action-btn:hover{background:rgba(255,255,255,.05);border-color:rgba(203,171,109,.34);box-shadow:0 0 22px -8px var(--gold-g);}
+    .action-btn.primary-action,.save-panel-actions .action-btn.primary-action{background:var(--cta);border-color:transparent;color:#2a1008;font-weight:600;}
+    .action-btn.primary-action:hover,.save-panel-actions .action-btn.primary-action:hover{opacity:.95;}
+    .save-panel{background:var(--card);border:1px solid var(--line);border-radius:16px;}
+    .save-panel-label{color:var(--gold);}
+    .save-panel h4{color:#fff;}
+    .save-panel-desc{color:var(--ink2);}
+    .share-url-display{background:#07080b;border:1px solid var(--line);color:var(--cyan);}
+    .share-url-display:focus{border-color:var(--coral);}
+    .share-banner{background:linear-gradient(180deg,rgba(116,208,255,.06),rgba(116,208,255,.02));border:1px solid rgba(116,208,255,.16);box-shadow:0 0 34px -18px var(--cyan-g);color:var(--ink2);border-radius:12px;}
+    .share-banner a{color:var(--cyan);}
+    .feedback-widget{background:var(--card);border:1px solid var(--line);border-radius:14px;}
+    .feedback-question{color:var(--ink);}
+    .feedback-btn{background:rgba(255,255,255,.02);border:1px solid var(--line);color:var(--ink2);}
+    .feedback-btn:hover{border-color:rgba(203,171,109,.4);background:rgba(255,255,255,.04);color:var(--ink);}
+    .feedback-btn.selected{border-color:var(--coral);background:rgba(240,135,106,.08);color:var(--coral);}
+    .feedback-thanks{color:var(--coral);}
+    .bespoke-cta{background:linear-gradient(180deg,#14161e,#0c0e13);border:1px solid rgba(203,171,109,.26);border-radius:20px;box-shadow:0 0 90px -44px var(--gold-g),0 40px 90px -52px #000;}
+    .bespoke-cta-label{color:var(--gold);}
+    .bespoke-cta h3{color:#fff;}
+    .bespoke-cta p{color:var(--ink2);}
+    .bespoke-stat{background:rgba(255,255,255,.02);border:1px solid var(--line);}
+    .bespoke-stat-num{color:#fff;}
+    .bespoke-stat-label{color:var(--muted);}
+    .cta-buy-btn{background:var(--cta);color:#2a1008;box-shadow:0 0 44px -8px var(--coral-g);font-family:'Jost',sans-serif;}
+    .prompts-toggle{color:var(--muted);border-top:1px solid var(--line);}
+    .prompts-toggle:hover{color:var(--ink2);}
+    .error-msg{background:rgba(240,135,106,.06);border:1px solid rgba(240,135,106,.3);color:#f3d0c2;}
+    .toast{background:var(--card);border:1px solid rgba(203,171,109,.4);color:var(--ink);}
+
+    /* ---- prompt editor ---- */
+    .prompt-editor-title{color:#fff;}
+    .prompt-editor-desc strong{color:var(--ink);}
+    .prompt-editor-count{color:var(--gold);}
+    .prompt-list{background:#07080b;border:1px solid var(--line);}
+    .prompt-row .ptext-input{background:#0d0f16;border:1px solid var(--line);color:var(--ink);font-family:'Inter',sans-serif;}
+    .prompt-row .ptext-input:focus{border-color:var(--coral);}
+    .prompt-row-btn{border:1px solid var(--line);color:var(--ink2);}
+    .prompt-row-btn:hover{color:var(--ink);border-color:rgba(203,171,109,.4);}
+
+    /* ---- modal ---- */
+    .modal{background:var(--card);border:1px solid var(--line);border-radius:18px;}
+    .modal h3{color:#fff;}
+    .modal p{color:var(--ink2);}
+    .modal-field label{color:var(--muted);}
+    .modal-field input{background:#07080b;border:1px solid var(--line);color:var(--ink);font-family:'Inter',sans-serif;}
+    .modal-field input:focus{border-color:var(--coral);}
+    .modal-submit{background:var(--cta);color:#2a1008;font-family:'Jost',sans-serif;font-weight:600;}
+    .modal-success h3{color:var(--coral);}
+
+    @media(max-width:720px){
+      .container{padding:0 18px 60px;}
+      .hero{padding:34px 0 20px;}
+      .hero h1{font-size:37px;}
+      .sentence{font-size:19px;line-height:1.9;}
+      .fin.topic{min-width:180px;}
+      .steps{grid-template-columns:1fr;}
+      .compare{grid-template-columns:1fr;}
+      .bespoke{padding:32px 22px;}
+      .countdown-ring,.countdown-ring svg{width:210px;height:210px;}
+      .countdown-time{font-size:44px;}
+    }
+    /* Keep the in-card SoV bars + per-assistant bars readable on narrow
+       screens — the desktop fixed 140px columns crowd out the bar itself. */
+    @media(max-width:560px){
+      .media-sov-row{grid-template-columns:minmax(64px,84px) 1fr 92px;gap:8px;}
+      .media-sov-row-num{font-size:11px;}
+      .ai-vis-row{grid-template-columns:minmax(78px,104px) 1fr 44px;gap:8px;}
+      .load-assistants{gap:7px;}
+      .ac{padding:8px 12px;font-size:12px;}
+    }
     </style>
 </head>
-<body>
+<body class="home">
+    <div class="amb"><span class="a"></span><span class="b"></span><span class="c"></span></div>
+    <div class="pglow"></div>
     <div class="container">
         <div class="signal-header">
-            <a href="https://innatec3.com" target="_blank" rel="noopener" style="font-size:13px;font-weight:500;color:#555;text-transform:uppercase;letter-spacing:2px;text-decoration:none">INNATE C3</a>
+            <a href="https://innatec3.com" target="_blank" rel="noopener" class="wm">innate c<sup>3</sup></a>
             {% if shared_data and shared_data.slug %}
-            <div style="display:flex;gap:6px">
-                <a href="/signal/{{ shared_data.slug }}" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1px;text-decoration:none;padding:6px 12px;border-radius:7px;color:#0a0a0a;background:#5aff8a;border:1px solid #5aff8a">Earned · PR</a>
-                <a href="/signal/{{ shared_data.slug }}/owned" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1px;text-decoration:none;padding:6px 12px;border-radius:7px;color:#9a9aa8;border:1px solid #26262e">Owned</a>
+            <div class="sig-tabs">
+                <a href="/signal/{{ shared_data.slug }}" class="pilltab on">Earned · PR</a>
+                <a href="/signal/{{ shared_data.slug }}/owned" class="pilltab">Owned</a>
             </div>
             {% endif %}
             <div class="auth-cluster">
                 <a href="#" onclick="openDemoModal(); return false;">Talk to us</a>
             </div>
         </div>
-        <h1>AI Citation Audit | PR Signal Finder</h1>
-        <p class="subtitle" id="initialSubtitle">What do you want your brand to be known for? We query the 5 leading AI assistants — Claude, ChatGPT, Gemini, Perplexity, and Grok — then extract citations and filter for earned media only to identify the outlets correlated with wins, where competitors are quietly pulling ahead, and the PR moves that will shift your AI mindshare.</p>
 
-        <div class="form-section" id="formSection">
-            <div class="input-group">
-                <textarea id="problemInput" placeholder="e.g. I want ACME Ventures to be known as the go-to VC for early-stage climate founders" rows="3"></textarea>
-            </div>
+        <header class="hero" id="heroSection">
+            <span class="eyebrow">PR Signal Finder · Free AI Citation Audit</span>
+            <h1>See your PR through the<br>eyes of <span class="g">AI</span>.</h1>
+            <p class="subtitle sub" id="initialSubtitle">What do you want your brand to be known for? We query the 5 leading AI assistants — Claude, ChatGPT, Gemini, Perplexity, and Grok — then extract every citation and filter for earned media only to surface the outlets doing the heavy lifting for your brand, where competitors are quietly pulling ahead, and the PR moves that will shift your AI mindshare.</p>
 
-            <!-- MVP branch: tier picker removed. Audit is always anonymous free tier.
-                 Two run paths: (1) immediate auto-prompts, (2) review/revise editor. -->
-            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:center;">
-                <button class="btn" id="submitBtn" onclick="runAudit()">Run the AI citation audit &rarr;</button>
-                <button class="btn" id="reviewBtn" onclick="openPromptEditor()" style="background:#1a1a2e; color:#cfd2ff; border:1px solid #3a3a5a;">Review &amp; revise prompts first &rarr;</button>
+            <div class="form-section" id="formSection">
+                <form class="runner" id="runnerForm" onsubmit="startHomepageAudit();return false;">
+                    <div class="sentence">I want <input id="brandInput" class="fin brand" aria-label="Your brand" autocomplete="off"> to be known for <input id="topicInput" class="fin topic" aria-label="what you want to be known for" autocomplete="off">.</div>
+                    <input type="hidden" id="problemInput">
+                    <div class="runner-btns">
+                        <button class="btn" id="submitBtn" type="submit">Run the audit &rarr;</button>
+                        <button class="btn ghost" id="reviewBtn" type="button" onclick="reviewPromptsHome()">Review &amp; revise the prompts first</button>
+                    </div>
+                </form>
+                <div class="microtag"><b>Free</b> · ~5 minutes · no login required</div>
+                <div class="assistants">
+                    <span class="lab">Queried live across</span>
+                    <span class="chip">ChatGPT</span><span class="chip">Claude</span><span class="chip">Gemini</span><span class="chip">Perplexity</span><span class="chip">Grok</span>
+                </div>
             </div>
-            <div style="margin-top:10px; font-size:12px; color:#777; text-align:center;">
-                Auto-prompts: 10 prompts generated by AI from your input, run immediately.<br>
-                Review &amp; revise: see the prompts before they run; edit, add, or remove any.
-            </div>
-        </div>
+        </header>
 
         <div class="error-msg" id="errorMsg"></div>
 
@@ -1635,19 +1968,74 @@
 
         <div class="loading" id="loading">
             <div class="countdown-ring">
-                <svg viewBox="0 0 120 120">
-                    <circle class="bg" cx="60" cy="60" r="52"/>
-                    <circle class="progress" id="countdownProgress" cx="60" cy="60" r="52"
-                        stroke-dasharray="326.73" stroke-dashoffset="326.73"/>
+                <div class="ring-halo"></div>
+                <svg viewBox="0 0 220 220">
+                    <defs>
+                        <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0" stop-color="#74d0ff"/>
+                            <stop offset=".55" stop-color="#cbab6d"/>
+                            <stop offset="1" stop-color="#f0876a"/>
+                        </linearGradient>
+                    </defs>
+                    <circle class="bg" cx="110" cy="110" r="96"/>
+                    <circle class="progress" id="countdownProgress" cx="110" cy="110" r="96"
+                        stroke-dasharray="603.19" stroke-dashoffset="603.19"/>
                 </svg>
                 <div class="countdown-time" id="countdownTime">0%</div>
             </div>
-            <div class="loading-text">Identifying your PR targets</div>
-            <div class="loading-step" id="loadingStep">Generating search prompts...</div>
+            <div class="loading-text">Reading how AI describes your brand</div>
+            <div class="loading-step" id="loadingStep">Generating search prompts…</div>
             <div class="countdown-eta" id="countdownEta"></div>
+            <div class="load-assistants" id="loadAssistants">
+                <span class="ac"><span class="d"></span>ChatGPT</span>
+                <span class="ac"><span class="d"></span>Claude</span>
+                <span class="ac"><span class="d"></span>Gemini</span>
+                <span class="ac"><span class="d"></span>Perplexity</span>
+                <span class="ac"><span class="d"></span>Grok</span>
+            </div>
         </div>
 
         <div class="results" id="results"></div>
+
+        <div id="homeMarketing">
+            <section class="blk" id="how">
+                <div class="shd"><span class="eyebrow">How it works</span></div>
+                <div class="steps">
+                    <div class="step"><span class="n">1</span><h3>Tell it what you want to be known for</h3><p>Name your brand and what you want it known for — "Lululemon, men's running apparel." That's the answer AI should be giving.</p></div>
+                    <div class="step"><span class="n">2</span><h3>We query 5 leading AIs</h3><p>Ten unbranded prompts across ChatGPT, Claude, Gemini, Perplexity and Grok — every citation extracted and classified.</p></div>
+                    <div class="step"><span class="n">3</span><h3>Get your PR read</h3><p>The outlets doing the heavy lifting, where rivals out-cite you, and your single highest-leverage move. No dashboards to decode.</p></div>
+                </div>
+            </section>
+
+            <section class="blk" id="peek">
+                <div class="shd"><span class="eyebrow">What you get</span><h2>A read, not a data dump</h2></div>
+                <div class="peek">
+                    <div class="pe">Where AI sees you</div>
+                    <div class="pbar"><span class="l">Gemini</span><span class="t"><span class="f" style="width:80%"></span></span><span class="v">8/10</span></div>
+                    <div class="pbar"><span class="l">Perplexity</span><span class="t"><span class="f" style="width:60%"></span></span><span class="v">6/10</span></div>
+                    <div class="pbar"><span class="l">ChatGPT</span><span class="t"><span class="f" style="width:50%"></span></span><span class="v">5/10</span></div>
+                    <div class="pmove"><span class="tag">Your #1 move</span><p>Pitch this lesser-known but prolific trade publication, where a rival out-cites you 2-to-1 — your highest-leverage earned-media move.</p></div>
+                </div>
+            </section>
+
+            <section class="blk" id="bespoke">
+                <div class="bespoke">
+                    <span class="eyebrow">The bespoke deep dive</span>
+                    <h2>The free read is a preview.<br>The real intelligence is built around you.</h2>
+                    <p class="bsub">A bespoke engagement goes deep: <b>100 prompts across up to 10 AI assistants</b>, every prompt modeling a specific stakeholder persona — all reviewed and approved.</p>
+                    <div class="compare">
+                        <div class="col"><div class="ct">Free preview</div><div class="ci">10 prompts</div><div class="ci">5 assistants</div><div class="ci">directional category read</div></div>
+                        <div class="col hot"><div class="ct">Bespoke deep dive</div><div class="ci">100 prompts</div><div class="ci">up to 10 assistants</div><div class="ci">personas and prompts you approve</div><div class="ci">earned + owned analysis and SOV</div><div class="ci">understand influences on corporate reputation</div></div>
+                    </div>
+                    <button class="btn-lg" type="button" onclick="openDemoModal()">Talk to us about a deep dive &rarr;</button>
+                </div>
+            </section>
+
+            <footer class="home-footer">
+                <div class="big">Start with the preview.</div>
+                <div class="fc">A communications-first take on AI visibility — from innate c³.</div>
+            </footer>
+        </div>
     </div>
 
     <div class="toast" id="toast"></div>
@@ -1699,7 +2087,7 @@
     </div>
 
     <script>
-        const CIRCUMFERENCE = 2 * Math.PI * 52; // 326.73
+        const CIRCUMFERENCE = 2 * Math.PI * 96; // 603.19 — matches the r=96 progress ring
 
         // Tuned to actual wall-clock split after LLM parallelization + URL validation:
         // free audit ~60-90s, paid audit ~3-5min. The extract step is now ~25% of
@@ -1753,6 +2141,7 @@
             const etaEl = document.getElementById('countdownEta');
 
             stepEl.textContent = detail;
+            updateAssistants(step, current, total);
 
             const stepIdx = STEP_ORDER.indexOf(step);
             let filled = 0;
@@ -1811,6 +2200,7 @@
             editorProblemStatement = input;
             retireSubtitle();
             document.getElementById('formSection').classList.add('hidden');
+            setHomeChrome(false);
             document.getElementById('errorMsg').classList.remove('active');
             // Show editor in loading state while we generate prompts.
             const ed = document.getElementById('promptEditor');
@@ -1905,6 +2295,7 @@
         function cancelPromptEditor() {
             document.getElementById('promptEditor').classList.remove('active');
             document.getElementById('formSection').classList.remove('hidden');
+            setHomeChrome(true);
             editorPrompts = [];
             editorOriginalPrompts = [];
             editorProblemStatement = '';
@@ -1938,7 +2329,12 @@
             const subtitleEl = document.getElementById('initialSubtitle');
             // Once a search has run, the hero subtitle stays retired — never
             // re-shown on error/back paths (homepage-only copy).
-            const setSubtitleVisible = (visible) => { if (subtitleEl) subtitleEl.style.display = (visible && !subtitleRetired) ? '' : 'none'; };
+            const setSubtitleVisible = (visible) => {
+                if (subtitleEl) subtitleEl.style.display = (visible && !subtitleRetired) ? '' : 'none';
+                // The hero, its two-field form, and the homepage marketing/footer
+                // all hide together when an audit starts and return together on error.
+                setHomeChrome(visible);
+            };
             setSubtitleVisible(false);
             retireSubtitle();
             document.getElementById('formSection').classList.add('hidden');
@@ -2712,11 +3108,88 @@
             } catch (e) {}
         })();
 
+        // ── P3 homepage: two-field input + progress/ambient wiring ────────
+        // The hero, its two-field runner form, and the homepage marketing +
+        // footer show/hide together. Report + loading states live outside the
+        // hero so they stay visible while it's hidden.
+        function setHomeChrome(visible) {
+            const hero = document.getElementById('heroSection');
+            if (hero) hero.style.display = visible ? '' : 'none';
+            const mkt = document.getElementById('homeMarketing');
+            if (mkt) mkt.style.display = visible ? '' : 'none';
+            document.body.classList.toggle('home', !!visible);
+        }
+        // Two visible fields (brand + topic) compose the problem_statement the
+        // rest of the pipeline already expects — same shape as the batch runner.
+        function _composeStatement() {
+            const bEl = document.getElementById('brandInput');
+            const tEl = document.getElementById('topicInput');
+            const brand = (bEl ? bEl.value : '').trim();
+            const topic = (tEl ? tEl.value : '').trim();
+            if (brand && topic) return `${brand} wants to be the company AI assistants recommend when people ask about ${topic}.`;
+            if (brand) return `${brand} wants to be the company AI assistants recommend in its category.`;
+            return '';
+        }
+        function _syncProblemInput() {
+            const composed = _composeStatement();
+            const hidden = document.getElementById('problemInput');
+            if (composed && hidden) hidden.value = composed;
+            // Fall back to a prefilled hidden value (deep-link) if the fields are empty.
+            return composed || (hidden ? (hidden.value || '').trim() : '');
+        }
+        function _homeInputError() {
+            const e = document.getElementById('errorMsg');
+            if (e) { e.textContent = 'Tell us your brand and what you want it known for.'; e.classList.add('active'); }
+            const bEl = document.getElementById('brandInput'); if (bEl) bEl.focus();
+        }
+        function startHomepageAudit() {
+            const stmt = _syncProblemInput();
+            if (!stmt) { _homeInputError(); return; }
+            runAudit({ input: stmt });
+        }
+        function reviewPromptsHome() {
+            const stmt = _syncProblemInput();
+            if (!stmt) { _homeInputError(); return; }
+            openPromptEditor();
+        }
+        // Drive the five assistant chips from the progress stream: none during
+        // prompt generation, filling done→running through the LLM step, all
+        // done once we're extracting/analyzing. (No per-provider data on the
+        // wire, so this is a faithful visual derived from the existing step.)
+        function updateAssistants(step, current, total) {
+            const chips = document.querySelectorAll('#loadAssistants .ac');
+            if (!chips.length) return;
+            if (step === 'prompts') { chips.forEach(c => { c.className = 'ac'; }); return; }
+            if (step === 'llm') {
+                const frac = total > 0 ? Math.max(0, Math.min(1, current / total)) : 0;
+                const done = Math.floor(frac * chips.length);
+                chips.forEach((c, i) => { c.className = 'ac ' + (i < done ? 'done' : 'run'); });
+                return;
+            }
+            chips.forEach(c => { c.className = 'ac done'; });
+        }
+        // Cursor-reactive hero glow.
+        addEventListener('mousemove', e => {
+            const r = document.documentElement;
+            r.style.setProperty('--mx', e.clientX + 'px');
+            r.style.setProperty('--my', e.clientY + 'px');
+        });
+        // Rotate example brand + positioning pairs through the two placeholders.
+        (function rotateExamples() {
+            const pairs = [["Lululemon", "men's running apparel"], ["Notion", "docs for engineering teams"], ["Ramp", "corporate cards for startups"], ["Oatly", "the default oat milk"], ["Everlaw", "ediscovery for litigation teams"]];
+            const bEl = document.getElementById('brandInput'), tEl = document.getElementById('topicInput');
+            if (!bEl || !tEl) return;
+            let i = 0;
+            function rot() { const p = pairs[i]; bEl.placeholder = p[0]; tEl.placeholder = p[1]; i = (i + 1) % pairs.length; }
+            rot(); setInterval(rot, 3200);
+        })();
+
         // Shared-view bootstrap: if the server injected a saved report, skip the input form.
         if (window.SHARED_REPORT) {
             const sharedSubtitle = document.getElementById('initialSubtitle');
             if (sharedSubtitle) sharedSubtitle.style.display = 'none';
             document.getElementById('formSection').classList.add('hidden');
+            setHomeChrome(false);
             const loading = document.getElementById('loading');
             if (loading) loading.classList.remove('active');
             const data = window.SHARED_REPORT;
