@@ -1854,6 +1854,12 @@
     .bespoke-stat-num{color:#fff;}
     .bespoke-stat-label{color:var(--muted);}
     .cta-buy-btn{background:var(--cta);color:#2a1008;box-shadow:0 0 44px -8px var(--coral-g);font-family:'Jost',sans-serif;}
+    .cta-secondary{border-top:1px solid var(--line);color:var(--ink2);}
+    .cta-cal{color:var(--cyan);text-decoration:none;font-weight:500;border-bottom:1px solid rgba(116,208,255,.35);padding-bottom:1px;transition:border-color .2s;}
+    .cta-cal:hover{border-bottom-color:var(--cyan);}
+    .modal-alt{margin-top:14px;text-align:center;font-size:13px;color:var(--muted);}
+    .modal-alt a{color:var(--cyan);text-decoration:none;font-weight:500;}
+    .modal-alt a:hover{text-decoration:underline;}
     .prompts-toggle{color:var(--muted);border-top:1px solid var(--line);}
     .prompts-toggle:hover{color:var(--ink2);}
     .error-msg{background:rgba(240,135,106,.06);border:1px solid rgba(240,135,106,.3);color:#f3d0c2;}
@@ -2075,6 +2081,7 @@
                 </div>
                 <button type="button" class="modal-submit" id="demoSubmit" onclick="submitDemoRequest()">Request a call</button>
                 <div class="modal-error" id="demoError"></div>
+                <div class="modal-alt">Prefer to pick a time now? <a href="https://calendly.com/nstrauss-innatec3/30min" target="_blank" rel="noopener">Book a 30-min call &rarr;</a></div>
             </div>
             <div class="modal-success" id="demoSuccess" style="display:none">
                 <h3 id="demoSuccessTitle">Thanks — we'll be in touch.</h3>
@@ -2088,6 +2095,9 @@
 
     <script>
         const CIRCUMFERENCE = 2 * Math.PI * 96; // 603.19 — matches the r=96 progress ring
+        // Soft "book a call" path on the result page (lower friction than the
+        // lead-capture modal). Update here if the Calendly link ever changes.
+        const CALENDLY_URL = 'https://calendly.com/nstrauss-innatec3/30min';
 
         // Tuned to actual wall-clock split after LLM parallelization + URL validation:
         // free audit ~60-90s, paid audit ~3-5min. The extract step is now ~25% of
@@ -2894,6 +2904,9 @@
                     <button class="cta-buy-btn" onclick="openDemoModal()">
                         Talk to us about a bespoke audit &rarr;
                     </button>
+                    <div class="cta-secondary">
+                        Prefer to skip the form? <a class="cta-cal" href="${esc(CALENDLY_URL)}" target="_blank" rel="noopener">Book a 30-min call &rarr;</a>
+                    </div>
                 </div>
             `;
 
