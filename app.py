@@ -8570,6 +8570,56 @@ Respond with ONLY valid JSON:
 # email is optional. Tunable via FREE_DAILY_CAP env var without a redeploy.
 FREE_DAILY_CAP = max(1, int(os.environ.get("FREE_DAILY_CAP", "3") or "3"))
 
+# ── Launch hardening: concurrency guard + global daily ceiling ──────────────
+# Each free audit is ~50 grounded LLM calls fanned out over 20-30 threads and is
+# memory-heavy; running several at once has OOM'd the single 2GB instance. Cap
+# SIMULTANEOUS audits with an in-process semaphore (single gunicorn process, so no
+# Redis needed); excess requests get a friendly "in line" 503 and the client auto-
+# retries. GLOBAL_DAILY_CAP is a cost / rate-limit circuit breaker across ALL IPs
+# (hundreds of audits = real provider spend). Both tunable via env for the window.
+MAX_CONCURRENT_AUDITS = max(1, int(os.environ.get("MAX_CONCURRENT_AUDITS", "2") or "2"))
+GLOBAL_DAILY_CAP = max(1, int(os.environ.get("GLOBAL_DAILY_CAP", "150") or "150"))
+_AUDIT_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_AUDITS)
+_audit_inflight_lock = threading.Lock()
+_audit_inflight = 0
+
+
+def _audit_slot_acquire():
+    """Non-blocking. True if a concurrency slot was secured (caller MUST release)."""
+    global _audit_inflight
+    if _AUDIT_SEMAPHORE.acquire(blocking=False):
+        with _audit_inflight_lock:
+            _audit_inflight += 1
+        return True
+    return False
+
+
+def _audit_slot_release():
+    """Free a concurrency slot. Safe to call once per successful acquire."""
+    global _audit_inflight
+    try:
+        _AUDIT_SEMAPHORE.release()
+    except ValueError:
+        pass  # guard against a double-release
+    with _audit_inflight_lock:
+        _audit_inflight = max(0, _audit_inflight - 1)
+
+
+def _global_audits_today(day):
+    """Total free audits recorded across ALL IPs today (for the global ceiling).
+    Fails open (returns 0) so a DB hiccup never blocks a legitimate audit."""
+    try:
+        n = db.session.query(db.func.coalesce(db.func.sum(FreeAuditUse.count), 0)) \
+            .filter(FreeAuditUse.day == day).scalar()
+        return int(n or 0)
+    except Exception as _ge:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        print("global-audit-count query failed (allowing):", str(_ge)[:120])
+        return 0
+
 # Comma-separated list of client IPs exempt from the per-day cap. Set on Render
 # (Environment tab) when you want unlimited audits from a specific IP — your own
 # residential / office IP, a co-worker, a demo machine. Look up the IP from any
@@ -8624,6 +8674,18 @@ def _normalize_email(s):
     if not s or len(s) > 254 or not _EMAIL_RE.match(s):
         return None
     return s
+
+
+@app.route('/healthz')
+def healthz():
+    """Lightweight liveness probe — no DB, no LLM. Surfaces audit concurrency so
+    Render alerts and manual checks can watch the launch spike."""
+    return jsonify({
+        "status": "ok",
+        "audits_inflight": _audit_inflight,
+        "max_concurrent": MAX_CONCURRENT_AUDITS,
+        "slots_free": max(0, MAX_CONCURRENT_AUDITS - _audit_inflight),
+    }), 200
 
 
 @app.route('/citation-audit', methods=['GET', 'POST'])
@@ -8708,22 +8770,53 @@ def citation_audit():
                 )
                 db.session.add(lead)
         # Per-IP per-day abuse cap — the primary cost control now email is optional.
+        # CHECK only here; the per-IP increment is deferred until a concurrency slot
+        # is secured below, so at-capacity retries don't burn the daily quota.
         use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
         if use and use.count >= FREE_DAILY_CAP:
             return jsonify({
                 "error": f"You've used your {FREE_DAILY_CAP} free audits for today. Talk to us about a bespoke audit for unlimited access.",
                 "code": "rate_limited",
             }), 429
-        if use:
-            use.count += 1
-        else:
-            use = FreeAuditUse(ip=ip, day=today, count=1)
-            db.session.add(use)
-        db.session.commit()
+        # Global daily ceiling across ALL IPs — cost / rate-limit circuit breaker.
+        if _global_audits_today(today) >= GLOBAL_DAILY_CAP:
+            return jsonify({
+                "error": "The free audit has hit its daily limit — lots of interest today! "
+                         "Talk to us for a full bespoke audit, or check back tomorrow.",
+                "code": "global_limit",
+            }), 429
+        db.session.commit()  # persist any lead upsert from above (increment deferred)
         print(f"[audit] {'lead capture: ' + lead_email if lead_email else 'anonymous audit'} ip={ip}")
 
     user_id = user.id if user else None
     cfg = TIER_CONFIG[tier]
+
+    # ── Concurrency guard ── cap simultaneous audits so a traffic spike can't OOM
+    # the single 2GB instance. Excess requests get a friendly "in line" 503; the
+    # template auto-retries, so the user sees a queue state, never a 500 or a hang.
+    if not _audit_slot_acquire():
+        return jsonify({
+            "code": "at_capacity",
+            "error": "We're at capacity right now — a couple of audits are already running. "
+                     "You're in line; it usually clears within a few minutes and will start automatically.",
+            "retry_after": 45,
+        }), 503
+    # Slot secured — record per-IP usage now (deferred from the cap check above so
+    # at-capacity retries don't burn the daily quota). Exempt IPs are never metered.
+    if not _ip_is_exempt_from_cap(ip):
+        try:
+            _use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
+            if _use:
+                _use.count += 1
+            else:
+                db.session.add(FreeAuditUse(ip=ip, day=today, count=1))
+            db.session.commit()
+        except Exception as _ue:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            print("usage increment failed (continuing):", str(_ue)[:120])
 
     q = queue.Queue()
 
@@ -8813,6 +8906,8 @@ def citation_audit():
             else:
                 user_message = "Analysis step failed unexpectedly. Nathan has been notified to investigate — please try again in a moment."
             q.put(json.dumps({"type": "error", "error": user_message}))
+        finally:
+            _audit_slot_release()
 
     t = threading.Thread(target=worker)
     t.start()

@@ -1964,6 +1964,19 @@
             fetch('/citation-audit', { method: 'POST', body: form }).then(async response => {
                 if (!response.ok && response.headers.get('content-type')?.includes('application/json')) {
                     const data = await response.json().catch(() => ({}));
+                    // At capacity — keep the "in line" state (loading stays up) and
+                    // auto-retry; never revert to the form or show a 500.
+                    if (data.code === 'at_capacity') {
+                        document.getElementById('loading').classList.add('active');
+                        document.getElementById('formSection').classList.add('hidden');
+                        document.getElementById('results').classList.remove('active');
+                        const _ls = document.getElementById('loadingStep');
+                        if (_ls) _ls.textContent = "You’re in line — a few audits are running. This starts automatically in a moment…";
+                        const _eta = document.getElementById('countdownEta');
+                        if (_eta) _eta.textContent = 'waiting for a free slot…';
+                        setTimeout(() => runAudit({ input: input, prompts: opts.prompts }), (data.retry_after || 45) * 1000);
+                        return;
+                    }
                     document.getElementById('loading').classList.remove('active');
                     document.getElementById('formSection').classList.remove('hidden');
                     setSubtitleVisible(true);
