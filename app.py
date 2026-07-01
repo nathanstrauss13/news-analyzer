@@ -2066,7 +2066,12 @@ Articles: {json.dumps(summarized_articles[:50])}"""
 
 @app.route("/")
 def root_redirect():
-    return redirect("/citation-audit", code=308)
+    # Preserve the query string so LinkedIn attribution survives: a visitor landing
+    # on signal.innatec3.com/?utm_source=linkedin must arrive at
+    # /citation-audit?utm_source=linkedin, where the GET handler stashes the UTM.
+    qs = request.query_string.decode('utf-8', 'ignore')
+    target = "/citation-audit" + (("?" + qs) if qs else "")
+    return redirect(target, code=308)
 
 
 @app.route("/legacy-index", methods=["GET", "POST"])
