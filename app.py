@@ -4060,6 +4060,17 @@ def _count_brand_mentions(brand, all_responses, is_primary_brand=False):
         )
         if full_count > max(cs_count * 2, 3):
             return cs_count
+        # COMPETITOR-ONLY tighter guard for a short token whose case-insensitive
+        # count is inflated by a generic lowercase word ("BILL" <- "bill payment",
+        # "Mesh" <- "mesh network"). The 2x guard above can NEVER fire once the
+        # proper-noun (CS) count is large — 34*2=68 exceeds the 50-response corpus —
+        # so BILL read 43 (incl. generic "bill") and wrongly beat the audited brand.
+        # When the lowercase-only surplus is material, fall back to the proper-noun
+        # count. Kept OFF the audited brand (is_primary_brand) so its tuned behavior
+        # is unchanged; only competitor rankings are affected.
+        if (not is_primary_brand and cs_count >= 2
+                and (full_count - cs_count) >= max(3, 0.15 * full_count)):
+            return cs_count
 
     # The aggressive short-form handling (4-char first words + the proper-noun
     # override) applies ONLY to the AUDITED BRAND (is_primary_brand). Competitors
@@ -9560,8 +9571,20 @@ def view_signal_report(slug):
     # on-the-fly earned_wins clean without re-running the audit. Raw all_responses
     # and citations are left intact (the CSV/JSON export still shows everything).
     try:
+        _corp_content = (' blog', ' resource center', ' resource hub')
         def _ed_ok(o):
-            return classify_citation_domain((o.get('domain') or '')) not in ('non_editorial', 'retail', 'defunct')
+            dom = (o.get('domain') or '')
+            if classify_citation_domain(dom) in ('non_editorial', 'retail', 'defunct'):
+                return False
+            # Corporate content-marketing (a vendor's own "<Brand> Blog" / resource
+            # center) is not a pitchable earned-media outlet — drop it unless the
+            # domain is a known editorial publication. Catches spend-mgmt vendor
+            # blogs (Fyle Blog, Precoro Blog, ApprovalMax Blog) that pass domain
+            # classification but shouldn't surface as pitch targets.
+            nm = (o.get('outlet') or o.get('name') or '').strip().lower()
+            if nm.endswith(_corp_content) and dom.lower() not in EDITORIAL_OUTLETS:
+                return False
+            return True
         if isinstance(data.get('outlet_sov'), list):
             data['outlet_sov'] = [o for o in data['outlet_sov'] if _ed_ok(o)]
         if isinstance(data.get('media_targets'), list):
