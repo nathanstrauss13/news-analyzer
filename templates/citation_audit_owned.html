@@ -2,124 +2,157 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+{# Shared customer report — keep it out of search indexes. #}
+<meta name="robots" content="noindex,nofollow">
 <title>Owned Signal Finder — {{ brand }} — INNATE C3</title>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- Google Analytics 4 -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-K0ECCXPL90"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-K0ECCXPL90');
+</script>
 <style>
-  * { box-sizing: border-box; }
-  body { font-family:'IBM Plex Sans',sans-serif; background:#0a0a0a; color:#e0e0e0; margin:0; }
-  .container { max-width:860px; margin:0 auto; padding:32px 24px 80px; }
-  a { color:#7acbff; }
-  .signal-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:28px; }
-  .brandmark { font-size:13px; font-weight:500; color:#888; text-transform:uppercase; letter-spacing:2px; text-decoration:none; }
-  .switcher { display:flex; gap:6px; }
-  .switcher a { font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:1px; text-decoration:none;
-                padding:6px 12px; border-radius:7px; color:#9a9aa8; border:1px solid #26262e; }
-  .switcher a.active { color:#0a0a0a; background:#5aff8a; border-color:#5aff8a; }
-  .report-eyebrow { font-size:12px; font-weight:600; letter-spacing:2px; text-transform:uppercase; color:#5aaf7a; margin-bottom:8px; }
-  h2 { font-size:30px; color:#fff; margin:0 0 10px; }
-  .brand-pill { display:inline-block; font-size:12px; background:#1a1a2e; padding:4px 12px; border-radius:20px; color:#7a8aff; }
-  .lead { font-size:15px; color:#bbb; margin:18px 0 4px; line-height:1.5; }
-  .lead strong { color:#5aff8a; }
-  .method { font-size:12px; color:#6a6a78; margin-bottom:6px; }
-  .mix { font-size:13px; color:#9a9aa8; margin:6px 0 0; }
-  .mix b { color:#cfd2ff; }
-  .headline-move { display:flex; gap:14px; align-items:flex-start; margin:28px 0 36px; padding:18px 22px;
-                   background:#0f1a12; border:1px solid #1f4a2a; border-left:4px solid #5aff8a; border-radius:12px; }
-  .hm-verb { flex-shrink:0; font-size:11px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase;
-             color:#0f1a12; background:#5aff8a; padding:5px 11px; border-radius:6px; margin-top:1px; }
-  .hm-label { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#7acc7a; font-weight:700; margin-bottom:3px; }
-  .hm-text { color:#dfeede; font-size:15px; line-height:1.5; }
-  .section-title { font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:1.5px; color:#b8b8c8; margin:40px 0 6px; }
-  .section-note { font-size:13px; color:#8a8a9a; margin-bottom:16px; line-height:1.45; }
-  .sov-row { display:flex; align-items:center; gap:12px; margin:7px 0; }
-  .sov-name { width:180px; font-size:13px; color:#e8e8f0; flex-shrink:0; }
-  .sov-row.brand .sov-name { color:#5aff8a; font-weight:700; }
-  .sov-track { flex:1; height:11px; background:#1a1a26; border-radius:5px; overflow:hidden; }
-  .sov-fill { height:100%; background:#4a9eff; border-radius:5px; }
-  .sov-row.brand .sov-fill { background:#5aff8a; }
-  .sov-num { width:96px; text-align:right; font-size:12px; color:#cfd2ff; font-weight:600; flex-shrink:0; }
-  .card { background:#0e0e18; border:1px solid #1e1e2c; border-radius:12px; padding:15px 18px; margin:10px 0; }
-  .card .topic { font-size:15px; color:#fff; font-weight:600; margin-bottom:6px; line-height:1.4; }
-  .card .winners { font-size:13px; color:#9a9aa8; }
-  .card .winners b { color:#ff9b6b; }
-  .yours { font-size:13px; color:#aab; line-height:1.6; }
-  .empty { color:#777; font-style:italic; font-size:13px; }
-  .footer { margin-top:48px; padding-top:20px; border-top:1px solid #1e1e2c; font-size:12px; color:#666; line-height:1.6; }
+:root{--ink:#EBECEF;--ink2:#9aa1ad;--muted:#6b7280;--line:rgba(255,255,255,.07);
+  --gold:#cbab6d;--gold-g:rgba(203,171,109,.40);--coral:#f0876a;--coral-g:rgba(240,135,106,.34);--cyan:#74d0ff;--cyan-g:rgba(116,208,255,.32);
+  --cta:linear-gradient(180deg,#f0916f,#d76a4c)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(1100px 520px at 80% -6%,rgba(203,171,109,.09),transparent 60%),radial-gradient(1000px 560px at 8% 3%,rgba(116,208,255,.06),transparent 55%),#07080b;color:var(--ink);font-family:'Inter',-apple-system,sans-serif;line-height:1.55;padding:36px 0 20px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:820px;margin:0 auto;padding:0 26px}
+h2,.eyebrow,.wm,.brand,.stat,.pilltab,.movehd,.gh,.gapcard h4,.oc b,.on.you,.ov{font-family:'Jost',sans-serif}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:26px;gap:12px;flex-wrap:wrap}
+.top a{text-decoration:none}
+.wm{font-weight:500;letter-spacing:-.01em;font-size:20px;color:#f4f4f5}.wm sup{font-size:.56em}
+.tabs{display:flex;gap:8px}
+.pilltab{font-size:12px;letter-spacing:.12em;text-transform:uppercase;font-weight:600;padding:7px 14px;border-radius:999px;border:1px solid var(--line);color:var(--ink2);background:rgba(255,255,255,.02);transition:color .2s,border-color .2s}
+.pilltab:hover{color:var(--ink)}
+.pilltab.on{color:#2a1008;background:var(--cta);border-color:transparent;box-shadow:0 0 22px -6px var(--coral-g)}
+.pilltab.on:hover{color:#2a1008}
+.talk{font-size:12.5px;color:var(--ink);padding:8px 15px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.03);transition:border-color .2s,box-shadow .2s}
+.talk:hover{border-color:rgba(203,171,109,.4);box-shadow:0 0 18px -8px var(--gold-g)}
+.eyebrow{color:var(--gold);letter-spacing:.24em;text-transform:uppercase;font-size:11.5px;font-weight:600;text-shadow:0 0 18px var(--gold-g)}
+.brand{font-weight:600;font-size:32px;margin:10px 0 14px;color:#fff}
+.cat{display:inline-block;font-size:13.5px;color:#cdd6ea;background:rgba(116,208,255,.08);border:1px solid rgba(116,208,255,.18);border-radius:999px;padding:7px 16px}
+.stat{font-size:15px;margin:20px 0 4px;color:var(--ink2)}
+.stat b{font-weight:600;font-size:19px;color:var(--coral);text-shadow:0 0 22px var(--coral-g)}
+.sub{font-size:13px;color:var(--muted)}
+.mix{font-size:13.5px;color:var(--ink2);margin-top:8px}.mix b{color:var(--ink)}
+.move{position:relative;background:linear-gradient(180deg,rgba(240,135,106,.07),rgba(240,135,106,.02));border:1px solid rgba(240,135,106,.32);border-radius:16px;padding:22px 26px;margin-top:26px;box-shadow:0 0 60px -22px var(--coral-g),inset 0 0 60px -40px var(--coral-g)}
+.move .tag{display:inline-block;font-weight:600;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#2a1008;background:var(--cta);border-radius:6px;padding:4px 11px;box-shadow:0 0 20px var(--coral-g);margin-bottom:12px;font-family:'Jost',sans-serif}
+.movehd{color:var(--coral);font-weight:600;letter-spacing:.14em;text-transform:uppercase;font-size:11.5px;margin-bottom:8px}
+.move p{font-size:15.5px;color:#f6ece7;line-height:1.6}
+.sec{margin-top:40px}
+.gh{color:var(--gold);letter-spacing:.16em;text-transform:uppercase;font-size:11.5px;font-weight:600}
+.gsub{font-size:13px;color:var(--muted);margin:8px 0 18px;line-height:1.55}
+.orow{display:grid;grid-template-columns:168px 1fr 92px;align-items:center;gap:16px;margin:10px 0}
+.on{font-size:14px;color:var(--ink2)}.on.you{font-weight:600;color:var(--cyan)}
+.ot{height:11px;border-radius:999px;background:rgba(255,255,255,.05);overflow:hidden}
+.of{display:block;height:100%;border-radius:999px}
+.of.you{background:linear-gradient(90deg,#5aa8f0,#74d0ff);box-shadow:0 0 12px rgba(116,208,255,.4)}
+.of.rival{background:linear-gradient(90deg,#d9a24f,#ecca85)}
+.ov{font-size:13px;color:var(--ink);text-align:right}
+.gapcard{background:linear-gradient(180deg,#12141b,#0d0f14);border:1px solid var(--line);border-left:2px solid var(--coral);border-radius:14px;padding:18px 22px;margin-top:12px;box-shadow:0 24px 60px -46px #000;transition:transform .26s cubic-bezier(.2,.7,.2,1),box-shadow .3s}
+.gapcard:hover{transform:translateY(-3px);box-shadow:0 0 46px -24px var(--coral-g),0 24px 60px -44px #000}
+.gapcard h4{font-weight:600;font-size:16px;line-height:1.4;color:#fff}
+.gapcard p{font-size:13.5px;color:var(--ink2);margin-top:8px}
+.gapcard b{color:var(--coral)}
+.owndoms{margin-top:14px;display:flex;flex-wrap:wrap;gap:10px}
+.oc{font-size:13px;color:var(--cyan);border:1px solid rgba(116,208,255,.24);border-radius:999px;padding:8px 15px;background:rgba(116,208,255,.05)}
+.oc b{color:#cfe9fb;font-weight:600}
+.empty{color:var(--muted);font-style:italic;font-size:13.5px;margin-top:8px}
+footer{margin-top:44px;padding-top:22px;border-top:1px solid var(--line);font-size:13px;color:var(--muted);line-height:1.7}
+footer a{color:var(--gold);text-decoration:none}
+footer a:hover{text-decoration:underline}
+@media(max-width:560px){
+  .top{margin-bottom:20px}
+  .brand{font-size:27px}
+  .orow{grid-template-columns:112px 1fr 78px;gap:10px}
+  .on{font-size:13px}
+}
 </style>
 </head>
 <body>
-<div class="container">
-  <div class="signal-header">
-    <a href="https://innatec3.com" target="_blank" rel="noopener" class="brandmark">INNATE C3</a>
-    <div class="switcher">
-      <a href="/signal/{{ slug }}">Earned · PR</a>
-      <a href="/signal/{{ slug }}/owned" class="active">Owned</a>
+<div class="wrap">
+  <div class="top">
+    <a href="https://innatec3.com" target="_blank" rel="noopener" class="wm">innate c<sup>3</sup></a>
+    <div class="tabs">
+      <a href="/signal/{{ slug }}" class="pilltab">Earned · PR</a>
+      <a href="/signal/{{ slug }}/owned" class="pilltab on">Owned</a>
     </div>
+    <a href="https://calendly.com/nstrauss-innatec3/30min" target="_blank" rel="noopener" class="talk">Talk to us</a>
   </div>
 
-  <div class="report-eyebrow">Owned Signal Finder</div>
-  <h2>{{ brand }}</h2>
-  <span class="brand-pill">{{ category }}</span>
+  <div class="eyebrow">Owned Signal Finder</div>
+  <div class="brand">{{ brand }}</div>
+  <span class="cat">{{ category }}</span>
 
   {% set sov = owned.owned_sov %}
   {% set mix = owned.mix %}
-  <div class="lead">
+  <div class="stat">
     {% if sov.owned_total %}
-      <strong>{{ (sov.brand_share*100)|round|int }}% owned share of voice</strong> — AI cites {{ brand }}'s own content {{ sov.brand_owned }} times vs {{ sov.owned_total - sov.brand_owned }} for competitors in this category.
+      <b>{{ (sov.brand_share*100)|round|int }}% owned share of voice</b> — AI cites {{ brand }}'s own content {{ sov.brand_owned }} times vs {{ sov.owned_total - sov.brand_owned }} for competitors in this category.
     {% else %}
       AI cites little owned content in this category yet.
     {% endif %}
   </div>
-  <div class="method">Owned visibility measured on unbranded category queries</div>
+  <div class="sub">Owned visibility measured on unbranded category queries</div>
   {% if mix.total %}
   <div class="mix">Citation mix: <b>{{ mix.owned }}</b> owned (your &amp; competitor sites) vs <b>{{ mix.editorial }}</b> editorial, of {{ mix.total }} total — {% if mix.owned > mix.editorial %}this category rewards owned content.{% else %}this category leans on earned/editorial coverage.{% endif %}</div>
   {% endif %}
 
   {% if owned.headline_move %}
-  <div class="headline-move">
-    <span class="hm-verb">{{ owned.headline_move.verb }}</span>
-    <div>
-      <div class="hm-label">Your #1 owned move</div>
-      <div class="hm-text">{{ owned.headline_move.text }}</div>
-    </div>
+  <div class="move">
+    <span class="tag">{{ owned.headline_move.verb }}</span>
+    <div class="movehd">Your #1 owned move</div>
+    <p>{{ owned.headline_move.text }}</p>
   </div>
   {% endif %}
 
-  <div class="section-title">Owned share of voice — whose content AI pulls</div>
-  <div class="section-note">Of the brand-and-competitor owned content AI cites for this category, how much is yours.</div>
-  {% set counts = sov.rows|map(attribute='count')|list %}
-  {% set maxc = (counts|max if counts else 1) or 1 %}
-  {% for r in sov.rows %}
-  <div class="sov-row {% if r.is_brand %}brand{% endif %}">
-    <div class="sov-name">{{ (r.name if r.name|length < 26 else r.name[:24] ~ '…') }}{% if r.is_brand %} (you){% endif %}</div>
-    <div class="sov-track"><div class="sov-fill" style="width:{{ (r.count / maxc * 100)|round|int }}%"></div></div>
-    <div class="sov-num">{{ r.count }} · {{ (r.share*100)|round|int }}%</div>
-  </div>
-  {% endfor %}
-  {% if sov.parent_folded %}<div class="section-note" style="margin-top:10px">Counted under {{ brand }}: content on {{ sov.parent_folded|join(', ') }} (parent/owner).</div>{% endif %}
-
-  <div class="section-title">Content gaps — where to publish</div>
-  <div class="section-note">Topics where AI cites a competitor's own content and {{ brand }} has nothing to pull. Publishing AI-discoverable content here is the fastest path to getting cited.</div>
-  {% if owned.content_gaps %}
-    {% for g in owned.content_gaps %}
-    <div class="card">
-      <div class="topic">{% if g.recommendation %}Publish {{ g.recommendation }}{% else %}{{ g.topic }}{% endif %}</div>
-      <div class="winners">AI cites {% for w in g.winners %}<b>{{ w.name }}</b>{% if not loop.last %} · {% endif %}{% endfor %} for &ldquo;{{ g.topic|truncate(70) }}&rdquo;</div>
+  <div class="sec">
+    <div class="gh">Owned share of voice — whose content AI pulls</div>
+    <div class="gsub">Of the brand-and-competitor owned content AI cites for this category, how much is yours.</div>
+    {% set counts = sov.rows|map(attribute='count')|list %}
+    {% set maxc = (counts|max if counts else 1) or 1 %}
+    {% for r in sov.rows %}
+    <div class="orow">
+      <span class="on {% if r.is_brand %}you{% endif %}">{{ (r.name if r.name|length < 26 else r.name[:24] ~ '…') }}{% if r.is_brand %} (you){% endif %}</span>
+      <span class="ot"><span class="of {% if r.is_brand %}you{% else %}rival{% endif %}" style="width:{{ (r.count / maxc * 100)|round|int }}%"></span></span>
+      <span class="ov">{{ r.count }} · {{ (r.share*100)|round|int }}%</span>
     </div>
     {% endfor %}
-  {% else %}
-    <div class="empty">No clear content gaps — AI doesn't cite a competitor's owned content on any topic where you're absent.</div>
-  {% endif %}
+    {% if sov.parent_folded %}<div class="gsub" style="margin-top:12px">Counted under {{ brand }}: content on {{ sov.parent_folded|join(', ') }} (parent/owner).</div>{% endif %}
+  </div>
+
+  <div class="sec">
+    <div class="gh">Content gaps — where to publish</div>
+    <div class="gsub">Topics where AI cites a competitor's own content and {{ brand }} has nothing to pull. Publishing AI-discoverable content here is the fastest path to getting cited.</div>
+    {% if owned.content_gaps %}
+      {% for g in owned.content_gaps %}
+      <div class="gapcard">
+        <h4>{% if g.recommendation %}Publish {{ g.recommendation }}{% else %}{{ g.topic }}{% endif %}</h4>
+        <p>AI cites {% for w in g.winners %}<b>{{ w.name }}</b>{% if not loop.last %} · {% endif %}{% endfor %} for &ldquo;{{ g.topic|truncate(70) }}&rdquo;</p>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty">No clear content gaps — AI doesn't cite a competitor's owned content on any topic where you're absent.</div>
+    {% endif %}
+  </div>
 
   {% set yours = (sov.rows[0].domains if (sov.rows and sov.rows[0].is_brand) else []) %}
-  <div class="section-title">Owned content AI already cites from you</div>
-  {% if yours %}
-    <div class="yours">{% for d in yours %}{{ d.domain }} ({{ d.count }}){% if not loop.last %} · {% endif %}{% endfor %}</div>
-  {% else %}
-    <div class="empty">AI isn't citing any of {{ brand }}'s own pages for this category yet — the gaps above are where to start.</div>
-  {% endif %}
+  <div class="sec">
+    <div class="gh">Owned content AI already cites from you</div>
+    {% if yours %}
+      <div class="owndoms">{% for d in yours %}<span class="oc">{{ d.domain }} <b>{{ d.count }}</b></span>{% endfor %}</div>
+    {% else %}
+      <div class="empty">AI isn't citing any of {{ brand }}'s own pages for this category yet — the gaps above are where to start.</div>
+    {% endif %}
+  </div>
 
-  <div class="footer">Owned Signal Finder by <a href="https://innatec3.com" target="_blank" rel="noopener">INNATE C3</a> · same audit as <a href="/signal/{{ slug }}">PR Signal Finder</a> · For a bespoke analysis, contact nstrauss@innatec3.com</div>
+  <footer>Owned Signal Finder by <a href="https://innatec3.com" target="_blank" rel="noopener">innate c³</a> · same audit as <a href="/signal/{{ slug }}">PR Signal Finder</a> · For a bespoke analysis, <a href="https://calendly.com/nstrauss-innatec3/30min" target="_blank" rel="noopener">talk to us</a>.</footer>
 </div>
 </body>
 </html>

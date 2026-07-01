@@ -12,6 +12,14 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Google Analytics 4 -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-K0ECCXPL90"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-K0ECCXPL90');
+    </script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -2098,6 +2106,11 @@
         // Soft "book a call" path on the result page (lower friction than the
         // lead-capture modal). Update here if the Calendly link ever changes.
         const CALENDLY_URL = 'https://calendly.com/nstrauss-innatec3/30min';
+        // GA4 funnel: fire audit_started (once per user-initiated run) and
+        // audit_completed (on result). No-ops if gtag is blocked/absent.
+        function track(name, params) {
+            try { if (window.gtag) window.gtag('event', name, params || {}); } catch (e) {}
+        }
 
         // Tuned to actual wall-clock split after LLM parallelization + URL validation:
         // free audit ~60-90s, paid audit ~3-5min. The extract step is now ~25% of
@@ -2335,6 +2348,9 @@
             const email = (emailEl ? emailEl.value : '').trim();
 
             lastAuditContext = { slug: null, problem_statement: input, tier: tier, email: email };
+            // Funnel start — skip on the auto-retry after an at-capacity 503 so
+            // one user intent counts once.
+            if (!opts._retry) track('audit_started', { tier: tier });
 
             const subtitleEl = document.getElementById('initialSubtitle');
             // Once a search has run, the hero subtitle stays retired — never
@@ -2380,7 +2396,7 @@
                         if (_ls) _ls.textContent = "You’re in line — a few audits are running. This starts automatically in a moment…";
                         const _eta = document.getElementById('countdownEta');
                         if (_eta) _eta.textContent = 'waiting for a free slot…';
-                        setTimeout(() => runAudit({ input: input, prompts: opts.prompts }), (data.retry_after || 45) * 1000);
+                        setTimeout(() => runAudit({ input: input, prompts: opts.prompts, _retry: true }), (data.retry_after || 45) * 1000);
                         return;
                     }
                     document.getElementById('loading').classList.remove('active');
@@ -2421,6 +2437,7 @@
                                     }
                                     document.getElementById('loading').classList.remove('active');
                                     lastAuditContext.slug = msg.data.slug || null;
+                                    track('audit_completed', { brand: (msg.data && msg.data.brand) || '', slug: (msg.data && msg.data.slug) || '' });
                                     renderResults(msg.data);
                                     // Update the URL to the shareable slug so the browser's Back
                                     // button (from a 404, sign-in page, or any subsequent nav)
