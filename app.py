@@ -10170,8 +10170,8 @@ def admin_qa(slug):
     """Operator-only: run the ground-truth QA pass on any existing audit and
     return the full checks table + corrected numbers as JSON. Applies the same
     display-time media filter the live report uses, so this reflects what a
-    viewer actually sees. Does not mutate the saved payload — use ?refresh=1 on
-    the report itself (also operator-key-gated) to persist a correction."""
+    viewer actually sees. Does not mutate the saved payload — use
+    /admin/persist-rerender/<slug> to persist a correction."""
     if not _operator_ok():
         abort(404)
     data = _load_signal_report(slug)
@@ -10183,6 +10183,38 @@ def admin_qa(slug):
         "slug": slug, "brand": data.get('brand'), "category": data.get('category'),
         "client_ready": result['client_ready'], "blocking_failures": result['blocking_failures'],
         "checks": result['checks'], "corrected": result['corrected'],
+    })
+
+
+@app.route('/admin/persist-rerender/<slug>', methods=['POST'])
+def admin_persist_rerender(slug):
+    """Operator-only: run _rerender_from_cached_responses and WRITE the result
+    back to the SharedResult row (unlike the report view's ?refresh=1, which is
+    ephemeral / preview-only and never touches the DB). Isolated from the full
+    page-render pipeline (no earned_wins/launch_landing/page-evidence side
+    effects) so a failure here surfaces its real exception instead of being
+    silently swallowed by an unrelated try/except elsewhere. ?refresh=1 also
+    regenerates the executive summary (one Claude call)."""
+    if not _operator_ok():
+        abort(404)
+    rec = SharedResult.query.filter_by(slug=slug).first()
+    if not rec:
+        return jsonify({"error": f"no report for slug '{slug}'"}), 404
+    try:
+        data = json.loads(rec.payload)
+        data = _rerender_from_cached_responses(data, regenerate_summary=(request.args.get('refresh') == '1'))
+        rec.payload = json.dumps(data, default=str)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()[-3000:]}), 500
+    qa = data.get('qa') or {}
+    return jsonify({
+        "slug": slug, "saved": True, "brand": data.get('brand'),
+        "brand_mention_count": data.get('brand_mention_count'),
+        "brand_aliases": data.get('brand_aliases'), "brand_domains": data.get('brand_domains'),
+        "client_ready": qa.get('client_ready'), "blocking_failures": qa.get('blocking_failures'),
     })
 
 
