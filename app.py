@@ -10091,6 +10091,17 @@ def view_signal_report(slug):
             data = _rerender_from_cached_responses(data, regenerate_summary=want_refresh)
             print(f"[rerender] applied current logic to slug={slug} "
                   f"(operator, summary_regen={want_refresh})")
+            # &save=1 persists the correction back to the SharedResult row —
+            # without it, a rerender is EPHEMERAL (this request's render only),
+            # matching the original "preview current logic" behavior. Persisting
+            # is gated strictly on the operator key (not the IP-exempt path),
+            # since it's a write to production data, not just a preview.
+            if request.args.get('save') == '1' and _operator_ok():
+                rec = SharedResult.query.filter_by(slug=slug).first()
+                if rec:
+                    rec.payload = json.dumps(data, default=str)
+                    db.session.commit()
+                    print(f"[rerender] persisted correction to SharedResult slug={slug}")
         except Exception as e:
             print(f"[rerender] failed for slug={slug}: {e}")
 
