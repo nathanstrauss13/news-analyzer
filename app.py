@@ -4957,6 +4957,26 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
         _top = _won[0] if _won else None
         _topdom = _top.get('domain') if _top else None
         if _overall_leader:
+            # NARROW overall lead (top rival within ~6pts) — a fragile 1-3 response
+            # edge in a tightly clustered field is NOT "hold, nothing urgent." If a
+            # rival out-cites the brand at a meaningful-volume outlet, recommend
+            # pulling ahead THERE (convert the dead heat into a durable lead) rather
+            # than coasting on Maintain. Comfortable leaders (>=6pt margin) still
+            # Maintain. (Observed: GE HealthCare 74% edging Philips 72% / Siemens
+            # 68% was told to "Maintain" a 2-pt lead — the honest lever is to pull
+            # ahead where Philips out-cites it, not to coast.)
+            _margin = _brand_overall - _comp_overall
+            _contested = sorted((r for r in sov if _n(r) >= 4),
+                                key=lambda r: (_gap(r), _n(r)), reverse=True)
+            if 0 <= _margin < 0.06 and _contested and _gap(_contested[0]) >= 1:
+                _cd = _contested[0].get('domain')
+                _mpp = max(1, round(_margin * 100))
+                text = (f"Extend the lead. {b} is out front by only ~{_mpp} point"
+                        f"{'' if _mpp == 1 else 's'} in a tightly clustered field — a fragile edge, "
+                        f"not a safe margin. Pull ahead where a rival is closest: press for coverage "
+                        f"at {_cd}, where a competitor currently out-cites {b}, to turn a dead heat "
+                        f"into a durable lead. Re-audit next quarter to confirm the gap widens.")
+                return {"verb": "Extend", "outlet": _cd, "text": text}
             _where = (f" — keep your cadence at {_topdom} and the other outlets where "
                       f"you already lead" if _topdom else "")
             text = (f"Maintain. {b} already holds top-tier AI visibility in this category — it leads "
