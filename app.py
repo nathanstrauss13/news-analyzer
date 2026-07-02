@@ -5213,6 +5213,36 @@ def _resolve_brand_domains(brand, category=None):
     return out
 
 
+_DOMAIN_ALIVE_CACHE = {}
+
+
+def _domain_is_dead(dm):
+    """True ONLY if the domain's root definitively does not host a real site
+    (HTTP 404/410). FAIL-OPEN: returns False on 200/3xx/403/timeouts/DNS/SSL
+    errors, so a real-but-slow or bot-blocking domain is never dropped. Used to
+    catch an LLM-hallucinated same-name domain that name-matches the brand but
+    is a dead/parking page — observed: IREN resolved to iren.ai (404) instead of
+    the real iren.com (200). Cached per-process."""
+    if not dm:
+        return False
+    if dm in _DOMAIN_ALIVE_CACHE:
+        return _DOMAIN_ALIVE_CACHE[dm]
+    import urllib.request
+    import urllib.error
+    dead = False
+    try:
+        req = urllib.request.Request(
+            'https://' + dm + '/', method='GET',
+            headers={'User-Agent': 'Mozilla/5.0 (compatible; SignalFinder/1.0)'})
+        urllib.request.urlopen(req, timeout=4).close()  # any response -> alive
+    except urllib.error.HTTPError as e:
+        dead = e.code in (404, 410)                      # real-but-dead root page
+    except Exception:
+        dead = False                                     # DNS/timeout/SSL -> keep
+    _DOMAIN_ALIVE_CACHE[dm] = dead
+    return dead
+
+
 def _verify_brand_domains(brand, aliases, domains, all_responses):
     """Drop a brand_domain that doesn't plausibly belong to the brand: its
     registrable label must match the brand/alias name, OR the bare domain string
@@ -5232,15 +5262,18 @@ def _verify_brand_domains(brand, aliases, domains, all_responses):
         plausible_name = bool(label) and (
             label in bl or (bl and (bl.startswith(label) or bl.endswith(label)))
             or any(label and al and (label in al or al in label) for al in alias_labels))
-        if plausible_name:
-            out.append(dm)
-            continue
         seen = any(
             (dm or '').lower() in ((c.get('url') or '') + (c.get('domain') or '')).lower()
             for r in (all_responses or []) for c in (r.get('citations') or []))
         if not seen:
             seen = any((dm or '').lower() in (_response_text(r) or '').lower() for r in (all_responses or []))
         if seen:
+            out.append(dm)              # grounded in a real citation -> always trust
+            continue
+        if plausible_name and not _domain_is_dead(dm):
+            # Name-matches the brand but never cited: keep it UNLESS the domain is
+            # verifiably dead (a same-name hallucination on a parking/404 domain,
+            # e.g. IREN -> iren.ai (404) instead of the real iren.com).
             out.append(dm)
     return out
 
