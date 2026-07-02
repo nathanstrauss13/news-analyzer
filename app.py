@@ -254,6 +254,25 @@ class InboundAudit(db.Model):
     referrer = db.Column(db.String(400), nullable=True)
 
 
+class PageVisit(db.Model):
+    """One row per HUMAN visit to a tool page (homepage or a shared report) —
+    first-party traffic analytics for the operator /traffic view. Bots and
+    operator/self IPs are skipped at log time. Unique visitors are counted as
+    distinct IPs over a window. Never public; surfaced only at /traffic."""
+    __tablename__ = 'page_visits'
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    kind = db.Column(db.String(16), nullable=True, index=True)      # 'home' | 'report'
+    path = db.Column(db.String(200), nullable=True)
+    slug = db.Column(db.String(32), nullable=True, index=True)      # report slug if kind='report'
+    ip = db.Column(db.String(64), nullable=True, index=True)        # for unique-visitor counting
+    referrer = db.Column(db.String(400), nullable=True)
+    ref_host = db.Column(db.String(160), nullable=True, index=True) # parsed referrer host (linkedin.com)
+    utm_source = db.Column(db.String(120), nullable=True, index=True)
+    utm_medium = db.Column(db.String(120), nullable=True)
+    utm_campaign = db.Column(db.String(120), nullable=True)
+
+
 class LoginToken(db.Model):
     __tablename__ = 'login_tokens'
     id = db.Column(db.Integer, primary_key=True)
@@ -9237,6 +9256,43 @@ def _ip_is_exempt_from_cap(ip):
     return bool(ip) and ip in _FREE_AUDIT_BYPASS_IPS
 
 
+def _log_page_visit(kind, slug=None):
+    """Best-effort first-party traffic log for the operator /traffic view. Skips
+    bots/HEAD and operator-self IPs. NEVER raises — a logging failure must never
+    break a page render. Referrer host is parsed for the referral roll-up;
+    internal (innatec3.com) referrers are treated as direct."""
+    try:
+        if _is_link_preview_bot(request.headers.get('User-Agent', ''), request.method):
+            return
+        ip = _client_ip()
+        if _ip_is_exempt_from_cap(ip):        # don't count operator self-traffic
+            return
+        ref = (request.referrer or '')[:400]
+        ref_host = None
+        if ref:
+            try:
+                from urllib.parse import urlparse
+                h = (urlparse(ref).hostname or '').lower()
+                if h.startswith('www.'):
+                    h = h[4:]
+                ref_host = None if (not h or 'innatec3.com' in h) else h[:160]
+            except Exception:
+                ref_host = None
+        db.session.add(PageVisit(
+            kind=kind, path=(request.path or '')[:200], slug=slug, ip=ip,
+            referrer=ref or None, ref_host=ref_host,
+            utm_source=(request.args.get('utm_source') or '')[:120] or None,
+            utm_medium=(request.args.get('utm_medium') or '')[:120] or None,
+            utm_campaign=(request.args.get('utm_campaign') or '')[:120] or None,
+        ))
+        db.session.commit()
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
+
 # Per-email hard cap on free audits. Each audit costs real money in LLM calls;
 # uncapped self-serve becomes a billing risk on any viral share. Default 1 free
 # audit per email; raise via EMAIL_AUDIT_CAP env var.
@@ -9290,6 +9346,7 @@ def citation_audit():
                 }
         except Exception:
             pass
+        _log_page_visit('home')
         return render_template(
             'citation_audit.html',
             ga_measurement_id=GA_MEASUREMENT_ID,
@@ -10132,6 +10189,12 @@ def view_signal_report(slug):
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
 
+    # First-party traffic log — count a real report view, not an operator
+    # re-render/persist hit (fresh/refresh/save). Bots + operator IPs are
+    # skipped inside _log_page_visit.
+    if not (request.args.get('fresh') or request.args.get('refresh') or request.args.get('save')):
+        _log_page_visit('report', slug=slug)
+
     data = _apply_display_editorial_filter(data)
 
     want_fresh = request.args.get('fresh') == '1'
@@ -10590,6 +10653,8 @@ def _operator_nav(active=''):
     k = request.args.get('key')
     q = f"?key={k}" if k else ""
     items = [('outreach', 'Outreach board', '/outreach'),
+             ('traffic', 'Traffic', '/traffic'),
+             ('inbound', 'Inbound', '/inbound'),
              ('dashboards', 'All dashboards', '/dashboards'),
              ('rstats', 'Link opens', '/r-stats')]
     links = []
@@ -10600,6 +10665,88 @@ def _operator_nav(active=''):
             links.append(f'<a href="{path}{q}">{label}</a>')
     return ('<div style="font-size:13px;margin:0 0 16px;padding-bottom:10px;'
             'border-bottom:1px solid #eee">' + ' &nbsp;·&nbsp; '.join(links) + '</div>')
+
+
+@app.route('/traffic')
+def traffic_view():
+    """Operator-only first-party traffic dashboard: unique visitors, pageviews,
+    top referrers, source breakdown, a 14-day trend, top-viewed reports, and the
+    visits -> audits-run -> outreach-opens funnel. Built entirely from the
+    PageVisit / InboundAudit / LinkClick tables — no third-party analytics."""
+    if not _operator_ok():
+        abort(404)
+    from datetime import timedelta
+    now = datetime.utcnow()
+
+    def since(d):
+        return now - timedelta(days=d)
+
+    # Window stats: visits, unique IPs, home vs report split.
+    windows = []
+    for label, d in (('24 hours', 1), ('7 days', 7), ('30 days', 30)):
+        base = PageVisit.query.filter(PageVisit.created_at >= since(d))
+        windows.append({
+            'label': label,
+            'visits': base.count(),
+            'uniques': base.with_entities(PageVisit.ip).distinct().count(),
+            'home': base.filter(PageVisit.kind == 'home').count(),
+            'report': base.filter(PageVisit.kind == 'report').count(),
+        })
+    total_visits = PageVisit.query.count()
+    total_uniques = db.session.query(PageVisit.ip).distinct().count()
+
+    # Top referrers (30d) — external hosts only (internal navigation is nulled at log time).
+    referrers = (db.session.query(PageVisit.ref_host, db.func.count(PageVisit.id))
+                 .filter(PageVisit.created_at >= since(30), PageVisit.ref_host.isnot(None))
+                 .group_by(PageVisit.ref_host)
+                 .order_by(db.func.count(PageVisit.id).desc()).limit(12).all())
+
+    # Source breakdown (30d): LinkedIn / other-UTM / Referral / Direct.
+    src_counts = {}
+    for utm, rh in (PageVisit.query.with_entities(PageVisit.utm_source, PageVisit.ref_host)
+                    .filter(PageVisit.created_at >= since(30)).all()):
+        s = (utm or '').lower()
+        if s == 'linkedin':
+            key = 'LinkedIn'
+        elif s:
+            key = utm
+        elif rh:
+            key = 'Referral'
+        else:
+            key = 'Direct'
+        src_counts[key] = src_counts.get(key, 0) + 1
+    sources = sorted(src_counts.items(), key=lambda x: -x[1])
+
+    # 14-day daily trend (visits + uniques).
+    trend = []
+    for i in range(13, -1, -1):
+        d0 = (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+        d1 = d0 + timedelta(days=1)
+        dq = PageVisit.query.filter(PageVisit.created_at >= d0, PageVisit.created_at < d1)
+        trend.append({'day': d0.strftime('%-m/%-d'),
+                      'visits': dq.count(),
+                      'uniques': dq.with_entities(PageVisit.ip).distinct().count()})
+    trend_max = max((t['visits'] for t in trend), default=0) or 1
+
+    # Top-viewed reports (30d).
+    top_reports = (db.session.query(PageVisit.slug, db.func.count(PageVisit.id))
+                   .filter(PageVisit.created_at >= since(30), PageVisit.kind == 'report',
+                           PageVisit.slug.isnot(None))
+                   .group_by(PageVisit.slug)
+                   .order_by(db.func.count(PageVisit.id).desc()).limit(10).all())
+
+    # Funnel (30d): homepage visits -> audits run -> genuine outreach opens.
+    home_30 = PageVisit.query.filter(PageVisit.created_at >= since(30), PageVisit.kind == 'home').count()
+    audits_30 = InboundAudit.query.filter(InboundAudit.created_at >= since(30)).count()
+    opens_30 = LinkClick.query.filter(LinkClick.clicked_at >= since(30),
+                                      LinkClick.is_bot.is_(False)).count()
+
+    return render_template('traffic.html',
+                           nav=_operator_nav('traffic'), windows=windows,
+                           total_visits=total_visits, total_uniques=total_uniques,
+                           referrers=referrers, sources=sources, trend=trend, trend_max=trend_max,
+                           top_reports=top_reports, home_30=home_30, audits_30=audits_30,
+                           opens_30=opens_30, keyq=(f"?key={request.args.get('key')}" if request.args.get('key') else ""))
 
 
 @app.route('/r-stats')

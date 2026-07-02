@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Traffic — Innate C3 operator</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "IBM Plex Sans", Arial, sans-serif; color:#1a1a1a; background:#fafafa; margin:0; padding:24px 22px 80px; }
+  .wrap { max-width:1080px; margin:0 auto; }
+  a { color:#2563eb; }
+  h1 { font-size:22px; margin:0 0 3px; }
+  .eyebrow { font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:#6b7280; font-weight:700; }
+  .sub { font-size:13px; color:#6b7280; margin:2px 0 22px; }
+  .sub b { color:#1a1a1a; }
+  h2 { font-size:12px; letter-spacing:.5px; text-transform:uppercase; color:#6b7280; font-weight:700; margin:30px 0 12px; }
+  .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  @media(max-width:720px){ .cards{grid-template-columns:1fr} .cols{grid-template-columns:1fr!important} }
+  .card { background:#fff; border:1px solid #e6e6ea; border-radius:12px; padding:16px 18px; }
+  .card .win { font-size:11px; letter-spacing:.5px; text-transform:uppercase; color:#9096a0; font-weight:700; }
+  .card .big { font-size:30px; font-weight:800; margin:6px 0 0; letter-spacing:-.02em; }
+  .card .big span { font-size:14px; font-weight:600; color:#6b7280; }
+  .card .split { font-size:12px; color:#6b7280; margin-top:8px; padding-top:8px; border-top:1px solid #f0f0f3; }
+  .card .split b { color:#1a1a1a; }
+  .alltime { font-size:13px; color:#6b7280; margin-top:12px; }
+  .alltime b { color:#1a1a1a; font-size:15px; }
+  /* trend */
+  .trend { display:flex; align-items:flex-end; gap:6px; height:120px; background:#fff; border:1px solid #e6e6ea; border-radius:12px; padding:14px 16px; }
+  .tcol { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; }
+  .tbar { width:100%; max-width:34px; background:linear-gradient(180deg,#3b82f6,#93c5fd); border-radius:4px 4px 0 0; min-height:2px; position:relative; }
+  .tbar .u { position:absolute; left:0; right:0; bottom:0; background:#1d4ed8; border-radius:4px 4px 0 0; }
+  .tlab { font-size:9.5px; color:#9096a0; margin-top:5px; white-space:nowrap; }
+  .tval { font-size:10px; color:#6b7280; font-weight:700; margin-bottom:3px; min-height:12px; }
+  .legend { font-size:11px; color:#6b7280; margin-top:8px; }
+  .legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin:0 4px -1px 10px; }
+  /* two-col */
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; background:#fff; border:1px solid #e6e6ea; border-radius:12px; overflow:hidden; }
+  td, th { padding:9px 14px; text-align:left; border-bottom:1px solid #f0f0f3; }
+  th { font-size:10.5px; letter-spacing:.4px; text-transform:uppercase; color:#9096a0; font-weight:700; }
+  tr:last-child td { border-bottom:none; }
+  td.n { text-align:right; font-weight:700; font-variant-numeric:tabular-nums; }
+  .bar { height:7px; background:#eef2ff; border-radius:4px; overflow:hidden; margin-top:5px; }
+  .bar span { display:block; height:100%; background:#3b82f6; border-radius:4px; }
+  .empty { color:#9096a0; font-style:italic; padding:16px; text-align:center; }
+  /* funnel */
+  .funnel { display:flex; align-items:stretch; gap:0; background:#fff; border:1px solid #e6e6ea; border-radius:12px; overflow:hidden; }
+  .stage { flex:1; padding:18px 16px; text-align:center; }
+  .stage + .stage { border-left:1px solid #f0f0f3; }
+  .stage .lab { font-size:11px; letter-spacing:.4px; text-transform:uppercase; color:#9096a0; font-weight:700; }
+  .stage .num { font-size:26px; font-weight:800; margin:5px 0 2px; }
+  .stage .cv { font-size:12px; color:#16a34a; font-weight:700; }
+  .note { font-size:11.5px; color:#9096a0; margin-top:12px; line-height:1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  {{ nav | safe }}
+  <div class="eyebrow">Innate C3 · operator</div>
+  <h1>Traffic</h1>
+  <div class="sub">First-party visits to the tool — homepage + shared reports. Bots and your own (operator) traffic are excluded. Unique = distinct IP over the window.</div>
+
+  <div class="cards">
+    {% for w in windows %}
+    <div class="card">
+      <div class="win">Last {{ w.label }}</div>
+      <div class="big">{{ w.uniques }} <span>unique</span></div>
+      <div class="split"><b>{{ w.visits }}</b> pageviews · <b>{{ w.home }}</b> home · <b>{{ w.report }}</b> report</div>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="alltime">All time: <b>{{ total_uniques }}</b> unique visitors · <b>{{ total_visits }}</b> pageviews.</div>
+
+  <h2>Last 14 days</h2>
+  <div class="trend">
+    {% for t in trend %}
+    <div class="tcol" title="{{ t.day }}: {{ t.visits }} views, {{ t.uniques }} unique">
+      <div class="tval">{{ t.visits if t.visits else '' }}</div>
+      <div class="tbar" style="height:{{ (t.visits / trend_max * 100) | round(1) }}%">
+        <div class="u" style="height:{{ (t.uniques / (t.visits or 1) * 100) | round(1) }}%"></div>
+      </div>
+      <div class="tlab">{{ t.day }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="legend"><i style="background:#93c5fd"></i>pageviews <i style="background:#1d4ed8"></i>unique</div>
+
+  <h2>Acquisition funnel (last 30 days)</h2>
+  <div class="funnel">
+    <div class="stage">
+      <div class="lab">Homepage visits</div>
+      <div class="num">{{ home_30 }}</div>
+    </div>
+    <div class="stage">
+      <div class="lab">Audits run</div>
+      <div class="num">{{ audits_30 }}</div>
+      <div class="cv">{{ ((audits_30 / home_30 * 100) | round(1)) if home_30 else 0 }}% of visits</div>
+    </div>
+    <div class="stage">
+      <div class="lab">Outreach opens</div>
+      <div class="num">{{ opens_30 }}</div>
+      <div class="cv">genuine (bots excluded)</div>
+    </div>
+  </div>
+  <div class="note">Homepage visits → audits run is the self-serve conversion. Outreach opens are genuine human opens of tracked prospect links (LinkClick).</div>
+
+  <div class="cols" style="margin-top:8px">
+    <div>
+      <h2>Top referrers (30d)</h2>
+      {% if referrers %}
+      <table>
+        <thead><tr><th>Referring site</th><th style="text-align:right">Visits</th></tr></thead>
+        <tbody>
+          {% set rmax = referrers[0][1] %}
+          {% for host, c in referrers %}
+          <tr><td>{{ host }}<div class="bar"><span style="width:{{ (c / rmax * 100) | round }}%"></span></div></td><td class="n">{{ c }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}<div class="empty">No external referrers logged yet.</div>{% endif %}
+    </div>
+    <div>
+      <h2>Source (30d)</h2>
+      {% if sources %}
+      <table>
+        <thead><tr><th>Channel</th><th style="text-align:right">Visits</th></tr></thead>
+        <tbody>
+          {% set smax = sources[0][1] %}
+          {% for name, c in sources %}
+          <tr><td>{{ name }}<div class="bar"><span style="width:{{ (c / smax * 100) | round }}%"></span></div></td><td class="n">{{ c }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}<div class="empty">No visits logged yet.</div>{% endif %}
+    </div>
+  </div>
+
+  <h2>Most-viewed reports (30d)</h2>
+  {% if top_reports %}
+  <table>
+    <thead><tr><th>Report</th><th style="text-align:right">Views</th></tr></thead>
+    <tbody>
+      {% for slug, c in top_reports %}
+      <tr><td><a href="/signal/{{ slug }}" target="_blank" rel="noopener">/signal/{{ slug }}</a></td><td class="n">{{ c }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">No report views logged yet.</div>{% endif %}
+
+  <div class="note" style="margin-top:22px">First-party analytics — no third-party dependency. Data starts accruing from the moment this ships; historical GA traffic isn't imported.</div>
+</div>
+</body>
+</html>
