@@ -10013,7 +10013,6 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     return out
 
 
-@app.route('/signal/<slug>')
 def _apply_display_editorial_filter(data):
     """Drop vendor / competitor / non-pitchable domains from the DISPLAYED outlet
     lists (outlet_sov, media_targets), in place. A report's saved data can predate
@@ -10061,6 +10060,7 @@ def _apply_display_editorial_filter(data):
     return data
 
 
+@app.route('/signal/<slug>')
 def view_signal_report(slug):
     """Render a shared PR Signal Finder report.
 
