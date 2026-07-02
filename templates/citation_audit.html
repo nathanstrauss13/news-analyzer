@@ -1873,6 +1873,12 @@
     .prompts-toggle{color:var(--muted);border-top:1px solid var(--line);}
     .prompts-toggle:hover{color:var(--ink2);}
     .error-msg{background:rgba(240,135,106,.06);border:1px solid rgba(240,135,106,.3);color:#f3d0c2;}
+    /* Operator-only QA banner — deliberately a harsh red, distinct from the report's
+       gold/terracotta/cyan palette, so a not-client-ready audit can't be mistaken
+       for a normal report state. */
+    .qa-banner{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:rgba(220,38,38,.12);border:1px solid rgba(220,38,38,.45);border-radius:10px;padding:12px 16px;margin-bottom:18px;font-size:13px;color:#fecaca;}
+    .qa-banner-tag{font-family:'Jost',sans-serif;font-weight:700;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#fff;background:#dc2626;border-radius:6px;padding:4px 10px;white-space:nowrap;}
+    .qa-banner-text{line-height:1.5;}
     .toast{background:var(--card);border:1px solid rgba(203,171,109,.4);color:var(--ink);}
 
     /* ---- prompt editor ---- */
@@ -2064,6 +2070,7 @@
         window.SIGNAL_JSON_URL  = {{ json_url  | tojson | safe if json_url  else 'null' }};
         window.SIGNAL_USER      = {{ 'true' if signal_user else 'false' }};
         window.SIGNAL_CREDITS   = {{ signal_credits or 0 }};
+        window.SIGNAL_OPERATOR_VIEW = {{ 'true' if operator_view else 'false' }};
     </script>
 
     <div class="modal-overlay" id="demoModal" onclick="if(event.target===this)closeDemoModal()">
@@ -2518,8 +2525,22 @@
                 completionBadge = `<div class="completion-badge ${cls}"><span class="dot"></span><span>${esc(label)}${advice}</span></div>`;
             }
 
+            // Operator-only QA banner — never shown to a public/prospect view.
+            // Surfaces the ground-truth QA pass's blocking failures right at the
+            // top so a not-client-ready report can't be missed before carding it.
+            let qaBanner = '';
+            if (window.SIGNAL_OPERATOR_VIEW && data.qa && data.qa.client_ready === false) {
+                const fails = (data.qa.blocking_failures || []).join(', ');
+                qaBanner = `
+                    <div class="qa-banner">
+                        <span class="qa-banner-tag">QA — NOT CLIENT READY</span>
+                        <span class="qa-banner-text">Blocking checks failed: ${esc(fails)}. Corrected brand count: ${data.qa.corrected ? data.qa.corrected.brand_mention_count : '?'}. See /admin/qa/${esc(slug || '')} for the full table.</span>
+                    </div>
+                `;
+            }
             const mindsharePct = Math.round((data.brand_mention_count || 0) / (data.total_responses || 1) * 100);
             let html = `
+                ${qaBanner}
                 <div class="results-header">
                     <div class="report-eyebrow">AI Mindshare Briefing</div>
                     <h2>${esc(data.brand)}</h2>

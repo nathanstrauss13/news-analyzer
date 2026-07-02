@@ -5193,6 +5193,38 @@ def _resolve_brand_domains(brand, category=None):
     return out
 
 
+def _verify_brand_domains(brand, aliases, domains, all_responses):
+    """Drop a brand_domain that doesn't plausibly belong to the brand: its
+    registrable label must match the brand/alias name, OR the bare domain string
+    must actually appear somewhere in the raw citations/response text. Catches a
+    hallucinated domain tied to a hallucinated alias (BMS's fake alias "Eliquat"
+    -> a fabricated eliquat.com) and same-name-company mixups (a same-named but
+    unrelated company's domain) that a name-only check alone would miss. Applied
+    on EVERY render (not just fresh) so a stale stored domain from before this
+    guard existed gets dropped on the next refresh instead of reused blindly."""
+    if not domains:
+        return domains
+    bl = re.sub(r'[^a-z0-9]', '', (brand or '').lower())
+    alias_labels = [re.sub(r'[^a-z0-9]', '', (a or '').lower()) for a in (aliases or [])]
+    out = []
+    for dm in domains:
+        label = re.sub(r'[^a-z0-9]', '', (dm or '').split('.')[0].lower())
+        plausible_name = bool(label) and (
+            label in bl or (bl and (bl.startswith(label) or bl.endswith(label)))
+            or any(label and al and (label in al or al in label) for al in alias_labels))
+        if plausible_name:
+            out.append(dm)
+            continue
+        seen = any(
+            (dm or '').lower() in ((c.get('url') or '') + (c.get('domain') or '')).lower()
+            for r in (all_responses or []) for c in (r.get('citations') or []))
+        if not seen:
+            seen = any((dm or '').lower() in (_response_text(r) or '').lower() for r in (all_responses or []))
+        if seen:
+            out.append(dm)
+    return out
+
+
 # Curated sub-brand -> parent map for de-duplicating the competitor list. Hand-maintained
 # on purpose: an LLM resolver hallucinated false parents (e.g. PIMCO -> Capital Group) and
 # missed real ones, which would corrupt client-facing competitor counts. High-confidence
@@ -5201,6 +5233,28 @@ _COMPETITOR_SUBBRAND_PARENTS = {
     'spdr': 'State Street',
     'spdrs': 'State Street',
     'ishares': 'BlackRock',
+    # Pharma flagship drugs. Without these, a brand credited for its OWN flagship
+    # drug via brand_aliases (e.g. BMS <- Opdivo) looks like it "leads" competitors
+    # who are only ever counted by company name — inflating the lead (observed:
+    # BMS "+10 over Merck" collapsed to a ~3pt lead once Merck got credit for
+    # Keytruda too). Keep to well-known, unambiguous flagship drugs only.
+    'keytruda': 'Merck',
+    'opdivo': 'Bristol Myers Squibb',
+    'yervoy': 'Bristol Myers Squibb',
+    'eliquis': 'Bristol Myers Squibb',
+    'revlimid': 'Bristol Myers Squibb',
+    'orencia': 'Bristol Myers Squibb',
+    'tecentriq': 'Roche',
+    'avastin': 'Roche',
+    'herceptin': 'Roche',
+    'ocrevus': 'Roche',
+    'imfinzi': 'AstraZeneca',
+    'tagrisso': 'AstraZeneca',
+    'ibrance': 'Pfizer',
+    'enhertu': 'Daiichi Sankyo',
+    'repatha': 'Amgen',
+    'prolia': 'Amgen',
+    'enbrel': 'Amgen',
 }
 
 
@@ -5751,6 +5805,8 @@ _BRAND_GENERIC_TOKENS = {
     'the', 'and', 'inc', 'corp', 'co', 'llc', 'ltd', 'plc', 'group', 'holding', 'holdings',
     'company', 'companies', 'airways', 'airlines', 'technologies', 'technology', 'systems',
     'international', 'global', 'brands', 'labs', 'studio', 'studios', 'media', 'corporation',
+    'healthcare', 'health', 'medical', 'sciences', 'science', 'solutions', 'services',
+    'pharmaceuticals', 'pharma', 'partners', 'ventures', 'capital', 'financial',
 }
 
 
@@ -5767,7 +5823,15 @@ def _brand_match_forms(brand, aliases=None):
         return []
     forms = [brand]
     toks = re.findall(r"[A-Za-z][\w&'’-]*", brand)
-    distinctive = [t for t in toks if re.search(r'[a-z][A-Z]', t) or (t.isupper() and len(t) >= 3)]
+    # A token can LOOK distinctive (CamelCase / ALLCAPS) while still being a
+    # generic corporate-suffix word — "HealthCare" in "GE HealthCare" matches
+    # the CamelCase shape but is just the word "healthcare", which appears in
+    # almost every response about a healthcare company (inflated GE 37/50 to a
+    # false 49/50). Apply the same generic-token filter here as the fallback
+    # branch below already used.
+    distinctive = [t for t in toks
+                  if (re.search(r'[a-z][A-Z]', t) or (t.isupper() and len(t) >= 3))
+                  and t.lower() not in _BRAND_GENERIC_TOKENS]
     if distinctive:
         forms += distinctive
     else:
@@ -5783,6 +5847,12 @@ def _brand_match_forms(brand, aliases=None):
         if f.lower() not in {x.lower() for x in out}:
             out.append(f)
     for al in (aliases or []):          # fold in sub-brand aliases + their distinctive tokens
+        # An alias is matched WHOLESALE against the answer text (not decomposed
+        # like the brand name above), so it needs its own length/generic guard —
+        # otherwise a short/common alias (e.g. "GE") bypasses the >=3-char guard
+        # entirely, since as forms[0] of its own recursive call it's never i>0.
+        if len(al) < 3 or al.lower() in _GENERIC_ALIAS_WORDS:
+            continue
         for f in _brand_match_forms(al):
             if f and f.lower() not in {x.lower() for x in out}:
                 out.append(f)
@@ -5796,6 +5866,45 @@ def _response_text(r):
 def _brand_present_in_text(forms, text):
     """True if any distinctive brand form appears (word-boundary, case-insensitive)."""
     return any(re.search(r'\b' + re.escape(f) + r'\b', text, re.IGNORECASE) for f in (forms or []))
+
+
+# Common English words that recur as brand-alias / product-line names but are too
+# generic to safely count without false positives (GE HealthCare's alias "Discovery"
+# collides with generic usage of the word; "Innova" collides with "innovation").
+# Small and high-confidence on purpose — extend only on a confirmed false positive.
+_GENERIC_ALIAS_WORDS = {
+    'discovery', 'signature', 'precision', 'vitality', 'freedom', 'horizon',
+    'access', 'edge', 'core', 'pulse', 'vision', 'summit', 'origin', 'spark', 'signa',
+    'innova', 'innovation', 'connect', 'plus', 'pro', 'max', 'one', 'go', 'live',
+}
+
+
+def _verify_brand_aliases(aliases, all_responses):
+    """Drop hallucinated / too-generic aliases BEFORE they're used for counting.
+    An alias must (1) be >=3 chars, (2) not be a generic English word, (3) appear
+    at least once in the raw response text (word-boundary), and (4) not be
+    lowercase-dominated (a proxy for "this is being used as an ordinary word, not
+    the brand"). Catches two real failure modes seen in production: hallucinated
+    aliases that match NOTHING (BMS's "Cellgene"/"Eliquat" — garbled/wrong drug
+    names invented by the resolver) and generic aliases that match too MUCH (GE
+    HealthCare's "GE"/"Innova"/"Discovery" inflated 37/50 to a false 49/50).
+    Deterministic — no LLM call, safe to run on every audit including reruns of
+    older payloads whose stored aliases predate this guard."""
+    out = []
+    for a in (aliases or []):
+        a = (a or '').strip()
+        if len(a) < 3 or a.lower() in _GENERIC_ALIAS_WORDS:
+            continue
+        pat_ci = re.compile(r'(?<![A-Za-z0-9])' + re.escape(a) + r'(?![A-Za-z0-9])', re.IGNORECASE)
+        ci = sum(1 for r in (all_responses or []) if pat_ci.search(_response_text(r)))
+        if ci == 0:
+            continue
+        pat_cs = re.compile(r'(?<![A-Za-z0-9])' + re.escape(a) + r'(?![A-Za-z0-9])')
+        cs = sum(1 for r in (all_responses or []) if pat_cs.search(_response_text(r)))
+        if (ci - cs) >= 3 and cs < ci * 0.5:
+            continue
+        out.append(a)
+    return out
 
 
 def _compute_per_llm_visibility(brand, all_responses, aliases=None):
@@ -7819,6 +7928,286 @@ Respond with ONLY valid JSON:
     }
 
 
+# ── Ground-truth QA pass ─────────────────────────────────────────────────────
+# Recounts every displayed number against the saved all_responses and flags an
+# audit as NOT client-ready if a number-integrity check fails. Deterministic —
+# no LLM call, so it's cheap enough to run on every audit automatically. See
+# ~/Desktop/count_bug_fix_brief.md for the incidents this codifies.
+# Shared with _apply_display_editorial_filter (the actual display-time filter)
+# so the QA check always agrees with what a viewer sees. Two kinds of entries:
+# low-authority vendor/agency sites, and CONFIRMED competitors whose domain
+# surfaces as a media target without the competitor being extracted into the
+# top-10 competitors[] list (so the name-match filter can't catch them) — e.g.
+# Kyndryl's report cited ensono.com (a direct managed-services rival) as a
+# "pitch target"; its own citation rationale even called it "a competitor," but
+# it never made the top-10 cut. Curated, not auto-detected — extend on sighting.
+_LOWQ_MEDIA_DOMAINS = {
+    'amasty.com', 'classicinformatics.com', 'xcelacore.com', 'managedsolution.com',
+    'in-com.com', 'gocorptech.com', 'auxis.com', 'ensono.com',
+}
+_CORP_CONTENT_SUFFIXES = (' blog', ' resource center', ' resource hub')
+
+
+def _qa_wb(term, case_sensitive=False):
+    return re.compile(r'(?<![A-Za-z0-9])' + re.escape(term) + r'(?![A-Za-z0-9])',
+                      0 if case_sensitive else re.IGNORECASE)
+
+
+def _qa_union(forms):
+    return re.compile('|'.join(r'(?<![A-Za-z0-9])' + re.escape(f) + r'(?![A-Za-z0-9])' for f in forms
+                              if f), re.IGNORECASE)
+
+
+def _qa_audit(payload):
+    """Ground-truth QA validation for a completed audit. Returns
+    {checks[], flags[], client_ready, blocking_failures, corrected}. `corrected`
+    carries the ground-truth values (brand count, per-LLM, standings) to use
+    when the stored ones fail a check. Safe to call on any payload shape;
+    missing fields degrade gracefully rather than raising."""
+    ar = payload.get('all_responses') or []
+    brand = (payload.get('brand') or '').strip()
+    aliases = payload.get('brand_aliases') or []
+    domains = payload.get('brand_domains') or []
+    category = (payload.get('category') or '')
+    stored_brand = payload.get('brand_mention_count')
+    total = payload.get('total_responses') or len(ar)
+    competitors = payload.get('competitors') or []
+    per_llm = payload.get('per_llm_visibility') or []
+    media_targets = payload.get('media_targets') or []
+    owned = payload.get('owned') or {}
+    checks, flags, corrected = [], [], {}
+
+    def rc(pat):
+        return sum(1 for r in ar if pat.search(r.get('response') or ''))
+
+    def lowercase_dominated(term):
+        ci = rc(_qa_wb(term)); cs = rc(_qa_wb(term, case_sensitive=True))
+        return ci, cs, ((ci - cs) >= 3 and cs < ci * 0.5)
+
+    BLOCKING = {'brand_recount', 'alias_quality', 'alias_domain_hallucination', 'brand_generic_overcount',
+                'competitor_subbrand_parity', 'competitor_generic_overcount', 'owned_domain_exact',
+                'subbrand_undercount'}
+
+    def add(name, ok, observed, expected, note=''):
+        checks.append({'check': name, 'pass': bool(ok), 'blocking': name in BLOCKING,
+                       'observed': observed, 'expected': expected, 'note': note})
+        if not ok:
+            flags.append(name)
+
+    # ---- verified aliases (reuses the same guard as the live counting path) ----
+    def alias_verdict(a):
+        if len(a) < 3:
+            return False, 'under 3 chars'
+        if a.lower() in _GENERIC_ALIAS_WORDS:
+            return False, 'generic English word'
+        ci, cs, dom = lowercase_dominated(a)
+        if ci == 0:
+            return False, 'zero mentions in raw text'
+        if dom:
+            return False, 'lowercase-dominated (common word)'
+        return True, ''
+    verified, bad = [], []
+    for a in aliases:
+        ok, why = alias_verdict(a)
+        (verified if ok else bad).append((a, why))
+    verified_names = [a for a, _ in verified]
+
+    # ---- brand distinctive forms: full name + proper distinctive tokens + acronym ----
+    forms = [brand]
+    for t in re.findall(r"[A-Za-z][\w&'-]*", brand):
+        if len(t) < 3:
+            continue
+        proper = re.search(r'[a-z][A-Z]', t) or (t.isupper() and len(t) >= 3)
+        if proper:
+            lower_cs = rc(re.compile(r'(?<![A-Za-z0-9])' + re.escape(t.lower()) + r'(?![A-Za-z0-9])'))
+            if lower_cs < 3 and t.lower() not in _GENERIC_ALIAS_WORDS:
+                forms.append(t)
+    words = [w for w in re.findall(r"[A-Za-z]+", brand) if w.lower() not in ('the', 'of', 'and', '&')]
+    if len(words) >= 2:
+        acr = ''.join(w[0] for w in words).upper()
+        if len(acr) >= 3 and rc(_qa_wb(acr, case_sensitive=True)) >= 2:
+            forms.append(acr)
+    all_forms = list(dict.fromkeys(forms + verified_names))
+    union = _qa_union(all_forms)
+
+    # ---- CHECK 1: brand recount + per-LLM ----
+    true_brand = rc(union)
+    true_pl = {}
+    for r in ar:
+        l = r.get('llm'); true_pl.setdefault(l, [0, 0]); true_pl[l][1] += 1
+        if union.search(r.get('response') or ''):
+            true_pl[l][0] += 1
+    stored_pl = {x.get('llm'): x.get('mentions') for x in per_llm}
+    pl_mismatch = {l: (stored_pl.get(l), true_pl[l][0]) for l in true_pl
+                   if stored_pl.get(l) is not None and stored_pl.get(l) != true_pl[l][0]}
+    total_diff = abs((stored_brand or 0) - true_brand)
+    add('brand_recount', total_diff <= 1 and not pl_mismatch, f"stored {stored_brand}/{total}",
+        f"true {true_brand}/{total}", f"per-LLM mismatch {pl_mismatch}" if pl_mismatch else f"diff {total_diff}")
+    corrected['brand_mention_count'] = true_brand
+    corrected['per_llm'] = {l: true_pl[l][0] for l in true_pl}
+    corrected['forms_used'] = all_forms
+
+    # ---- CHECK 2: alias substring inflation / quality ----
+    add('alias_quality', not bad, f"bad {[a for a, _ in bad]}", "all >=3ch, in-raw, non-generic",
+        '; '.join(f"{a} ({w})" for a, w in bad))
+
+    # ---- CHECK 3: alias / domain hallucination ----
+    zero_aliases = [a for a in aliases if rc(_qa_wb(a)) == 0]
+    bl = re.sub(r'[^a-z0-9]', '', brand.lower())
+    alias_labels = [re.sub(r'[^a-z0-9]', '', a.lower()) for a in aliases]
+    def domain_plausible(dm):
+        label = re.sub(r'[^a-z0-9]', '', dm.split('.')[0].lower())
+        if label and (label in bl or bl.startswith(label) or bl.endswith(label) or label in alias_labels):
+            return True
+        return rc(re.compile(re.escape(dm), re.IGNORECASE)) > 0
+    bad_domains = [dm for dm in domains if not domain_plausible(dm)]
+    add('alias_domain_hallucination', not zero_aliases and not bad_domains,
+        f"zero-mention aliases {zero_aliases}, off-brand domains {bad_domains}", "none")
+
+    # ---- CHECK 4: brand-name generic-word overcount ----
+    bshort = brand.split()[0] if brand else ''
+    gflag, gnote = False, ''
+    if bshort and len(bshort) <= 6 and len(brand.split()) == 1:
+        ci, cs, dom = lowercase_dominated(bshort)
+        if dom:
+            gflag, gnote = True, f"'{bshort}' CI {ci} vs CS {cs} — generic-word inflation"
+    add('brand_generic_overcount', not gflag, gnote or "proper noun", "no generic inflation", gnote)
+
+    # ---- competitor symmetric recount (name + curated sub-brands; generic-word guard) ----
+    def comp_count(name, with_subs=True):
+        low = name.lower()
+        subs = [s for s, par in _COMPETITOR_SUBBRAND_PARENTS.items() if par.lower() == low] if with_subs else []
+        base = [name] + subs
+        ci = rc(_qa_union(base))
+        if len(name.split()) == 1 and len(name) <= 6:
+            _, _, dom = lowercase_dominated(name)
+            if dom:
+                cs_pat = re.compile('|'.join(r'(?<![A-Za-z0-9])' + re.escape(x) + r'(?![A-Za-z0-9])' for x in base))
+                return rc(cs_pat)
+        return ci
+
+    top = sorted(competitors, key=lambda c: -(c.get('mention_count') or 0))[:5]
+    brand_credited_subs = any(
+        a.lower() in _COMPETITOR_SUBBRAND_PARENTS and _COMPETITOR_SUBBRAND_PARENTS[a.lower()].lower() == brand.lower()
+        for a in verified_names)
+
+    # ---- CHECK 5: competitor sub-brand parity ----
+    # Compares what's actually STORED/displayed for the competitor against the
+    # symmetric recount (name + its known sub-brands) — NOT name-only vs
+    # with-subs, which would fire even after _merge_competitor_subbrands has
+    # already folded the sub-brand in correctly (a false positive that blocked
+    # an already-fixed BMS rerender).
+    parity = []
+    if brand_credited_subs:
+        for c in top:
+            subs = [s for s, par in _COMPETITOR_SUBBRAND_PARENTS.items() if par.lower() == c['name'].lower()]
+            if not subs:
+                continue
+            stored_c = c.get('mention_count') or 0
+            with_s = comp_count(c['name'], with_subs=True)
+            if with_s - stored_c >= 3:
+                parity.append(f"{c['name']}: stored {stored_c} -> should be {with_s} (sub-brands not credited)")
+    add('competitor_subbrand_parity', not parity, parity or "symmetric",
+        "stored competitor counts already credit sub-brands", "; ".join(parity))
+
+    # ---- CHECK 6: competitor generic-word overcount ----
+    generic = []
+    for c in top:
+        nm = c['name']
+        if len(nm.split()) == 1 and len(nm) <= 6:
+            ci, cs, dom = lowercase_dominated(nm)
+            if dom and abs((c.get('mention_count') or 0) - cs) >= 3:
+                generic.append(f"{nm}: stored {c.get('mention_count')} vs company {cs}")
+    add('competitor_generic_overcount', not generic, generic or "clean",
+        "distinctive-form competitor counts", "; ".join(generic))
+
+    standings = sorted(
+        [(brand, true_brand)] + [(c['name'], comp_count(c['name'], with_subs=brand_credited_subs)) for c in top],
+        key=lambda x: -x[1])
+    corrected['standings'] = standings
+
+    # ---- CHECK 7: supplier-as-competitor (warn) ----
+    cat = category.lower()
+    infra = any(w in cat for w in ('data center', 'data centre', 'datacenter', 'cloud', 'infrastructure',
+                                   'compute', 'hosting', 'colocation', 'gpu'))
+    brand_hw = brand.lower() in _COMPONENT_SUPPLIERS or any(
+        w in cat for w in ('chip', 'semiconductor', 'processor', 'silicon'))
+    suppliers = [c['name'] for c in competitors
+                if c['name'].lower() in _COMPONENT_SUPPLIERS] if (infra and not brand_hw) else []
+    add('supplier_as_competitor', not suppliers, suppliers or "none", "no suppliers in infra category", str(suppliers))
+
+    # ---- CHECK 8: media-target quality (warn) ----
+    comp_labels = {re.sub(r'[^a-z0-9]', '', c['name'].lower()) for c in competitors if c.get('name')}
+    def media_bad(t):
+        dom = (t.get('domain') or '').lower(); outlet = (t.get('outlet') or '').strip().lower()
+        reg = re.sub(r'[^a-z0-9]', '', dom.split('.')[0]) if dom else ''; reasons = []
+        if reg and reg in comp_labels and dom not in EDITORIAL_OUTLETS:
+            reasons.append('competitor-owned')
+        if dom in _LOWQ_MEDIA_DOMAINS:
+            reasons.append('low-quality vendor/agency')
+        if outlet.endswith(_CORP_CONTENT_SUFFIXES) and dom not in EDITORIAL_OUTLETS:
+            reasons.append('corporate blog')
+        return reasons
+    media_flags = [f"{t.get('domain')} ({', '.join(r)})" for t in media_targets if media_bad(t)]
+    add('media_target_quality', not media_flags, media_flags or "clean",
+        "no competitor/low-quality domains", "; ".join(media_flags))
+
+    # ---- CHECK 9: owned-domain exact/brand match ----
+    owned_rows = (owned.get('owned_sov') or {}).get('rows') or []
+    brand_row = next((r for r in owned_rows if r.get('is_brand')), None)
+    brand_regs = {re.sub(r'[^a-z0-9]', '', x.split('.')[0].lower()) for x in domains}
+    brand_regs.add(bl)
+    owned_bad = []
+    if brand_row:
+        for dd in (brand_row.get('domains') or []):
+            dm = (dd.get('domain') or '').lower()
+            reg = re.sub(r'[^a-z0-9]', '', dm.split('.')[-2] if dm.count('.') >= 1 else dm)
+            if reg and (reg in brand_regs or any(reg in br or br in reg for br in brand_regs if len(br) >= 4)):
+                continue
+            owned_bad.append(dm)
+    add('owned_domain_exact', not owned_bad, f"non-brand owned domains {owned_bad}",
+        "owned rows all brand-owned", "; ".join(owned_bad))
+
+    # ---- CHECK 10: outlet-SoV / earned_wins teaser vs raw text (warn) ----
+    ew_issue = []
+    for w in ((payload.get('earned_wins') or {}).get('wins') or [])[:6]:
+        dom = (w.get('outlet') or '').lower()
+        stored_b = w.get('brand_mentions')
+        if stored_b is None or not dom:
+            continue
+        citing = [r for r in ar if any(dom in (c.get('url') or c.get('domain') or '') for c in (r.get('citations') or []))]
+        raw_b = sum(1 for r in citing if union.search(r.get('response') or ''))
+        if citing and abs(raw_b - stored_b) >= 2:
+            ew_issue.append(f"{dom}: stored {stored_b} vs raw {raw_b} of {len(citing)}")
+    add('outlet_sov_vs_raw', not ew_issue, ew_issue or "consistent", "teasers match raw counts", "; ".join(ew_issue))
+
+    # ---- CHECK 11: sub-brand undercount (brand's own PRIMARY sub-brand identity) ----
+    prim = [s for s, par in _COMPETITOR_SUBBRAND_PARENTS.items()
+           if par.lower() == brand.lower() and s.lower() not in {a.lower() for a in verified_names}]
+    # Only the curated ETF/finance sub-brand pairs represent a brand's own primary
+    # identity (BlackRock->iShares); pharma flagship-drug entries are handled via
+    # brand_aliases already, so re-checking them here would double-count noise.
+    _PRIMARY_ONLY = {'ishares', 'spdr', 'spdrs'}
+    prim = [s for s in prim if s.lower() in _PRIMARY_ONLY]
+    ok11, note11 = True, ''
+    if prim:
+        with_p = rc(_qa_union(all_forms + prim))
+        if (stored_brand or 0) < with_p - 1:
+            ok11, note11 = False, f"stored {stored_brand} < brand+{prim} {with_p}"
+    add('subbrand_undercount', ok11, note11 or "n/a", "brand counts its primary sub-brands", note11)
+
+    # ---- CHECK 12: delivery health (warn) ----
+    grounded = sum(1 for r in ar if r.get('grounded')); errors = sum(1 for r in ar if r.get('error'))
+    rate = payload.get('completion_rate')
+    dh = (errors / max(1, len(ar))) <= 0.30 and (rate is None or rate >= 0.95)
+    add('delivery_health', dh, f"grounded {grounded}/{len(ar)}, errors {errors}, rate {rate}",
+        "grounded, <5% error", 'PARTIAL_DELIVERY/HIGH_ERROR' if not dh else '')
+
+    blocking_fail = [c['check'] for c in checks if c['blocking'] and not c['pass']]
+    return {'checks': checks, 'flags': flags, 'client_ready': not blocking_fail,
+            'blocking_failures': blocking_fail, 'corrected': corrected}
+
+
 def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts_override=None):
     """Full agent pipeline: one prompt in, ranked media/partnership/analyst lists out.
 
@@ -8017,6 +8406,7 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     ranked_domains = _augment_citations_with_named_outlets(ranked_domains, all_responses)
     total_citations = sum(d['count'] for d in ranked_domains)
     brand_aliases = _resolve_brand_aliases(brand)   # sub-brands (e.g. iShares for BlackRock)
+    brand_aliases = _verify_brand_aliases(brand_aliases, all_responses)  # drop hallucinated/generic aliases
     brand_mention_count = sum(1 for r in all_responses
                               if _brand_present_in_text(_brand_match_forms(brand, brand_aliases), _response_text(r)))
     # Per-assistant visibility — computed here (before the analysis prompt) so
@@ -8478,6 +8868,7 @@ Respond with ONLY valid JSON:
             for _dd in _resolve_brand_domains(_al, category):
                 if _dd not in brand_domain_hints:
                     brand_domain_hints.append(_dd)
+        brand_domain_hints = _verify_brand_domains(brand, brand_aliases, brand_domain_hints, all_responses)
         analysis['brand_domains'] = brand_domain_hints
         analysis['owned'] = _compute_owned_analysis(
             brand, competitor_counts, related_brands, ranked_domains, all_responses,
@@ -8657,6 +9048,18 @@ Respond with ONLY valid JSON:
     analysis["tier"] = tier
 
     print(f"[audit] tier={tier} completion={completion_rate:.1%} ({len(all_responses)}/{total_calls})")
+
+    # Ground-truth QA pass — runs on EVERY completed audit so a numbers bug never
+    # silently reaches a prospect. Persisted on the payload; deterministic, no
+    # extra API cost. See _qa_audit's docstring + count_bug_fix_brief.md.
+    try:
+        analysis['qa'] = _qa_audit(analysis)
+        if not analysis['qa']['client_ready']:
+            print(f"[qa] NOT client_ready: {analysis['qa']['blocking_failures']}")
+    except Exception as _qa_e:
+        print("qa_audit failed (continuing without):", str(_qa_e)[:200])
+        analysis['qa'] = None
+
     return analysis
 
 
@@ -9344,6 +9747,11 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
         brand_aliases = data.get('brand_aliases') or []
     else:
         brand_aliases = _resolve_brand_aliases(brand)
+    # Re-verify even STORED aliases on every render: an older payload can carry
+    # hallucinated (BMS's "Cellgene") or generic (GE's "GE"/"Innova"/"Discovery")
+    # aliases saved before this guard existed, and reusing them blindly here would
+    # keep re-inflating the count on every future refresh.
+    brand_aliases = _verify_brand_aliases(brand_aliases, all_responses)
     out['brand_aliases'] = brand_aliases
     # Recount the brand's own mention total (alias-aware, so iShares counts toward
     # BlackRock) so the headline reflects current guardrails + the brand's sub-brands.
@@ -9420,6 +9828,9 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
                 for _dd in _resolve_brand_domains(_al, data.get('category')):
                     if _dd not in brand_domain_hints:
                         brand_domain_hints.append(_dd)
+        # Re-verify on EVERY render (even the reused-from-storage branch) so a
+        # stale hallucinated domain saved before this guard existed is dropped.
+        brand_domain_hints = _verify_brand_domains(brand, brand_aliases, brand_domain_hints, all_responses)
         out['brand_domains'] = brand_domain_hints
         out['owned'] = _compute_owned_analysis(brand, competitor_counts, _related, ranked_domains,
                                                all_responses, brand_domain_hints=brand_domain_hints)
@@ -9590,10 +10001,66 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     # Mark this view so the UI / operator knows it's a rerender, not the
     # original saved analysis.
     out['_rerendered'] = True
+
+    # Re-run the ground-truth QA pass so a re-render reflects the CURRENT fixes
+    # (an older payload may have been saved before a guard existed).
+    try:
+        out['qa'] = _qa_audit(out)
+    except Exception as _qa_e:
+        print("qa_audit (rerender) failed (continuing without):", str(_qa_e)[:200])
+        out['qa'] = out.get('qa')
+
     return out
 
 
 @app.route('/signal/<slug>')
+def _apply_display_editorial_filter(data):
+    """Drop vendor / competitor / non-pitchable domains from the DISPLAYED outlet
+    lists (outlet_sov, media_targets), in place. A report's saved data can predate
+    a NON_EDITORIAL_DOMAINS addition, or simply never have had this quality bar
+    applied at generation time; this cheap pure-Python filter keeps the cards +
+    the on-the-fly earned_wins clean without re-running the audit. Raw
+    all_responses and citations are left intact (CSV/JSON export still shows
+    everything). Shared by the report view AND /admin/qa/<slug>, so the QA check
+    always reflects what a viewer actually sees, not stale stored junk."""
+    try:
+        # _LOWQ_MEDIA_DOMAINS / _CORP_CONTENT_SUFFIXES are the module-level
+        # constants shared with _qa_audit (defined above, near run_citation_audit)
+        # — kept in one place so the QA check and the live display never disagree.
+        _comp_labels = {re.sub(r'[^a-z0-9]', '', (c.get('name') or '').lower())
+                        for c in (data.get('competitors') or []) if c.get('name')}
+
+        def _ed_ok(o):
+            dom = (o.get('domain') or '')
+            dom_l = dom.lower()
+            if classify_citation_domain(dom) in ('non_editorial', 'retail', 'defunct'):
+                return False
+            # Corporate content-marketing (a vendor's own "<Brand> Blog" / resource
+            # center) is not a pitchable earned-media outlet — drop it unless the
+            # domain is a known editorial publication. Catches spend-mgmt vendor
+            # blogs (Fyle Blog, Precoro Blog, ApprovalMax Blog) that pass domain
+            # classification but shouldn't surface as pitch targets.
+            nm = (o.get('outlet') or o.get('name') or '').strip().lower()
+            if nm.endswith(_CORP_CONTENT_SUFFIXES) and dom_l not in EDITORIAL_OUTLETS:
+                return False
+            if dom_l in _LOWQ_MEDIA_DOMAINS:
+                return False
+            # A direct COMPETITOR's own site is not an earned-media pitch target —
+            # e.g. Kyndryl's report surfacing ensono.com (a rival managed-services
+            # firm) as somewhere to "pitch." Registrable-label match, exact only.
+            reg = re.sub(r'[^a-z0-9]', '', dom_l.split('.')[0]) if dom_l else ''
+            if reg and reg in _comp_labels and dom_l not in EDITORIAL_OUTLETS:
+                return False
+            return True
+        if isinstance(data.get('outlet_sov'), list):
+            data['outlet_sov'] = [o for o in data['outlet_sov'] if _ed_ok(o)]
+        if isinstance(data.get('media_targets'), list):
+            data['media_targets'] = [o for o in data['media_targets'] if _ed_ok(o)]
+    except Exception as _fe:
+        print("display editorial-filter skipped:", str(_fe)[:120])
+    return data
+
+
 def view_signal_report(slug):
     """Render a shared PR Signal Finder report.
 
@@ -9612,37 +10079,14 @@ def view_signal_report(slug):
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
 
-    # Always drop vendor / competitor / non-pitchable domains from the DISPLAYED
-    # outlet lists. A report's saved outlet_sov/media_targets can predate a
-    # NON_EDITORIAL_DOMAINS addition (e.g. alaan.com, approvalmax.com surfaced in
-    # the fintech audits); this cheap pure-Python filter keeps the cards + the
-    # on-the-fly earned_wins clean without re-running the audit. Raw all_responses
-    # and citations are left intact (the CSV/JSON export still shows everything).
-    try:
-        _corp_content = (' blog', ' resource center', ' resource hub')
-        def _ed_ok(o):
-            dom = (o.get('domain') or '')
-            if classify_citation_domain(dom) in ('non_editorial', 'retail', 'defunct'):
-                return False
-            # Corporate content-marketing (a vendor's own "<Brand> Blog" / resource
-            # center) is not a pitchable earned-media outlet — drop it unless the
-            # domain is a known editorial publication. Catches spend-mgmt vendor
-            # blogs (Fyle Blog, Precoro Blog, ApprovalMax Blog) that pass domain
-            # classification but shouldn't surface as pitch targets.
-            nm = (o.get('outlet') or o.get('name') or '').strip().lower()
-            if nm.endswith(_corp_content) and dom.lower() not in EDITORIAL_OUTLETS:
-                return False
-            return True
-        if isinstance(data.get('outlet_sov'), list):
-            data['outlet_sov'] = [o for o in data['outlet_sov'] if _ed_ok(o)]
-        if isinstance(data.get('media_targets'), list):
-            data['media_targets'] = [o for o in data['media_targets'] if _ed_ok(o)]
-    except Exception as _fe:
-        print("display editorial-filter skipped:", str(_fe)[:120])
+    data = _apply_display_editorial_filter(data)
 
     want_fresh = request.args.get('fresh') == '1'
     want_refresh = request.args.get('refresh') == '1'
-    if (want_fresh or want_refresh) and _ip_is_exempt_from_cap(_client_ip()):
+    # Either the legacy IP allowlist OR the operator key can trigger a rerender —
+    # the operator key is the one that actually works remotely (Render's proxy IP
+    # isn't the caller's IP), so QA re-renders don't require an IP-allowlist edit.
+    if (want_fresh or want_refresh) and (_ip_is_exempt_from_cap(_client_ip()) or _operator_ok()):
         try:
             data = _rerender_from_cached_responses(data, regenerate_summary=want_refresh)
             print(f"[rerender] applied current logic to slug={slug} "
@@ -9686,7 +10130,29 @@ def view_signal_report(slug):
         json_url=json_url,
         signal_user=user,
         signal_credits=current_user_credits(user),
+        operator_view=_operator_ok(),
     )
+
+
+@app.route('/admin/qa/<slug>')
+def admin_qa(slug):
+    """Operator-only: run the ground-truth QA pass on any existing audit and
+    return the full checks table + corrected numbers as JSON. Applies the same
+    display-time media filter the live report uses, so this reflects what a
+    viewer actually sees. Does not mutate the saved payload — use ?refresh=1 on
+    the report itself (also operator-key-gated) to persist a correction."""
+    if not _operator_ok():
+        abort(404)
+    data = _load_signal_report(slug)
+    if not data:
+        return jsonify({"error": f"no report for slug '{slug}'"}), 404
+    data = _apply_display_editorial_filter(data)
+    result = _qa_audit(data)
+    return jsonify({
+        "slug": slug, "brand": data.get('brand'), "category": data.get('category'),
+        "client_ready": result['client_ready'], "blocking_failures": result['blocking_failures'],
+        "checks": result['checks'], "corrected": result['corrected'],
+    })
 
 
 @app.route('/signal/<slug>/owned')
@@ -10650,6 +11116,27 @@ def _outreach_redirect(oid=None, extra=None):
     return redirect(url)
 
 
+def _qa_gate_for_outreach(data, force):
+    """Block pointing a NEW outreach card at a report that fails the ground-truth
+    QA pass — this is the actual mechanism behind "a bad report never reaches a
+    prospect" (blocking the live report itself would break existing shared
+    links; blocking card CREATION stops the bad number from ever being pitched).
+    Pass force=True (the route's &force=1) to override once you've manually
+    reviewed a report that's fine to send despite a non-blocking/edge-case flag.
+    Returns (ok, error_message)."""
+    if force:
+        return True, None
+    try:
+        r = _qa_audit(_apply_display_editorial_filter(data))
+        if not r['client_ready']:
+            return False, ("Report failed QA (" + ", ".join(r['blocking_failures'])
+                           + f"). Corrected brand count: {r['corrected'].get('brand_mention_count')}. "
+                             "Fix + re-render (?refresh=1) before carding, or add &force=1 to override.")
+    except Exception as e:
+        print("qa gate check failed (allowing through):", str(e)[:150])
+    return True, None
+
+
 @app.route('/outreach/new')
 def outreach_new():
     if not _operator_ok():
@@ -10659,8 +11146,12 @@ def outreach_new():
     if not slug or not name:
         return Response("Provide ?name=&slug= (optional &title=&company=&channel=&insight=&cadence=)\n",
                         mimetype='text/plain')
-    if not _load_signal_report(slug):
+    _report = _load_signal_report(slug)
+    if not _report:
         return Response(f"No report found for slug '{slug}'.\n", status=404, mimetype='text/plain')
+    _ok, _err = _qa_gate_for_outreach(_report, request.args.get('force') == '1')
+    if not _ok:
+        return Response(_err + "\n", status=409, mimetype='text/plain')
     o = _outreach_upsert(name, slug,
                      title=(request.args.get('title') or None),
                      company=(request.args.get('company') or None),
@@ -10713,8 +11204,12 @@ def outreach_add():
     slug = (request.form.get('slug') or '').strip()
     if not name or not slug:
         return _outreach_redirect(extra='err=' + quote_plus('Name and report slug are required.'))
-    if not _load_signal_report(slug):
+    _report = _load_signal_report(slug)
+    if not _report:
         return _outreach_redirect(extra='err=' + quote_plus(f"No report found for slug '{slug}'."))
+    _ok, _err = _qa_gate_for_outreach(_report, request.form.get('force') == '1')
+    if not _ok:
+        return _outreach_redirect(extra='err=' + quote_plus(_err))
     o = _outreach_upsert(
         name, slug,
         title=(request.form.get('title') or '').strip() or None,
