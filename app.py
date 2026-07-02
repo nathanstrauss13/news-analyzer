@@ -10741,12 +10741,57 @@ def traffic_view():
     opens_30 = LinkClick.query.filter(LinkClick.clicked_at >= since(30),
                                       LinkClick.is_bot.is_(False)).count()
 
+    # ---- Retroactive first-party history (predates the PageVisit table): every
+    # self-serve audit-run carries referrer + source since launch (InboundAudit);
+    # outreach opens (LinkClick) and total dashboards built (SharedResult) round
+    # out the picture. Backfills the funnel + referral view immediately. ----
+    audits_all = InboundAudit.query.count()
+    audits_7 = InboundAudit.query.filter(InboundAudit.created_at >= since(7)).count()
+    dashboards_built = SharedResult.query.count()
+    opens_all = LinkClick.query.filter(LinkClick.is_bot.is_(False)).count()
+    opens_7 = LinkClick.query.filter(LinkClick.is_bot.is_(False), LinkClick.clicked_at >= since(7)).count()
+
+    # Daily audit-run trend (last 21 days).
+    audit_trend = []
+    for i in range(20, -1, -1):
+        d0 = (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+        d1 = d0 + timedelta(days=1)
+        audit_trend.append({'day': d0.strftime('%-m/%-d'),
+                            'n': InboundAudit.query.filter(InboundAudit.created_at >= d0,
+                                                           InboundAudit.created_at < d1).count()})
+    audit_trend_max = max((t['n'] for t in audit_trend), default=0) or 1
+
+    # What drove those audits, all-time: source breakdown + top referrer hosts.
+    def _ref_host(u):
+        try:
+            from urllib.parse import urlparse
+            h = (urlparse(u).hostname or u or '').lower()
+            return h[4:] if h.startswith('www.') else h
+        except Exception:
+            return (u or '').lower()
+    a_src, a_ref = {}, {}
+    for utm, ref in InboundAudit.query.with_entities(InboundAudit.utm_source, InboundAudit.referrer).all():
+        s = (utm or '').lower()
+        key = 'LinkedIn' if s == 'linkedin' else (utm if s else ('Referral' if ref else 'Direct'))
+        a_src[key] = a_src.get(key, 0) + 1
+        if ref:
+            h = _ref_host(ref)
+            if h and 'innatec3.com' not in h:
+                a_ref[h] = a_ref.get(h, 0) + 1
+    audit_sources = sorted(a_src.items(), key=lambda x: -x[1])
+    audit_referrers = sorted(a_ref.items(), key=lambda x: -x[1])[:10]
+
     return render_template('traffic.html',
                            nav=_operator_nav('traffic'), windows=windows,
                            total_visits=total_visits, total_uniques=total_uniques,
                            referrers=referrers, sources=sources, trend=trend, trend_max=trend_max,
                            top_reports=top_reports, home_30=home_30, audits_30=audits_30,
-                           opens_30=opens_30, keyq=(f"?key={request.args.get('key')}" if request.args.get('key') else ""))
+                           opens_30=opens_30,
+                           audits_all=audits_all, audits_7=audits_7, dashboards_built=dashboards_built,
+                           opens_all=opens_all, opens_7=opens_7, audit_trend=audit_trend,
+                           audit_trend_max=audit_trend_max, audit_sources=audit_sources,
+                           audit_referrers=audit_referrers,
+                           keyq=(f"?key={request.args.get('key')}" if request.args.get('key') else ""))
 
 
 @app.route('/r-stats')

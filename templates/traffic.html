@@ -59,8 +59,48 @@
   {{ nav | safe }}
   <div class="eyebrow">Innate C3 · operator</div>
   <h1>Traffic</h1>
-  <div class="sub">First-party visits to the tool — homepage + shared reports. Bots and your own (operator) traffic are excluded. Unique = distinct IP over the window.</div>
+  <div class="sub">First-party analytics — no third-party dependency. The audit &amp; referral history below goes back to launch; anonymous pageview / unique-visitor counting starts from when this page shipped.</div>
 
+  <h2>Since launch — audits &amp; referrals</h2>
+  <div class="cards">
+    <div class="card"><div class="win">Self-serve audits run</div><div class="big">{{ audits_all }} <span>all-time</span></div><div class="split"><b>{{ audits_7 }}</b> in the last 7 days</div></div>
+    <div class="card"><div class="win">Dashboards built</div><div class="big">{{ dashboards_built }} <span>total</span></div><div class="split">self-serve + prospect / operator audits</div></div>
+    <div class="card"><div class="win">Outreach opens</div><div class="big">{{ opens_all }} <span>genuine</span></div><div class="split"><b>{{ opens_7 }}</b> in the last 7 days · bots excluded</div></div>
+  </div>
+
+  <h2>Audits run — daily (last 21 days)</h2>
+  <div class="trend">
+    {% for t in audit_trend %}
+    <div class="tcol" title="{{ t.day }}: {{ t.n }} audits">
+      <div class="tval">{{ t.n if t.n else '' }}</div>
+      <div class="tbar" style="height:{{ (t.n / audit_trend_max * 100) | round(1) }}%;background:linear-gradient(180deg,#10b981,#6ee7b7)"></div>
+      <div class="tlab">{{ t.day }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="cols" style="margin-top:8px">
+    <div>
+      <h2>What drove audits — referrers (all-time)</h2>
+      {% if audit_referrers %}
+      <table><thead><tr><th>Referring site</th><th style="text-align:right">Audits</th></tr></thead><tbody>
+        {% set armax = audit_referrers[0][1] %}
+        {% for host, c in audit_referrers %}<tr><td>{{ host }}<div class="bar"><span style="width:{{ (c / armax * 100) | round }}%;background:#10b981"></span></div></td><td class="n">{{ c }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% else %}<div class="empty">No external referrer captured on audit-runs yet.</div>{% endif %}
+    </div>
+    <div>
+      <h2>What drove audits — source (all-time)</h2>
+      {% if audit_sources %}
+      <table><thead><tr><th>Channel</th><th style="text-align:right">Audits</th></tr></thead><tbody>
+        {% set asmax = audit_sources[0][1] %}
+        {% for name, c in audit_sources %}<tr><td>{{ name }}<div class="bar"><span style="width:{{ (c / asmax * 100) | round }}%;background:#10b981"></span></div></td><td class="n">{{ c }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% else %}<div class="empty">No audit-runs yet.</div>{% endif %}
+    </div>
+  </div>
+
+  <h2>Pageviews — from ship date (first-party)</h2>
   <div class="cards">
     {% for w in windows %}
     <div class="card">
