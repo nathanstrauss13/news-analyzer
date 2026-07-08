@@ -10958,11 +10958,25 @@ def traffic_view():
     trend_max = max((t['visits'] for t in trend), default=0) or 1
 
     # Top-viewed reports (30d).
-    top_reports = (db.session.query(PageVisit.slug, db.func.count(PageVisit.id))
-                   .filter(PageVisit.created_at >= since(30), PageVisit.kind == 'report',
-                           PageVisit.slug.isnot(None))
-                   .group_by(PageVisit.slug)
-                   .order_by(db.func.count(PageVisit.id).desc()).limit(10).all())
+    from sqlalchemy import distinct as _distinct
+    _rep = (db.session.query(PageVisit.slug,
+                             db.func.count(_distinct(PageVisit.ip)),
+                             db.func.count(PageVisit.id))
+            .filter(PageVisit.kind == 'report', PageVisit.slug.isnot(None))
+            .group_by(PageVisit.slug)
+            .order_by(db.func.count(_distinct(PageVisit.ip)).desc(),
+                      db.func.count(PageVisit.id).desc()).limit(20).all())
+    # Map slug -> brand (cheap: InboundAudit is small) so hex slugs are readable;
+    # fall back to the slug (seed prospects like 'lumen'/'swarovski' ARE the brand).
+    _brand_by_slug = {}
+    try:
+        for _ia in InboundAudit.query.filter(InboundAudit.slug.isnot(None),
+                                             InboundAudit.brand.isnot(None)).all():
+            _brand_by_slug.setdefault(_ia.slug, _ia.brand)
+    except Exception:
+        pass
+    top_reports = [(_slug, _uniq, _views, _brand_by_slug.get(_slug) or _slug)
+                   for _slug, _uniq, _views in _rep]
 
     # Funnel (30d): homepage visits -> audits run -> genuine outreach opens.
     home_30 = PageVisit.query.filter(PageVisit.created_at >= since(30), PageVisit.kind == 'home').count()

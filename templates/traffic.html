@@ -176,17 +176,22 @@
     </div>
   </div>
 
-  <h2>Most-viewed reports (30d)</h2>
+  <h2>Most-visited reports — by unique visitors (all-time)</h2>
   {% if top_reports %}
   <table>
-    <thead><tr><th>Report</th><th style="text-align:right">Views</th></tr></thead>
+    <thead><tr><th>Report</th><th style="text-align:right">Unique visitors</th><th style="text-align:right">Pageviews</th></tr></thead>
     <tbody>
-      {% for slug, c in top_reports %}
-      <tr><td><a href="/signal/{{ slug }}" target="_blank" rel="noopener">/signal/{{ slug }}</a></td><td class="n">{{ c }}</td></tr>
+      {% for slug, uniq, views, brand in top_reports %}
+      <tr>
+        <td><a href="/signal/{{ slug }}" target="_blank" rel="noopener">{{ brand }}</a> <span style="color:#9096a0;font-size:11px">/signal/{{ slug }}</span></td>
+        <td class="n">{{ uniq }}</td>
+        <td class="n">{{ views }}</td>
+      </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}<div class="empty">No report views logged yet.</div>{% endif %}
+  <div class="note">Unique = distinct IP. First-party visits (bots + operator excluded). Data before the Cloudflare-IP fix used edge IPs, so uniques on older rows are approximate; accurate going forward.</div>
 
   <div class="note" style="margin-top:22px">First-party analytics — no third-party dependency. Data starts accruing from the moment this ships; historical GA traffic isn't imported.</div>
 </div>
