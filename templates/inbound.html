@@ -30,6 +30,19 @@
   .geo { color:#b8b8c8; font-size:12px; white-space:nowrap; }
   .empty { color:#7a7a88; padding:40px 10px; text-align:center; }
   .note { font-size:11px; color:#5a5a68; margin-top:18px; }
+  .status { display:inline-block; font-size:10px; font-weight:700; padding:2px 7px; border-radius:5px; text-transform:uppercase; letter-spacing:.3px; white-space:nowrap; }
+  .status.completed { color:#0a140d; background:#5aff8a; }
+  .status.started { color:#0a0a0a; background:#ffd166; }
+  .status.errored { color:#fff; background:#e5484d; }
+  .status.rate_limited { color:#0a0a0a; background:#f0876a; }
+  .t-email { color:#7acbff; font-size:12px; white-space:nowrap; }
+  .t-email.none { color:#5a5a68; }
+  .chips { margin:0 0 18px; font-size:12px; }
+  .chip { display:inline-block; padding:4px 11px; border-radius:14px; border:1px solid #2a2a38; color:#b8b8c8; text-decoration:none; margin:0 6px 6px 0; }
+  .chip:hover { border-color:#5aff8a; }
+  .chip.on { background:#5aff8a; color:#0a140d; border-color:#5aff8a; font-weight:700; }
+  .chip .n { opacity:.65; margin-left:2px; }
+  .chip.ops { border-style:dashed; }
 </style>
 </head>
 <body>
@@ -45,18 +58,27 @@
   <div class="counts" style="margin-top:-10px">
     <span style="color:#7a7a88">Sources:</span>
     {% for name, c in sources %}<span class="src {{ 'linkedin' if name|lower=='linkedin' else ('direct' if name=='direct' else 'other') }}" style="margin:0 4px">{{ name }} · {{ c }}</span>{% endfor %}
-    <span style="color:#7a7a88">&nbsp;·&nbsp;</span><a href="/inbound.csv" style="color:#7acbff;text-decoration:none">Download CSV ↓</a>
+    <span style="color:#7a7a88">&nbsp;·&nbsp;</span><a href="{{ urls.csv }}" style="color:#7acbff;text-decoration:none">Download CSV ↓</a>
   </div>
   {% endif %}
+
+  <div class="chips">
+    <a class="chip {{ 'on' if status_filter=='all' else '' }}" href="{{ urls.all }}">All <span class="n">{{ n_completed + n_incomplete }}</span></a>
+    <a class="chip {{ 'on' if status_filter=='completed' else '' }}" href="{{ urls.completed }}">Completed <span class="n">{{ n_completed }}</span></a>
+    <a class="chip {{ 'on' if status_filter=='incomplete' else '' }}" href="{{ urls.incomplete }}">Incomplete <span class="n">{{ n_incomplete }}</span></a>
+    <a class="chip ops {{ 'on' if show_ops else '' }}" href="{{ urls.ops_toggle }}">{{ 'Show operator runs' if not show_ops else 'Hide operator runs' }} <span class="n">{{ n_operator }}</span></a>
+  </div>
 
   {% if rows %}
   <table>
     <thead>
       <tr>
         <th>When (UTC)</th>
+        <th>Status</th>
         <th>Brand</th>
         <th>Category</th>
         <th>What they want AI to surface</th>
+        <th>Email</th>
         <th>Source</th>
         <th>Referrer</th>
         <th>Geo</th>
@@ -67,9 +89,11 @@
       {% for r in rows %}
       <tr>
         <td class="t-time">{{ r.created_at.strftime('%b %d, %H:%M') if r.created_at else '—' }}</td>
+        <td><span class="status {{ r.status or 'started' }}">{{ (r.status or 'started')|replace('_',' ') }}</span></td>
         <td class="t-brand">{{ r.brand or '—' }}</td>
         <td class="t-cat">{{ r.category or '—' }}</td>
         <td class="t-ps">{{ r.problem_statement or '—' }}</td>
+        <td>{% if r.email %}<span class="t-email">{{ r.email }}</span>{% else %}<span class="t-email none">—</span>{% endif %}</td>
         <td>
           {% set s = (r.utm_source or '')|lower %}
           {% if s == 'linkedin' %}<span class="src linkedin">LinkedIn</span>

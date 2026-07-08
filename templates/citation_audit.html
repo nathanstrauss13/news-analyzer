@@ -1950,6 +1950,11 @@
                 <form class="runner" id="runnerForm" onsubmit="startHomepageAudit();return false;">
                     <div class="sentence">I want <input id="brandInput" class="fin brand" aria-label="Your brand" autocomplete="off"> to be known for <input id="topicInput" class="fin topic" aria-label="what you want to be known for" autocomplete="off">.</div>
                     <input type="hidden" id="problemInput">
+                    <div class="emailrow" style="margin:16px 0 2px;text-align:center;">
+                        <input type="text" inputmode="email" id="emailInput" aria-label="Email (optional)" autocomplete="email" placeholder="you@company.com"
+                               style="width:min(340px,100%);padding:11px 15px;border-radius:11px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.04);color:#e6e6ee;font-size:14px;text-align:center;outline:none;">
+                        <div style="font-size:12px;color:#8a8a9a;margin-top:7px;">Optional — we'll email you the report so you don't lose the link.</div>
+                    </div>
                     <div class="runner-btns">
                         <button class="btn" id="submitBtn" type="submit">Run the audit &rarr;</button>
                         <button class="btn ghost" id="reviewBtn" type="button" onclick="reviewPromptsHome()">Review &amp; revise the prompts first</button>

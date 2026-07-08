@@ -252,6 +252,14 @@ class InboundAudit(db.Model):
     utm_medium = db.Column(db.String(120), nullable=True)
     utm_campaign = db.Column(db.String(120), nullable=True)
     referrer = db.Column(db.String(400), nullable=True)
+    # Added after launch (prod ALTER in _ensure_inbound_columns). status tracks the
+    # audit lifecycle so incomplete/abandoned/errored/rate-limited starts are
+    # captured as leads, not only completions. email is the optional opt-in lead
+    # contact. is_operator flags biz-dev batch / operator runs so the default
+    # /inbound view shows real DIY demand, not our own testing.
+    status = db.Column(db.String(16), nullable=True, default='started', index=True)
+    email = db.Column(db.String(254), nullable=True, index=True)
+    is_operator = db.Column(db.Boolean, nullable=True, default=False, index=True)
 
 
 class PageVisit(db.Model):
@@ -9308,6 +9316,56 @@ def _normalize_email(s):
     return s
 
 
+def _is_operator_email(e):
+    """True for biz-dev's own batch/operator runs. The batch runner posts from a
+    per-run ops+<key>@innatec3.com address, so any ops+*@innatec3.com (or bare
+    ops@innatec3.com) is us, not a real DIY lead — used to hide our runs from the
+    default /inbound view."""
+    e = (e or "").strip().lower()
+    return e == "ops@innatec3.com" or (e.startswith("ops+") and e.endswith("@innatec3.com"))
+
+
+def _session_inbound_attr():
+    """Attribution captured on the landing GET (UTM + external referrer), read
+    from the session so the worker thread — which has no request context — can
+    persist it. Safe to call anywhere with a request/session available."""
+    a = session.get("inbound_attr") or {}
+    return {
+        "utm_source": (a.get("utm_source") or "")[:120] or None,
+        "utm_medium": (a.get("utm_medium") or "")[:120] or None,
+        "utm_campaign": (a.get("utm_campaign") or "")[:120] or None,
+        "referrer": (a.get("referrer") or "")[:400] or None,
+    }
+
+
+def _capture_inbound_lead(status, problem_statement, ip, email, is_operator, attr,
+                          geo=None, slug=None, brand=None, category=None):
+    """Best-effort insert of one InboundAudit lead row. Returns the new row id (or
+    None on failure). NEVER raises — a capture failure must not affect the audit.
+    Used both at audit START (status='started', later flipped to completed/errored)
+    and at the rate-limit gates (status='rate_limited')."""
+    try:
+        with app.app_context():
+            rec = InboundAudit(
+                status=status, slug=slug, brand=brand, category=category,
+                problem_statement=(problem_statement or "")[:2000],
+                ip=ip, geo=geo or None, email=email or None,
+                is_operator=bool(is_operator),
+                utm_source=attr.get("utm_source"), utm_medium=attr.get("utm_medium"),
+                utm_campaign=attr.get("utm_campaign"), referrer=attr.get("referrer"),
+            )
+            db.session.add(rec)
+            db.session.commit()
+            return rec.id
+    except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        print("inbound-lead capture failed (continuing):", str(e)[:120])
+        return None
+
+
 @app.route('/healthz')
 def healthz():
     """Lightweight liveness probe — no DB, no LLM. Surfaces audit concurrency so
@@ -9402,6 +9460,14 @@ def citation_audit():
         if lead_email:
             lead = AuditLead.query.filter_by(email=lead_email).first()
             if lead and lead.audit_count >= _EMAIL_AUDIT_CAP:
+                # High-intent lead: used their free audit and came back for more.
+                # Capture the blocked attempt (status='rate_limited') so biz-dev can
+                # follow up with a bespoke offer. Best-effort; never blocks the 429.
+                # (No pending DB write at this point, so the capture's commit is clean.)
+                _capture_inbound_lead(
+                    'rate_limited', problem_statement, ip, lead_email,
+                    (_is_operator_email(lead_email) or _operator_ok()),
+                    _session_inbound_attr())
                 return jsonify({
                     "error": ("You've already used your free audit. For more, talk to us about a bespoke "
                               "audit — we'll cover your category in depth and walk through the findings live."),
@@ -9470,14 +9536,10 @@ def citation_audit():
 
     # Attribution for the inbound-lead pipeline. Captured HERE (request context) so
     # the worker thread — which has no request/session — can persist it after save.
-    _attr = session.get('inbound_attr') or {}
-    _inbound_attr = {
-        'ip': ip,
-        'utm_source': (_attr.get('utm_source') or '')[:120] or None,
-        'utm_medium': (_attr.get('utm_medium') or '')[:120] or None,
-        'utm_campaign': (_attr.get('utm_campaign') or '')[:120] or None,
-        'referrer': (_attr.get('referrer') or '')[:400] or None,
-    }
+    _inbound_attr = _session_inbound_attr()
+    # Flag our own runs (operator key, exempt IP, or an ops+*@innatec3.com email)
+    # so the default /inbound view shows real DIY demand, not biz-dev batch runs.
+    _is_operator = bool(_operator_ok() or _ip_is_exempt_from_cap(ip) or _is_operator_email(lead_email))
 
     q = queue.Queue()
 
@@ -9486,6 +9548,13 @@ def citation_audit():
 
     def worker():
         start_dt = datetime.utcnow()
+        # Record the lead the MOMENT the audit starts (status='started'), so an
+        # abandon / server crash / OOM before the report renders still leaves a
+        # lead row. Flipped to 'completed' (with slug) on success, or 'errored'
+        # in the except below. Best-effort — never blocks or fails the audit.
+        _inbound_id = _capture_inbound_lead(
+            'started', problem_statement, ip, lead_email, _is_operator,
+            _inbound_attr, geo=_coarse_geo(ip))
         try:
             result = run_citation_audit(
                 problem_statement,
@@ -9528,27 +9597,25 @@ def citation_audit():
                         print("lead slug stamp failed (continuing):", str(_le)[:120])
                 db.session.commit()
             q.put(json.dumps({"type": "result", "data": result}))
-            # Inbound-lead capture (operator pipeline). Runs AFTER the result is
-            # sent, so the geo lookup never delays the user. Best-effort; a failure
-            # here never affects the audit the user already received.
+            # Flip the start-row to completed + backfill slug/brand/category IN
+            # PLACE (no duplicate row). If the start-row failed to insert earlier,
+            # fall back to a fresh completed row so a real completion is never lost.
             try:
-                _geo = _coarse_geo(_inbound_attr.get('ip'))
                 with app.app_context():
-                    db.session.add(InboundAudit(
-                        slug=slug,
-                        brand=result.get('brand'),
-                        category=result.get('category'),
-                        problem_statement=problem_statement[:2000],
-                        ip=_inbound_attr.get('ip'),
-                        geo=_geo or None,
-                        utm_source=_inbound_attr.get('utm_source'),
-                        utm_medium=_inbound_attr.get('utm_medium'),
-                        utm_campaign=_inbound_attr.get('utm_campaign'),
-                        referrer=_inbound_attr.get('referrer'),
-                    ))
-                    db.session.commit()
+                    _rec = db.session.get(InboundAudit, _inbound_id) if _inbound_id else None
+                    if _rec is not None:
+                        _rec.status = 'completed'
+                        _rec.slug = slug
+                        _rec.brand = result.get('brand')
+                        _rec.category = result.get('category')
+                        db.session.commit()
+                    else:
+                        _capture_inbound_lead(
+                            'completed', problem_statement, ip, lead_email, _is_operator,
+                            _inbound_attr, geo=_coarse_geo(ip), slug=slug,
+                            brand=result.get('brand'), category=result.get('category'))
             except Exception as _ib_e:
-                print("inbound-audit capture failed (continuing):", str(_ib_e)[:120])
+                print("inbound-audit completion update failed (continuing):", str(_ib_e)[:120])
             # Fire the owner debug email AFTER the result is pushed to the
             # queue so the user-visible response never waits on email send.
             duration_seconds = (datetime.utcnow() - start_dt).total_seconds()
@@ -9564,6 +9631,16 @@ def citation_audit():
             except Exception as email_err:
                 print("debug-email dispatch error:", email_err)
         except Exception as e:
+            # Mark the start-row errored so the incomplete lead stays visible.
+            try:
+                if _inbound_id:
+                    with app.app_context():
+                        _erec = db.session.get(InboundAudit, _inbound_id)
+                        if _erec is not None and _erec.status != 'completed':
+                            _erec.status = 'errored'
+                            db.session.commit()
+            except Exception:
+                pass
             # Diagnostic email to owner BEFORE the refund, so even if the
             # refund somehow blows up the owner still hears about the failure.
             try:
@@ -10560,39 +10637,91 @@ def inbound_view():
         abort(404)
     from datetime import timedelta
     now = datetime.utcnow()
-    rows = InboundAudit.query.order_by(InboundAudit.created_at.desc()).limit(300).all()
-    n24 = InboundAudit.query.filter(InboundAudit.created_at >= now - timedelta(hours=24)).count()
-    n7d = InboundAudit.query.filter(InboundAudit.created_at >= now - timedelta(days=7)).count()
-    total = InboundAudit.query.count()
-    # Source roll-up (all-time) for the header — LinkedIn vs direct vs other.
+    _INCOMPLETE = ['started', 'errored', 'rate_limited']
+    show_ops = request.args.get('ops') == '1'          # include biz-dev's own runs
+    status_filter = request.args.get('status', 'all')  # all | completed | incomplete
+    # Default view = real DIY demand only (operator/batch runs hidden). is_operator
+    # IS NOT TRUE matches both False and legacy NULL rows.
+    _base = InboundAudit.query if show_ops else InboundAudit.query.filter(InboundAudit.is_operator.isnot(True))
+    total = _base.count()
+    n24 = _base.filter(InboundAudit.created_at >= now - timedelta(hours=24)).count()
+    n7d = _base.filter(InboundAudit.created_at >= now - timedelta(days=7)).count()
+    n_completed = _base.filter(InboundAudit.status == 'completed').count()
+    n_incomplete = _base.filter(InboundAudit.status.in_(_INCOMPLETE)).count()
+    n_operator = InboundAudit.query.filter(InboundAudit.is_operator.is_(True)).count()
+    # Apply the status chip to the table rows.
+    _rows_q = _base
+    if status_filter == 'completed':
+        _rows_q = _rows_q.filter(InboundAudit.status == 'completed')
+    elif status_filter == 'incomplete':
+        _rows_q = _rows_q.filter(InboundAudit.status.in_(_INCOMPLETE))
+    rows = _rows_q.order_by(InboundAudit.created_at.desc()).limit(300).all()
+    # Source roll-up over the same (real-lead) base — LinkedIn vs direct vs other.
     try:
-        src_rows = (db.session.query(InboundAudit.utm_source, db.func.count(InboundAudit.id))
-                    .group_by(InboundAudit.utm_source).all())
+        _sq = db.session.query(InboundAudit.utm_source, db.func.count(InboundAudit.id))
+        if not show_ops:
+            _sq = _sq.filter(InboundAudit.is_operator.isnot(True))
+        src_rows = _sq.group_by(InboundAudit.utm_source).all()
         sources = sorted(((s or 'direct', c) for s, c in src_rows), key=lambda x: -x[1])[:6]
     except Exception:
         sources = []
-    return render_template('inbound.html', rows=rows, n24=n24, n7d=n7d, total=total, sources=sources)
+    _k = request.args.get('key')
+    import urllib.parse
+
+    def _url(status=None, ops=None):
+        p = {}
+        if _k:
+            p['key'] = _k
+        _ops = show_ops if ops is None else ops
+        if _ops:
+            p['ops'] = '1'
+        _st = status_filter if status is None else status
+        if _st and _st != 'all':
+            p['status'] = _st
+        return '/inbound' + ('?' + urllib.parse.urlencode(p) if p else '')
+    _csv_p = {}
+    if _k:
+        _csv_p['key'] = _k
+    if show_ops:
+        _csv_p['ops'] = '1'
+    urls = {
+        'all': _url(status='all'), 'completed': _url(status='completed'),
+        'incomplete': _url(status='incomplete'), 'ops_toggle': _url(ops=(not show_ops)),
+        'csv': '/inbound.csv' + ('?' + urllib.parse.urlencode(_csv_p) if _csv_p else ''),
+    }
+    return render_template('inbound.html', rows=rows, n24=n24, n7d=n7d, total=total,
+                           sources=sources, status_filter=status_filter, show_ops=show_ops,
+                           n_completed=n_completed, n_incomplete=n_incomplete,
+                           n_operator=n_operator, urls=urls)
 
 
 @app.route('/inbound.csv')
 def inbound_csv():
-    """Operator: export the inbound pipeline as CSV to work in a spreadsheet."""
+    """Operator: export the inbound pipeline as CSV to work in a spreadsheet.
+    Defaults to real DIY leads (operator/batch runs excluded); add ?ops=1 to
+    include them."""
     if not _operator_ok():
         abort(404)
     import csv
     import io
-    rows = InboundAudit.query.order_by(InboundAudit.created_at.desc()).limit(5000).all()
+    _q = InboundAudit.query
+    if request.args.get('ops') != '1':
+        _q = _q.filter(InboundAudit.is_operator.isnot(True))
+    rows = _q.order_by(InboundAudit.created_at.desc()).limit(5000).all()
     root = os.environ.get("PUBLIC_BASE_URL", "https://signal.innatec3.com").rstrip('/')
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(['created_utc', 'brand', 'category', 'problem_statement', 'utm_source',
-                'utm_medium', 'utm_campaign', 'referrer', 'geo', 'ip', 'slug', 'report_url'])
+    w.writerow(['created_utc', 'status', 'email', 'brand', 'category', 'problem_statement',
+                'utm_source', 'utm_medium', 'utm_campaign', 'referrer', 'geo', 'ip',
+                'is_operator', 'slug', 'report_url'])
     for r in rows:
         w.writerow([
             r.created_at.strftime('%Y-%m-%d %H:%M:%S') if r.created_at else '',
+            r.status or '', r.email or '',
             r.brand or '', r.category or '', (r.problem_statement or '')[:1000],
             r.utm_source or '', r.utm_medium or '', r.utm_campaign or '',
-            r.referrer or '', r.geo or '', r.ip or '', r.slug or '',
+            r.referrer or '', r.geo or '', r.ip or '',
+            ('yes' if r.is_operator else 'no'), r.slug or '',
             f"{root}/signal/{r.slug}" if r.slug else '',
         ])
     return Response(buf.getvalue(), mimetype='text/csv',
@@ -11366,6 +11495,70 @@ def _ensure_outreach_columns():
                     print("outreach column migrate skipped:", str(e)[:120])
     except Exception as e:
         print("outreach column migrate error:", e)
+
+
+def _ensure_inbound_columns():
+    """Add the lead-capture columns introduced after inbound_audits was created:
+    status (lifecycle), email (opt-in contact), is_operator (batch/operator flag).
+    Idempotent ALTER — Postgres honors IF NOT EXISTS; a fresh SQLite dev DB already
+    has them from create_all and the duplicate-column error is caught and ignored.
+    Backfills existing rows: they all have a slug (completed) and no operator flag."""
+    migrations = [
+        "ALTER TABLE inbound_audits ADD COLUMN IF NOT EXISTS status VARCHAR(16)",
+        "ALTER TABLE inbound_audits ADD COLUMN IF NOT EXISTS email VARCHAR(254)",
+        "ALTER TABLE inbound_audits ADD COLUMN IF NOT EXISTS is_operator BOOLEAN",
+        # Every pre-existing row was written only on completion, so mark them done.
+        "UPDATE inbound_audits SET status='completed' WHERE status IS NULL AND slug IS NOT NULL",
+        "UPDATE inbound_audits SET is_operator=FALSE WHERE is_operator IS NULL",
+    ]
+    try:
+        with app.app_context():
+            from sqlalchemy import text
+            for stmt in migrations:
+                try:
+                    db.session.execute(text(stmt))
+                    db.session.commit()
+                except Exception as e:
+                    db.session.rollback()
+                    print("inbound column migrate skipped:", str(e)[:120])
+    except Exception as e:
+        print("inbound column migrate error:", e)
+
+
+def _backfill_inbound_operator_flags():
+    """One-time retroactive flag of pre-existing batch/operator InboundAudit rows
+    (they predate is_operator, so the column migrate above left them FALSE and they
+    would keep polluting the default /inbound view). Two reliable signals: the row
+    ran from an exempt IP (operator/self testing), or its slug matches an
+    ops+*@innatec3.com AuditLead (biz-dev's batch runner posts from those). Won't
+    false-flag a real DIY lead. Idempotent — safe on every boot."""
+    try:
+        with app.app_context():
+            changed = 0
+            if _FREE_AUDIT_BYPASS_IPS:
+                for r in InboundAudit.query.filter(
+                        InboundAudit.ip.in_(list(_FREE_AUDIT_BYPASS_IPS)),
+                        InboundAudit.is_operator.isnot(True)).all():
+                    r.is_operator = True
+                    changed += 1
+            ops_slugs = [l.last_slug for l in
+                         AuditLead.query.filter(AuditLead.last_slug.isnot(None)).all()
+                         if _is_operator_email(l.email)]
+            if ops_slugs:
+                for r in InboundAudit.query.filter(
+                        InboundAudit.slug.in_(ops_slugs),
+                        InboundAudit.is_operator.isnot(True)).all():
+                    r.is_operator = True
+                    changed += 1
+            if changed:
+                db.session.commit()
+                print(f"[inbound] backfilled is_operator on {changed} pre-existing batch/operator rows")
+    except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        print("inbound operator backfill skipped:", str(e)[:120])
 
 
 def _ensure_outreach_seed():
@@ -12857,6 +13050,8 @@ def _ensure_homepage_link():
 
 # Apply post-creation column migrations, then ensure the seed prospects exist.
 _ensure_outreach_columns()
+_ensure_inbound_columns()
+_backfill_inbound_operator_flags()
 _ensure_outreach_seed()
 _ensure_homepage_link()
 
