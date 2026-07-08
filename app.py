@@ -9239,29 +9239,95 @@ _FREE_AUDIT_BYPASS_IPS = set(
 _TRUSTED_PROXY_HOPS = max(1, int(os.environ.get("TRUSTED_PROXY_HOPS", "1") or "1"))
 
 
+import ipaddress as _ipaddress
+# Cloudflare's published edge ranges. signal.innatec3.com is proxied through
+# Cloudflare, so the immediate upstream Render sees is a Cloudflare edge — and
+# X-Forwarded-For therefore yields a Cloudflare IP, not the visitor's. The real
+# end-user IP is in CF-Connecting-IP (Cloudflare sets it authoritatively and
+# strips any client-supplied copy). But we only trust that header when the
+# request's VERIFIED upstream is Cloudflare — otherwise a direct hit to the
+# onrender.com origin could forge CF-Connecting-IP to dodge the per-IP cap.
+_CLOUDFLARE_CIDRS = [
+    '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
+    '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
+    '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+    '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+    '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32',
+    '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32',
+]
+try:
+    _CLOUDFLARE_NETS = [_ipaddress.ip_network(c) for c in _CLOUDFLARE_CIDRS]
+except Exception:
+    _CLOUDFLARE_NETS = []
+
+
+def _ip_is_cloudflare(ip):
+    """True if ip is a Cloudflare edge address (per their published ranges)."""
+    try:
+        a = _ipaddress.ip_address(ip)
+        return any(a in n for n in _CLOUDFLARE_NETS)
+    except Exception:
+        return False
+
+
 def _client_ip():
-    """Best-effort REAL client IP, resistant to X-Forwarded-For SPOOFING.
+    """Best-effort REAL client IP, resistant to X-Forwarded-For SPOOFING and
+    unwrapping Cloudflare.
 
     X-Forwarded-For is `client, hop1, …, hopN`, where each proxy APPENDS the
     address it received from — so the entries OUR trusted proxies added are on
-    the RIGHT, and everything to their left is attacker-controllable (any caller
-    can send `X-Forwarded-For: <allowlisted-ip>`). The old code trusted the
-    LEFTMOST entry, which both (a) let anyone spoof an allowlisted IP to bypass
-    the free-audit cap / ?refresh re-render gate, and (b) collapsed to one shared
-    value behind Render's proxy. We instead take the entry our own proxy chain
-    appended: the (_TRUSTED_PROXY_HOPS)-th from the right.
+    the RIGHT, and everything to their left is attacker-controllable. We take the
+    entry our own proxy chain appended: the (_TRUSTED_PROXY_HOPS)-th from the
+    right. Behind Cloudflare that entry is a Cloudflare EDGE IP, so when the
+    verified upstream is Cloudflare we unwrap the true visitor from
+    CF-Connecting-IP (which fixes geo, the per-IP cap, and link-open tracking all
+    collapsing onto Cloudflare data-center addresses). We require the verified
+    upstream to be Cloudflare before trusting that header so a direct origin hit
+    can't spoof it.
     """
     fwd = request.headers.get('X-Forwarded-For', '') or ''
     parts = [p.strip() for p in fwd.split(',') if p.strip()]
-    if parts:
-        return parts[-min(_TRUSTED_PROXY_HOPS, len(parts))]
-    return request.remote_addr or 'unknown'
+    edge = parts[-min(_TRUSTED_PROXY_HOPS, len(parts))] if parts else (request.remote_addr or 'unknown')
+    cf = (request.headers.get('CF-Connecting-IP', '') or '').strip()
+    if cf and _ip_is_cloudflare(edge):
+        return cf
+    return edge
 
 
 def _ip_is_exempt_from_cap(ip):
     """True if this IP should bypass FREE_DAILY_CAP enforcement (allowlisted
     via FREE_AUDIT_BYPASS_IPS env var)."""
     return bool(ip) and ip in _FREE_AUDIT_BYPASS_IPS
+
+
+_IP_HOSTING_CACHE = {}
+
+
+def _ip_is_hosting(ip):
+    """True if ip is a data-center / hosting / proxy address rather than a
+    residential or mobile end-user. Used to demote link 'opens' that are actually
+    an automated fetch presenting a real browser UA — LinkedIn's own preview/
+    safety infrastructure and corporate URL scanners fetch from data-center IPs;
+    a genuine human read comes from a residential or mobile IP. Cached per-IP;
+    best-effort; FAILS OPEN (returns False) on any error or timeout so a real
+    open is never wrongly hidden. Requires _client_ip's CF-Connecting-IP unwrap
+    to have run first, or every IP looks like Cloudflare's data center."""
+    if not ip or ip in ('127.0.0.1', '::1', 'localhost', 'unknown'):
+        return False
+    if ip in _IP_HOSTING_CACHE:
+        return _IP_HOSTING_CACHE[ip]
+    hosting = False
+    try:
+        import urllib.request
+        url = f"http://ip-api.com/json/{ip}?fields=status,hosting,proxy"
+        with urllib.request.urlopen(url, timeout=2) as r:
+            d = json.loads(r.read().decode('utf-8', 'ignore'))
+            if d.get('status') == 'success':
+                hosting = bool(d.get('hosting') or d.get('proxy'))
+    except Exception:
+        hosting = False
+    _IP_HOSTING_CACHE[ip] = hosting
+    return hosting
 
 
 def _log_page_visit(kind, slug=None):
@@ -10451,6 +10517,7 @@ _LINK_PREVIEW_BOT_UA = (
     'ms-office', 'microsoft office', 'outlook', 'safelinks',
     'curl', 'wget', 'python-requests', 'go-http-client', 'java/',
     'okhttp', 'headlesschrome', 'phantomjs', 'lighthouse', 'apache-httpclient',
+    'axios', 'node-fetch', 'httpx', 'urllib', 'libwww', 'scrapy', 'zgrab',
 )
 
 
@@ -10554,9 +10621,15 @@ def track_and_redirect(token):
         return redirect(url_for('citation_audit'))
 
     ua = request.headers.get('User-Agent', '') or ''
-    is_bot = _is_link_preview_bot(ua, request.method)
     ip = _client_ip()
     ref = (request.headers.get('Referer', '') or '')[:500]
+    # A hit is a preview/scan (not a human read) if it has a bot UA OR comes from
+    # a data-center IP. The IP check is what catches LinkedIn's own link-preview /
+    # safety fetchers and corporate URL scanners — they fetch with real browser
+    # UAs from hosting IPs, which is why near-instant "opens" fire in send order
+    # for every prospect. (_ip_is_hosting is cached + fails open, and relies on
+    # _client_ip having unwrapped the true visitor IP from Cloudflare.)
+    is_bot = _is_link_preview_bot(ua, request.method) or _ip_is_hosting(ip)
 
     # Is this the first genuine human open? Check BEFORE inserting this row.
     first_human = (not is_bot) and (
