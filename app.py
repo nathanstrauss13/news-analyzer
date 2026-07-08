@@ -9444,6 +9444,33 @@ def healthz():
     }), 200
 
 
+@app.route('/whoami')
+def whoami_diagnostic():
+    """Operator diagnostic: how does THIS request's IP resolve + classify? Used to
+    verify the Cloudflare unwrap and the hosting/bot detection from real devices —
+    hit it from a phone/desktop and compare. Operator-gated."""
+    if not _operator_ok():
+        abort(404)
+    xff = request.headers.get('X-Forwarded-For', '') or ''
+    parts = [p.strip() for p in xff.split(',') if p.strip()]
+    edge = parts[-min(_TRUSTED_PROXY_HOPS, len(parts))] if parts else (request.remote_addr or 'unknown')
+    ua = request.headers.get('User-Agent', '') or ''
+    ip = _client_ip()
+    return jsonify({
+        "x_forwarded_for": xff,
+        "cf_connecting_ip": request.headers.get('CF-Connecting-IP', ''),
+        "trusted_edge": edge,
+        "edge_is_cloudflare": _ip_is_cloudflare(edge),
+        "resolved_client_ip": ip,
+        "ip_is_hosting": _ip_is_hosting(ip),
+        "ip_is_exempt_from_cap": _ip_is_exempt_from_cap(ip),
+        "ua_is_bot": _is_link_preview_bot(ua, request.method),
+        "would_count_open_as_human": not (_is_link_preview_bot(ua, request.method) or _ip_is_hosting(ip)),
+        "geo": _coarse_geo(ip),
+        "user_agent": ua,
+    }), 200
+
+
 @app.route('/citation-audit', methods=['GET', 'POST'])
 def citation_audit():
     # MVP branch: audits are always anonymous + free tier. We still pass
