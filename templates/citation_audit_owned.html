@@ -63,7 +63,15 @@ h2,.eyebrow,.wm,.brand,.stat,.pilltab,.movehd,.gh,.gapcard h4,.oc b,.on.you,.ov{
 .owndoms{margin-top:14px;display:flex;flex-wrap:wrap;gap:10px}
 .oc{font-size:13px;color:var(--cyan);border:1px solid rgba(116,208,255,.24);border-radius:999px;padding:8px 15px;background:rgba(116,208,255,.05)}
 .oc b{color:#cfe9fb;font-weight:600}
+.urow{display:grid;grid-template-columns:1fr 108px 46px;align-items:center;gap:14px;margin:11px 0}
+.upath{font-size:13px;color:var(--cyan);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upath:hover{text-decoration:underline;color:#cfe9fb}
+.ut{height:9px;border-radius:999px;background:rgba(255,255,255,.05);overflow:hidden}
+.uf{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#5aa8f0,#74d0ff);box-shadow:0 0 12px rgba(116,208,255,.4)}
+.uv{font-size:13.5px;color:var(--ink);text-align:right;font-family:'Jost',sans-serif;font-weight:600}
+.domnote{margin-top:14px;font-size:12.5px;color:var(--muted)}
 .empty{color:var(--muted);font-style:italic;font-size:13.5px;margin-top:8px}
+@media(max-width:560px){.urow{grid-template-columns:1fr 46px;gap:10px}.ut{display:none}}
 footer{margin-top:44px;padding-top:22px;border-top:1px solid var(--line);font-size:13px;color:var(--muted);line-height:1.7}
 footer a{color:var(--gold);text-decoration:none}
 footer a:hover{text-decoration:underline}
@@ -143,9 +151,21 @@ footer a:hover{text-decoration:underline}
   </div>
 
   {% set yours = (sov.rows[0].domains if (sov.rows and sov.rows[0].is_brand) else []) %}
+  {% set topurls = owned.top_owned_urls %}
   <div class="sec">
-    <div class="gh">Owned content AI already cites from you</div>
-    {% if yours %}
+    <div class="gh">Top owned pages AI cites from you</div>
+    <div class="gsub">The specific {{ brand }} pages AI pulls into its answers, ranked by how often they're cited — your highest-performing owned content.</div>
+    {% if topurls %}
+      {% set umax = topurls[0].count %}
+      {% for u in topurls %}
+      <div class="urow">
+        <a class="upath" href="https://{{ u.url }}" target="_blank" rel="noopener" title="{{ u.url }}">{{ u.url }}</a>
+        <span class="ut"><span class="uf" style="width:{{ (u.count / umax * 100)|round|int }}%"></span></span>
+        <span class="uv">{{ u.count }}×</span>
+      </div>
+      {% endfor %}
+      {% if yours %}<div class="domnote">Across {{ yours|length }} owned domain{{ 's' if yours|length != 1 else '' }}: {% for d in yours %}{{ d.domain }} ({{ d.count }}){% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+    {% elif yours %}
       <div class="owndoms">{% for d in yours %}<span class="oc">{{ d.domain }} <b>{{ d.count }}</b></span>{% endfor %}</div>
     {% else %}
       <div class="empty">AI isn't citing any of {{ brand }}'s own pages for this category yet — the gaps above are where to start.</div>

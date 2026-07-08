@@ -5502,6 +5502,53 @@ def _compute_content_gaps(brand, competitors, related_brands, all_responses, max
     return gaps[:max_gaps]
 
 
+def _norm_owned_url(url):
+    """Display-normalize a citation URL for grouping: drop scheme, leading www,
+    query string (utm tags etc.) and fragment, and any trailing slash. Preserves
+    path case so the link still resolves. Bare homepage collapses to just the host."""
+    u = (url or '').strip()
+    if not u:
+        return ''
+    u = re.sub(r'#.*$', '', u)
+    u = re.sub(r'\?.*$', '', u)
+    u = re.sub(r'^https?://', '', u, flags=re.I)
+    u = re.sub(r'^www\.', '', u, flags=re.I)
+    return u.rstrip('/')
+
+
+def _compute_top_owned_urls(brand, related_brands, all_responses, brand_domain_hints=None,
+                            max_urls=8):
+    """The brand's OWN pages that AI actually cites, ranked by citation count.
+    Same brand-owned classification as the owned SoV, but grouped by URL (path)
+    instead of domain — answers 'which of our pages does AI pull from?'. This is
+    the per-page detail behind the owned share-of-voice number. Deterministic, no API."""
+    related_stems = _competitor_domain_stems(related_brands or [])
+    hint_roots = {_registrable_root(d) for d in (brand_domain_hints or []) if d}
+    seen = {}  # lowercased url -> [display_url, count]
+    for r in (all_responses or []):
+        for c in (r.get('citations') or []):
+            url = (c.get('url') or '').strip()
+            if not url:
+                continue
+            dom = _url_host(url)
+            if not dom:
+                continue
+            if not (_is_brand_own_domain(dom, brand)
+                    or _is_competitor_owned_domain(dom, related_stems)
+                    or _registrable_root(dom) in hint_roots):
+                continue
+            disp = _norm_owned_url(url)
+            if not disp:
+                continue
+            key = disp.lower()
+            if key in seen:
+                seen[key][1] += 1
+            else:
+                seen[key] = [disp, 1]
+    ranked = sorted(seen.values(), key=lambda x: (-x[1], x[0]))
+    return [{'url': d, 'count': n} for d, n in ranked[:max_urls]]
+
+
 def _compute_owned_headline_move(brand, owned_sov, content_gaps):
     """The single #1 OWNED move — publish on the biggest content gap, or (no gaps,
     brand already cited) extend the lead. Deterministic, no LLM."""
@@ -5542,6 +5589,8 @@ def _compute_owned_analysis(brand, competitors, related_brands, ranked_domains, 
         'owned_sov': sov,
         'mix': mix,
         'content_gaps': gaps,
+        'top_owned_urls': _compute_top_owned_urls(brand, related_brands, all_responses,
+                                                  brand_domain_hints=brand_domain_hints),
         'headline_move': _compute_owned_headline_move(brand, sov, gaps),
     }
 
@@ -10510,6 +10559,19 @@ def view_signal_report_owned(slug):
             owned = {'owned_sov': {'rows': [], 'owned_total': 0, 'brand_owned': 0,
                                    'brand_share': 0.0, 'parent_folded': []},
                      'mix': {}, 'content_gaps': [], 'headline_move': None}
+    # Top owned pages AI cites — the per-URL detail behind the owned share.
+    # Computed on the fly so every report (incl. older payloads whose stored
+    # `owned` predates this key) shows it, no re-render. Same pattern as earned_wins.
+    if not owned.get('top_owned_urls'):
+        try:
+            owned['top_owned_urls'] = _compute_top_owned_urls(
+                data.get('brand') or '',
+                data.get('related_brands') or [],
+                data.get('all_responses') or [],
+                brand_domain_hints=data.get('brand_domains') or [])
+        except Exception as e:
+            print(f"[owned] top-URLs compute failed for {slug}: {e}")
+            owned['top_owned_urls'] = []
     return render_template(
         'citation_audit_owned.html',
         ga_measurement_id=GA_MEASUREMENT_ID,
