@@ -118,6 +118,10 @@ footer a:hover{text-decoration:underline}
   {% set orat = mix.owned / mix.total %}
   <div class="mix">Citation mix: <b>{{ mix.owned }}</b> owned (your &amp; competitor sites) vs <b>{{ mix.editorial }}</b> editorial, of {{ mix.total }} total — owned content carries <b>{{ (orat*100)|round|int }}%</b> of citations here{% if mix_bench %}{% if orat >= mix_bench.p75 %}, vs ~{{ (mix_bench.median*100)|round|int }}% typical of the {{ mix_bench.n }} categories we've audited: this category rewards owned publishing more than most{% elif orat <= mix_bench.p25 %}, vs ~{{ (mix_bench.median*100)|round|int }}% typical of the {{ mix_bench.n }} categories we've audited: this category leans on earned/editorial coverage more heavily than most{% else %}, in line with the ~{{ (mix_bench.median*100)|round|int }}% typical of the {{ mix_bench.n }} categories we've audited{% endif %}{% endif %}.</div>
   {% endif %}
+  {% set bm = owned.brand_mix %}
+  {% if bm and bm.total >= 10 %}
+  <div class="mix">For {{ brand }} specifically: of the <b>{{ bm.total }}</b> citations behind answers that mention you, <b>{{ bm.own }}</b> {{ 'is' if bm.own == 1 else 'are' }} your own content (<b>{{ (bm.own / bm.total * 100)|round|int }}%</b>) — the rest is {{ bm.editorial }} editorial{% if bm.competitor %}, {{ bm.competitor }} competitor-owned{% endif %}{% if bm.other %}, {{ bm.other }} other{% endif %}.</div>
+  {% endif %}
 
   {% if owned.headline_move %}
   <div class="move">

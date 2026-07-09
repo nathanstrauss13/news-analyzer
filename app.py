@@ -5463,6 +5463,42 @@ def _compute_earned_owned_mix(brand, competitors, related_brands, ranked_domains
     return {'editorial': editorial, 'owned': owned, 'total': total}
 
 
+def _compute_brand_citation_mix(brand, competitors, related_brands, all_responses,
+                                brand_domain_hints=None, brand_aliases=None):
+    """Brand-level counterpart to the category mix: across the answers that
+    MENTION the brand, how does the citation diet split — the brand's OWN pages
+    vs editorial vs competitors' own sites? Answers 'how much of your own AI
+    story do you author?' (e.g. Citi: 2 of ~100 citations behind Citi-mentioning
+    answers are Citi's own content). Response-level attribution using the same
+    mention matcher as the rest of the report. Deterministic, no API."""
+    peers = _owned_peer_competitors(competitors)
+    related_stems = _competitor_domain_stems(related_brands or [])
+    comp_stems = _competitor_domain_stems(peers)
+    hint_roots = {_registrable_root(d) for d in (brand_domain_hints or []) if d}
+    bforms = _brand_match_forms(brand, brand_aliases)
+    own = editorial = competitor = other = 0
+    for r in (all_responses or []):
+        if not _brand_present_in_text(bforms, _response_text(r)):
+            continue
+        for c in (r.get('citations') or []):
+            dom = _url_host(c.get('url') or '') or (c.get('domain') or '')
+            if not dom:
+                continue
+            if (_is_brand_own_domain(dom, brand)
+                    or _is_competitor_owned_domain(dom, related_stems)
+                    or _registrable_root(dom) in hint_roots):
+                own += 1
+            elif _is_competitor_owned_domain(dom, comp_stems):
+                competitor += 1
+            elif classify_citation_domain(dom) == 'editorial':
+                editorial += 1
+            else:
+                other += 1
+    total = own + editorial + competitor + other
+    return {'own': own, 'editorial': editorial, 'competitor': competitor,
+            'other': other, 'total': total}
+
+
 def _compute_content_gaps(brand, competitors, related_brands, all_responses, max_gaps=6,
                           brand_domain_hints=None):
     """Per-topic 'where to publish': prompts where AI cited a competitor's OWN
@@ -5516,13 +5552,56 @@ def _norm_owned_url(url):
     return u.rstrip('/')
 
 
-# Portfolio benchmark for the owned/editorial citation mix — computed 2026-07
-# across the 47 audits then on file (owned share of all citations: p25 9.5%,
-# median 12.6%, p75 16.9%). Lets the report say "more/less owned-driven than
-# most categories we've audited" instead of the always-true "leans on earned".
-# Re-derive occasionally as the portfolio grows (script: fetch /signal/*.json,
-# ratio = owned.mix.owned / owned.mix.total per report, take quartiles).
+# Portfolio benchmark for the owned/editorial citation mix — SNAPSHOT fallback,
+# computed 2026-07 across the 47 audits then on file (owned share of all
+# citations: p25 9.5%, median 12.6%, p75 16.9%). The live value comes from
+# _current_owned_mix_bench() below, which re-derives these quartiles from the
+# stored reports every 12h so the "N categories we've audited" count grows with
+# each new audit; this constant only serves when the DB query fails or the
+# portfolio is thin.
 _OWNED_MIX_BENCH = {'n': 47, 'median': 0.126, 'p25': 0.095, 'p75': 0.169, 'asof': '2026-07'}
+
+_MIX_BENCH_CACHE = {'t': 0.0, 'bench': None}
+
+
+def _current_owned_mix_bench():
+    """Live portfolio benchmark for the owned/editorial mix line: quartiles of
+    (owned / total citations) across every stored report that has an owned mix,
+    recomputed at most every 12h. The JSON fields are extracted in SQL (Postgres
+    CAST + #>>, SQLite json_extract), so no multi-MB payload parsing in Python.
+    Falls back to the _OWNED_MIX_BENCH snapshot when the query fails or fewer
+    than 20 reports qualify — the report line always renders."""
+    import time as _time
+    now = _time.time()
+    if _MIX_BENCH_CACHE['bench'] and (now - _MIX_BENCH_CACHE['t']) < 12 * 3600:
+        return _MIX_BENCH_CACHE['bench']
+    pairs = []
+    try:
+        from sqlalchemy import text as _sqltext
+        if db.engine.dialect.name == 'postgresql':
+            rows = db.session.execute(_sqltext(
+                "SELECT CAST(payload AS json) #>> '{owned,mix,owned}', "
+                "       CAST(payload AS json) #>> '{owned,mix,total}' "
+                "FROM shared_results WHERE payload LIKE '%\"owned\"%'")).fetchall()
+        else:
+            rows = db.session.execute(_sqltext(
+                "SELECT json_extract(payload, '$.owned.mix.owned'), "
+                "       json_extract(payload, '$.owned.mix.total') "
+                "FROM shared_results")).fetchall()
+        pairs = [(float(o), float(t)) for o, t in rows
+                 if o is not None and t not in (None, 0, '0', '')]
+    except Exception as e:
+        db.session.rollback()   # a failed query would poison the PG transaction
+        print("[mix-bench] live recompute failed, using snapshot:", str(e)[:120])
+    if len(pairs) >= 20:
+        ratios = sorted(o / t for o, t in pairs if t)
+        n = len(ratios)
+        bench = {'n': n, 'median': ratios[n // 2], 'p25': ratios[n // 4],
+                 'p75': ratios[(3 * n) // 4], 'asof': 'live'}
+    else:
+        bench = dict(_OWNED_MIX_BENCH)
+    _MIX_BENCH_CACHE.update(t=now, bench=bench)
+    return bench
 
 
 def _owned_url_kind(disp_url):
@@ -5617,7 +5696,7 @@ def _compute_owned_headline_move(brand, owned_sov, content_gaps):
 
 
 def _compute_owned_analysis(brand, competitors, related_brands, ranked_domains, all_responses,
-                            brand_domain_hints=None):
+                            brand_domain_hints=None, brand_aliases=None):
     """Bundle the owned-media lens into one dict for the payload (`owned` key).
     Pure-Python; same data as the earned report. brand_domain_hints (resolved
     official domains) credit corporate/abbreviation sites name-matching misses.
@@ -5633,6 +5712,10 @@ def _compute_owned_analysis(brand, competitors, related_brands, ranked_domains, 
     return {
         'owned_sov': sov,
         'mix': mix,
+        'brand_mix': _compute_brand_citation_mix(brand, competitors, related_brands,
+                                                 all_responses,
+                                                 brand_domain_hints=brand_domain_hints,
+                                                 brand_aliases=brand_aliases),
         'content_gaps': gaps,
         'top_owned_urls': top['urls'],
         'owned_page_mix': {'homepage': top['homepage_citations'],
@@ -9047,7 +9130,7 @@ Respond with ONLY valid JSON:
         analysis['brand_domains'] = brand_domain_hints
         analysis['owned'] = _compute_owned_analysis(
             brand, competitor_counts, related_brands, ranked_domains, all_responses,
-            brand_domain_hints=brand_domain_hints)
+            brand_domain_hints=brand_domain_hints, brand_aliases=brand_aliases)
         _enrich_owned_recommendations(brand, category, analysis['owned'])
     except Exception as _oe:
         print("owned analysis failed (continuing):", str(_oe)[:120])
@@ -10208,7 +10291,8 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
         brand_domain_hints = _verify_brand_domains(brand, brand_aliases, brand_domain_hints, all_responses)
         out['brand_domains'] = brand_domain_hints
         out['owned'] = _compute_owned_analysis(brand, competitor_counts, _related, ranked_domains,
-                                               all_responses, brand_domain_hints=brand_domain_hints)
+                                               all_responses, brand_domain_hints=brand_domain_hints,
+                                               brand_aliases=brand_aliases)
         if regenerate_summary:
             _enrich_owned_recommendations(brand, out.get('category') or data.get('category'), out['owned'])
     except Exception as _oe:
@@ -10622,6 +10706,18 @@ def view_signal_report_owned(slug):
         except Exception as e:
             print(f"[owned] top-URLs compute failed for {slug}: {e}")
             owned['top_owned_urls'] = []
+    # Brand-level citation mix — same on-the-fly backfill for older payloads.
+    if not owned.get('brand_mix'):
+        try:
+            owned['brand_mix'] = _compute_brand_citation_mix(
+                data.get('brand') or '',
+                data.get('competitors') or [],
+                data.get('related_brands') or [],
+                data.get('all_responses') or [],
+                brand_domain_hints=data.get('brand_domains') or [],
+                brand_aliases=data.get('brand_aliases') or [])
+        except Exception as e:
+            print(f"[owned] brand-mix compute failed for {slug}: {e}")
     return render_template(
         'citation_audit_owned.html',
         ga_measurement_id=GA_MEASUREMENT_ID,
@@ -10629,7 +10725,7 @@ def view_signal_report_owned(slug):
         category=data.get('category') or '',
         slug=slug,
         owned=owned,
-        mix_bench=_OWNED_MIX_BENCH,
+        mix_bench=_current_owned_mix_bench(),
     )
 
 
