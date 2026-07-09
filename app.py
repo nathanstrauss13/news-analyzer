@@ -5516,12 +5516,49 @@ def _norm_owned_url(url):
     return u.rstrip('/')
 
 
+# Portfolio benchmark for the owned/editorial citation mix — computed 2026-07
+# across the 47 audits then on file (owned share of all citations: p25 9.5%,
+# median 12.6%, p75 16.9%). Lets the report say "more/less owned-driven than
+# most categories we've audited" instead of the always-true "leans on earned".
+# Re-derive occasionally as the portfolio grows (script: fetch /signal/*.json,
+# ratio = owned.mix.owned / owned.mix.total per report, take quartiles).
+_OWNED_MIX_BENCH = {'n': 47, 'median': 0.126, 'p25': 0.095, 'p75': 0.169, 'asof': '2026-07'}
+
+
+def _owned_url_kind(disp_url):
+    """Coarse content-type of an owned URL: is AI citing the brand's HOMEPAGE
+    (name recognition, nothing deeper to pull) or DEEP content (blog/newsroom/
+    product pages — publishing doing real work)? Homepage detection strips
+    locale prefixes (/en-us) and index/home/default filenames, so
+    lumen.com/en-us/home.html counts as a homepage, not deep content."""
+    host, _, path = disp_url.partition('/')
+    p = '/' + path.lower() if path else '/'
+    p = re.sub(r'^/(?:[a-z]{2}(?:-[a-z]{2})?)(?=/|$)', '', p)      # locale prefix
+    p = re.sub(r'/(?:index|home|default)\.\w+$', '', p).rstrip('/')
+    if not p:
+        return 'homepage'
+    h = host.lower()
+    if h.startswith('ir.') or 'investor' in p:
+        return 'investor relations'
+    if h.startswith(('news.', 'press.')) or re.search(
+            r'newsroom|/news(?:/|$)|/press|/media(?:/|$)|/stories(?:/|$)', p):
+        return 'newsroom'
+    if re.search(r'/blog|/insights|/articles|/research|/perspectives|/learn(?:/|$)'
+                 r'|/resources|/guides|/report', p):
+        return 'blog / insights'
+    return 'site page'
+
+
 def _compute_top_owned_urls(brand, related_brands, all_responses, brand_domain_hints=None,
                             max_urls=8):
     """The brand's OWN pages that AI actually cites, ranked by citation count.
     Same brand-owned classification as the owned SoV, but grouped by URL (path)
-    instead of domain — answers 'which of our pages does AI pull from?'. This is
-    the per-page detail behind the owned share-of-voice number. Deterministic, no API."""
+    instead of domain — answers 'which of our pages does AI pull from?'. Each URL
+    is tagged with its kind (homepage vs blog/newsroom/etc.), and the return
+    bundles a homepage-vs-deep citation split over the FULL set (not just the
+    displayed top rows) — the 'AI knows your name vs AI reads your publishing'
+    distinction. Returns {'urls': [...], 'homepage_citations': h,
+    'total_citations': t}. Deterministic, no API."""
     related_stems = _competitor_domain_stems(related_brands or [])
     hint_roots = {_registrable_root(d) for d in (brand_domain_hints or []) if d}
     seen = {}  # lowercased url -> [display_url, count]
@@ -5546,7 +5583,13 @@ def _compute_top_owned_urls(brand, related_brands, all_responses, brand_domain_h
             else:
                 seen[key] = [disp, 1]
     ranked = sorted(seen.values(), key=lambda x: (-x[1], x[0]))
-    return [{'url': d, 'count': n} for d, n in ranked[:max_urls]]
+    home = sum(n for d, n in seen.values() if _owned_url_kind(d) == 'homepage')
+    total = sum(n for _, n in seen.values())
+    return {
+        'urls': [{'url': d, 'count': n, 'kind': _owned_url_kind(d)} for d, n in ranked[:max_urls]],
+        'homepage_citations': home,
+        'total_citations': total,
+    }
 
 
 def _compute_owned_headline_move(brand, owned_sov, content_gaps):
@@ -5585,12 +5628,15 @@ def _compute_owned_analysis(brand, competitors, related_brands, ranked_domains, 
                                     brand_domain_hints=brand_domain_hints)
     gaps = _compute_content_gaps(brand, competitors, related_brands, all_responses,
                                  brand_domain_hints=brand_domain_hints)
+    top = _compute_top_owned_urls(brand, related_brands, all_responses,
+                                  brand_domain_hints=brand_domain_hints)
     return {
         'owned_sov': sov,
         'mix': mix,
         'content_gaps': gaps,
-        'top_owned_urls': _compute_top_owned_urls(brand, related_brands, all_responses,
-                                                  brand_domain_hints=brand_domain_hints),
+        'top_owned_urls': top['urls'],
+        'owned_page_mix': {'homepage': top['homepage_citations'],
+                           'deep': top['total_citations'] - top['homepage_citations']},
         'headline_move': _compute_owned_headline_move(brand, sov, gaps),
     }
 
@@ -10564,11 +10610,15 @@ def view_signal_report_owned(slug):
     # `owned` predates this key) shows it, no re-render. Same pattern as earned_wins.
     if not owned.get('top_owned_urls'):
         try:
-            owned['top_owned_urls'] = _compute_top_owned_urls(
+            _top = _compute_top_owned_urls(
                 data.get('brand') or '',
                 data.get('related_brands') or [],
                 data.get('all_responses') or [],
                 brand_domain_hints=data.get('brand_domains') or [])
+            owned['top_owned_urls'] = _top['urls']
+            owned['owned_page_mix'] = {
+                'homepage': _top['homepage_citations'],
+                'deep': _top['total_citations'] - _top['homepage_citations']}
         except Exception as e:
             print(f"[owned] top-URLs compute failed for {slug}: {e}")
             owned['top_owned_urls'] = []
@@ -10579,6 +10629,7 @@ def view_signal_report_owned(slug):
         category=data.get('category') or '',
         slug=slug,
         owned=owned,
+        mix_bench=_OWNED_MIX_BENCH,
     )
 
 
