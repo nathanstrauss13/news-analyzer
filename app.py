@@ -11098,6 +11098,10 @@ def _link_stats_rows(as_json=False):
             'recipient': lk.recipient, 'campaign': lk.campaign,
             'created_at': lk.created_at,
             'human_opens': len(humans), 'bot_hits': bots,
+            # Distinct devices/networks behind the opens: 1 IP re-opening five
+            # times is one engaged person; 4 IPs on one token means the link
+            # was forwarded — a different (stronger) buying signal.
+            'unique_ips': len({h.ip for h in humans if h.ip}),
             'first_open': humans[0].clicked_at if humans else None,
             'last_open': humans[-1].clicked_at if humans else None,
         })
@@ -11220,8 +11224,18 @@ def traffic_view():
     # Funnel (30d): homepage visits -> audits run -> genuine outreach opens.
     home_30 = PageVisit.query.filter(PageVisit.created_at >= since(30), PageVisit.kind == 'home').count()
     audits_30 = InboundAudit.query.filter(InboundAudit.created_at >= since(30)).count()
-    opens_30 = LinkClick.query.filter(LinkClick.clicked_at >= since(30),
-                                      LinkClick.is_bot.is_(False)).count()
+
+    # Outreach opens: UNIQUE = distinct tokens with >=1 human open in the window
+    # (token is the person-level key — one minted per recipient — so this reads
+    # "how many prospects opened"; distinct IP would double-count phone+laptop).
+    # Raw event counts stay alongside so repeat-opens remain visible.
+    def _opens(days=None):
+        q = LinkClick.query.filter(LinkClick.is_bot.is_(False))
+        if days is not None:
+            q = q.filter(LinkClick.clicked_at >= since(days))
+        return (q.with_entities(LinkClick.token).distinct().count(), q.count())
+
+    opens_30, opens_30_total = _opens(30)
 
     # ---- Retroactive first-party history (predates the PageVisit table): every
     # self-serve audit-run carries referrer + source since launch (InboundAudit);
@@ -11230,8 +11244,8 @@ def traffic_view():
     audits_all = InboundAudit.query.count()
     audits_7 = InboundAudit.query.filter(InboundAudit.created_at >= since(7)).count()
     dashboards_built = SharedResult.query.count()
-    opens_all = LinkClick.query.filter(LinkClick.is_bot.is_(False)).count()
-    opens_7 = LinkClick.query.filter(LinkClick.is_bot.is_(False), LinkClick.clicked_at >= since(7)).count()
+    opens_all, opens_all_total = _opens()
+    opens_7, opens_7_total = _opens(7)
 
     # Daily audit-run trend (last 21 days).
     audit_trend = []
@@ -11268,9 +11282,11 @@ def traffic_view():
                            total_visits=total_visits, total_uniques=total_uniques,
                            referrers=referrers, sources=sources, trend=trend, trend_max=trend_max,
                            top_reports=top_reports, home_30=home_30, audits_30=audits_30,
-                           opens_30=opens_30,
+                           opens_30=opens_30, opens_30_total=opens_30_total,
                            audits_all=audits_all, audits_7=audits_7, dashboards_built=dashboards_built,
-                           opens_all=opens_all, opens_7=opens_7, audit_trend=audit_trend,
+                           opens_all=opens_all, opens_7=opens_7,
+                           opens_all_total=opens_all_total, opens_7_total=opens_7_total,
+                           audit_trend=audit_trend,
                            audit_trend_max=audit_trend_max, audit_sources=audit_sources,
                            audit_referrers=audit_referrers,
                            keyq=(f"?key={request.args.get('key')}" if request.args.get('key') else ""))
@@ -11290,8 +11306,9 @@ def link_stats():
         report_url = root + _tracked_link_target(r['slug'])
         recip = html.escape(r['recipient'] or '—')
         opens = r['human_opens']
-        opens_cell = (f'<strong>{opens}</strong>' if opens else
-                      '<span style="color:#bbb">0</span>')
+        opens_cell = (f'<strong>{opens}</strong>'
+                      f'<span style="color:#999;font-size:11px"> · {r["unique_ips"]} IP{"s" if r["unique_ips"] != 1 else ""}</span>'
+                      if opens else '<span style="color:#bbb">0</span>')
         trs.append(
             '<tr>'
             f'<td><span style="display:inline-block;width:9px;height:9px;border-radius:50%;'
@@ -11319,7 +11336,9 @@ def link_stats():
         + _operator_nav('rstats') +
         '<h1>Pitch link opens</h1>'
         f'<p class="sub">{opened} of {len(rows)} links opened by a human · bot/preview hits '
-        'shown separately · times in ET</p>'
+        'shown separately · times in ET · IP counts distinguish one person re-reading from '
+        'a forwarded link (opens before the Jul 8 Cloudflare-IP fix log edge IPs, so older '
+        'IP counts overstate)</p>'
         '<table><thead><tr><th>Recipient</th><th>Report</th><th>Human opens</th>'
         '<th>First open</th><th>Last open</th><th>Bot hits</th><th>Tracked link</th>'
         '</tr></thead><tbody>'
