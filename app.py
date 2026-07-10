@@ -10847,11 +10847,28 @@ def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats
         print("click-email send failed:", e)
 
 
+def _tracked_link_target(slug):
+    """Resolve a TrackedLink slug to its redirect path. Three forms:
+    a report slug (default), '__home__' → homepage, and 'file:<name>' → a
+    hosted PDF at static/reports/<name>.pdf (for tracked proposal links).
+    The file name is sanitized to [a-z0-9-] — anything else (traversal
+    attempts, dots, slashes) falls back to the homepage, same as a dead
+    token. Serving is confined to static/reports/ by construction."""
+    if slug == '__home__':
+        return url_for('citation_audit')
+    if (slug or '').startswith('file:'):
+        name = slug[5:]
+        if not re.fullmatch(r'[a-z0-9-]+', name or ''):
+            return url_for('citation_audit')
+        return url_for('static', filename=f'reports/{name}.pdf')
+    return url_for('view_signal_report', slug=slug)
+
+
 @app.route('/r/<token>')
 def track_and_redirect(token):
-    """Log a hit on a tracked pitch link, then 302 to the real report. Bot/
-    preview hits are recorded but never email; the first genuine human open
-    pings the operator."""
+    """Log a hit on a tracked pitch link, then 302 to the real target — a
+    report, the homepage, or a hosted PDF (file: slugs). Bot/preview hits are
+    recorded but never email; the first genuine human open pings the operator."""
     link = TrackedLink.query.filter_by(token=token).first()
     if not link:
         return redirect(url_for('citation_audit'))
@@ -10895,10 +10912,7 @@ def track_and_redirect(token):
             print("outreach open-sync failed:", e)
 
     if first_human:
-        if link.slug == '__home__':
-            report_url = request.url_root.rstrip('/') + url_for('citation_audit')
-        else:
-            report_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=link.slug)
+        report_url = request.url_root.rstrip('/') + _tracked_link_target(link.slug)
         stats_url = request.url_root.rstrip('/') + '/r-stats'
         when_et = _fmt_et(datetime.utcnow())
         threading.Thread(
@@ -10907,9 +10921,7 @@ def track_and_redirect(token):
             daemon=True,
         ).start()
 
-    if link.slug == '__home__':
-        return redirect(url_for('citation_audit'), code=302)
-    return redirect(url_for('view_signal_report', slug=link.slug), code=302)
+    return redirect(_tracked_link_target(link.slug), code=302)
 
 
 def _operator_ok():
@@ -11039,17 +11051,35 @@ def inbound_csv():
 
 @app.route('/r-new')
 def mint_tracked_link_route():
-    """Operator: mint a tracked link. /r-new?slug=swarovski&to=Jennifer+McGuire"""
+    """Operator: mint a tracked link. /r-new?slug=swarovski&to=Jennifer+McGuire
+    Also mints links to hosted PDFs: ?slug=file:citi-proposal points /r/<token>
+    at static/reports/citi-proposal.pdf (file must exist on the deploy).
+    Optional &token= requests a stable vanity token (falls back to random if
+    taken — check the returned URL)."""
     if not _operator_ok():
         abort(404)
     slug = (request.args.get('slug') or '').strip()
     if not slug:
-        return Response("Provide ?slug=<report-slug>&to=<recipient>\n", mimetype='text/plain')
-    if not _load_signal_report(slug):
+        return Response("Provide ?slug=<report-slug>&to=<recipient>  "
+                        "(or ?slug=file:<name> for a PDF at static/reports/<name>.pdf; "
+                        "optional &token=<vanity-token>)\n", mimetype='text/plain')
+    if slug.startswith('file:'):
+        name = slug[5:]
+        if not re.fullmatch(r'[a-z0-9-]+', name or ''):
+            return Response("file: names may only contain a-z, 0-9 and dashes.\n",
+                            status=400, mimetype='text/plain')
+        if len(slug) > 32:
+            return Response(f"slug '{slug}' is {len(slug)} chars — the column caps at 32. "
+                            f"Use a shorter file name.\n", status=400, mimetype='text/plain')
+        if not os.path.isfile(os.path.join(app.static_folder, 'reports', name + '.pdf')):
+            return Response(f"No file at static/reports/{name}.pdf on this deploy.\n",
+                            status=404, mimetype='text/plain')
+    elif not _load_signal_report(slug):
         return Response(f"No report found for slug '{slug}'.\n", status=404, mimetype='text/plain')
     recipient = (request.args.get('to') or '').strip()[:160] or None
     campaign = (request.args.get('campaign') or '').strip()[:80] or None
-    link = _mint_tracked_link(slug, recipient, campaign)
+    vanity = (request.args.get('token') or '').strip()[:64] or None
+    link = _mint_tracked_link(slug, recipient, campaign, token=vanity)
     url = request.url_root.rstrip('/') + '/r/' + link.token
     return Response(url + "\n", mimetype='text/plain')
 
@@ -11257,7 +11287,7 @@ def link_stats():
     for r in rows:
         dot = '#1db954' if r['human_opens'] else '#ccc'
         track_url = f"{root}/r/{r['token']}"
-        report_url = f"{root}/signal/{html.escape(r['slug'])}"
+        report_url = root + _tracked_link_target(r['slug'])
         recip = html.escape(r['recipient'] or '—')
         opens = r['human_opens']
         opens_cell = (f'<strong>{opens}</strong>' if opens else
