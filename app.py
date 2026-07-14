@@ -6135,19 +6135,38 @@ def _brand_present_in_text(forms, text):
 # 'shadow': surfaced at #1 for an AI-consulting audit via 'shadow AI/IT' prose.
 _GENERIC_COMPETITOR_NAMES = {'shadow'}
 
+# The AI assistants themselves — the measurement PANEL, never a competitor to
+# the audited brand. They leak into the competitor set in AI/comms categories
+# because answers name the tools ("use ChatGPT to draft…"); as real proper
+# nouns they slip past the lowercase-dominance guard. Dropped unconditionally
+# in every category (a report that says a PR firm "trails ChatGPT" is nonsense;
+# the audit literally uses these five to generate its answers). Company names
+# like 'OpenAI'/'Anthropic' are deliberately NOT here — those can be genuine
+# competitors in an AI-model-provider audit.
+_ASSISTANT_COMPETITOR_NAMES = {
+    'chatgpt', 'claude', 'gemini', 'grok', 'perplexity',
+    'copilot', 'microsoft copilot', 'bard', 'bing chat',
+}
+
 
 def _drop_generic_competitors(competitor_counts, all_responses):
-    """Remove competitor entries whose name is a generic category noun, not a
-    company: the curated _GENERIC_COMPETITOR_NAMES set plus a corpus lowercase-
-    dominance test (a short single-word name used mostly lowercase in prose is a
-    common noun — 'shadow' from 'shadow AI/IT'). Applied at BOTH fresh-build AND
-    rerender, so a junk competitor saved before this guard existed (Scribes'
-    'Shadow', which the rerender's recount-not-re-extract path otherwise keeps)
-    is dropped on the next rerender — and never named in the regenerated prose."""
+    """Remove competitor entries that are not real companies competing with the
+    brand: (a) curated generic category nouns (_GENERIC_COMPETITOR_NAMES) plus a
+    corpus lowercase-dominance test ('shadow' from 'shadow AI/IT'); (b) the AI
+    assistants that make up the measurement panel (_ASSISTANT_COMPETITOR_NAMES +
+    this audit's own `llm` values), which leak in when answers mention the tools.
+    Applied at BOTH fresh-build AND rerender, so junk saved before these guards
+    existed (Scribes' 'Shadow', 'ChatGPT') is dropped on the next rerender and
+    never named in the regenerated prose."""
+    panel = set(_ASSISTANT_COMPETITOR_NAMES)
+    for r in (all_responses or []):
+        l = (r.get('llm') or '').strip().lower()
+        if l:
+            panel.add(l)
     out = []
     for c in (competitor_counts or []):
         nm = (c.get('name') or '').strip()
-        if not nm or nm.lower() in _GENERIC_COMPETITOR_NAMES:
+        if not nm or nm.lower() in _GENERIC_COMPETITOR_NAMES or nm.lower() in panel:
             continue
         if len(nm.split()) == 1 and len(nm) <= 6 and all_responses:
             ci = sum(1 for r in all_responses if _qa_wb(nm).search(_response_text(r)))
