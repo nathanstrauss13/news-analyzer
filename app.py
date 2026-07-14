@@ -355,7 +355,7 @@ class LinkClick(db.Model):
     signal isn't inflated by automated fetches."""
     __tablename__ = 'link_clicks'
     id = db.Column(db.Integer, primary_key=True)
-    token = db.Column(db.String(16), index=True, nullable=False)
+    token = db.Column(db.String(64), index=True, nullable=False)   # matches TrackedLink.token width
     is_bot = db.Column(db.Boolean, default=False, nullable=False, index=True)
     ip = db.Column(db.String(64), nullable=True)
     user_agent = db.Column(db.Text, nullable=True)
@@ -374,7 +374,7 @@ class Outreach(db.Model):
     prospect_title = db.Column(db.String(200), nullable=True)
     company = db.Column(db.String(120), nullable=True)
     slug = db.Column(db.String(32), nullable=False)                    # report slug
-    link_token = db.Column(db.String(16), nullable=True, index=True)   # -> TrackedLink.token
+    link_token = db.Column(db.String(64), nullable=True, index=True)   # -> TrackedLink.token (matches width)
     channel = db.Column(db.String(24), default='linkedin', nullable=False)  # linkedin | email
     # queued | sent | opened | replied | call_scheduled | won | cold | passed
     status = db.Column(db.String(24), default='queued', nullable=False, index=True)
@@ -12021,10 +12021,14 @@ def _ensure_inbound_columns():
         # Every pre-existing row was written only on completion, so mark them done.
         "UPDATE inbound_audits SET status='completed' WHERE status IS NULL AND slug IS NOT NULL",
         "UPDATE inbound_audits SET is_operator=FALSE WHERE is_operator IS NULL",
-        # Widen tracked_links.token 16 -> 64 so vanity tokens fit (a 17-char
-        # token 500'd the mint). Widening is lossless; SQLite doesn't enforce
-        # VARCHAR length and errors on this ALTER — caught and skipped below.
+        # Widen ALL token-bearing columns 16 -> 64 so vanity tokens fit (a
+        # 17-char token 500'd the mint, and link_clicks inserts failed silently
+        # at the old width, dropping open-tracking for long tokens). Widening
+        # is lossless; SQLite doesn't enforce VARCHAR length and errors on
+        # these ALTERs — caught and skipped below.
         "ALTER TABLE tracked_links ALTER COLUMN token TYPE VARCHAR(64)",
+        "ALTER TABLE link_clicks ALTER COLUMN token TYPE VARCHAR(64)",
+        "ALTER TABLE outreach ALTER COLUMN link_token TYPE VARCHAR(64)",
     ]
     try:
         with app.app_context():
