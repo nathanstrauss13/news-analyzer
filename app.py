@@ -6135,6 +6135,28 @@ def _brand_present_in_text(forms, text):
 # 'shadow': surfaced at #1 for an AI-consulting audit via 'shadow AI/IT' prose.
 _GENERIC_COMPETITOR_NAMES = {'shadow'}
 
+
+def _drop_generic_competitors(competitor_counts, all_responses):
+    """Remove competitor entries whose name is a generic category noun, not a
+    company: the curated _GENERIC_COMPETITOR_NAMES set plus a corpus lowercase-
+    dominance test (a short single-word name used mostly lowercase in prose is a
+    common noun — 'shadow' from 'shadow AI/IT'). Applied at BOTH fresh-build AND
+    rerender, so a junk competitor saved before this guard existed (Scribes'
+    'Shadow', which the rerender's recount-not-re-extract path otherwise keeps)
+    is dropped on the next rerender — and never named in the regenerated prose."""
+    out = []
+    for c in (competitor_counts or []):
+        nm = (c.get('name') or '').strip()
+        if not nm or nm.lower() in _GENERIC_COMPETITOR_NAMES:
+            continue
+        if len(nm.split()) == 1 and len(nm) <= 6 and all_responses:
+            ci = sum(1 for r in all_responses if _qa_wb(nm).search(_response_text(r)))
+            cs = sum(1 for r in all_responses if _qa_wb(nm, case_sensitive=True).search(_response_text(r)))
+            if (ci - cs) >= 3 and cs < ci * 0.5:
+                continue
+        out.append(c)
+    return out
+
 _GENERIC_ALIAS_WORDS = {
     'discovery', 'signature', 'precision', 'vitality', 'freedom', 'horizon',
     'access', 'edge', 'core', 'pulse', 'vision', 'summit', 'origin', 'spark', 'signa',
@@ -8828,22 +8850,12 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     competitor_counts = []
     for name in competitor_candidates:
         nm = (name or '').strip()
-        # Common category nouns the extractor mistakes for companies —
-        # confirmed live false positives ("Shadow" at #1 via 'shadow AI/IT').
-        if nm.lower() in _GENERIC_COMPETITOR_NAMES:
-            continue
         cnt = _count_brand_mentions(nm, all_responses)
-        if cnt <= 0:
-            continue
-        # Build-time version of the QA competitor_generic_overcount check: a
-        # short single-word candidate whose corpus usage is lowercase-dominated
-        # is a common noun, not a brand — drop it before it can rank.
-        if len(nm.split()) == 1 and len(nm) <= 6:
-            _ci = sum(1 for r in all_responses if _qa_wb(nm).search(_response_text(r)))
-            _cs = sum(1 for r in all_responses if _qa_wb(nm, case_sensitive=True).search(_response_text(r)))
-            if (_ci - _cs) >= 3 and _cs < _ci * 0.5:
-                continue
-        competitor_counts.append({"name": nm, "mention_count": cnt})
+        if cnt > 0:
+            competitor_counts.append({"name": nm, "mention_count": cnt})
+    # Drop generic category nouns the extractor mistook for companies
+    # ("Shadow" via 'shadow AI/IT') — shared with the rerender path.
+    competitor_counts = _drop_generic_competitors(competitor_counts, all_responses)
     competitor_counts.sort(key=lambda c: c["mention_count"], reverse=True)
     # Drop chip/hardware suppliers (NVIDIA, AMD...) BEFORE the top-10 cut so real
     # competitors backfill the freed slots instead of being crowded out.
@@ -10494,6 +10506,10 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     # Merge same-entity duplicates (e.g. 'JPMorgan' + 'J.P. Morgan Asset Management')
     # so existing audits get the dedupe on refresh too.
     competitor_counts = _dedupe_competitors(competitor_counts, all_responses)
+    # Drop generic-noun competitors saved before the guard existed (Scribes'
+    # 'Shadow') — rerender recounts but doesn't re-extract, so without this the
+    # junk survives and the regenerated summary names it.
+    competitor_counts = _drop_generic_competitors(competitor_counts, all_responses)
     out['competitors'] = competitor_counts
     # Re-classify competitor types so existing audits (saved before the
     # classifier existed) also get the brand_peer / retailer split applied.
