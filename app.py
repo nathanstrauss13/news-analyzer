@@ -7857,7 +7857,9 @@ def _send_mail_object(msg):
     # mailbox. Gmail rewrites From to the authenticated user unless it's a
     # registered send-as alias, so we send From the SMTP user (keeping the
     # call site's display name); all call sites already use the same address.
-    gmail_pw = os.environ.get("GMAIL_SMTP_APP_PASSWORD")
+    # Google displays app passwords as "xxxx xxxx xxxx xxxx" — strip the spaces
+    # a paste inevitably carries, or SMTP auth 535s.
+    gmail_pw = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or '').replace(' ', '').strip()
     if gmail_pw:
         import smtplib
         from types import SimpleNamespace
