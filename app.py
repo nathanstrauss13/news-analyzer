@@ -2612,7 +2612,7 @@ def email_summary():
         except Exception as e:
             print(f"Lead save error: {e}")
 
-        sg_key = os.environ.get("SENDGRID_API_KEY")
+        sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
         if not sg_key:
             return jsonify({"ok": True, "sent": False, "message": "SENDGRID_API_KEY not set; lead captured only"})
 
@@ -2626,8 +2626,7 @@ def email_summary():
                 plain_text_content=text_body,
                 html_content="<pre style='font-family:monospace'>" + html.escape(text_body) + "</pre>"
             )
-            sg = SendGridAPIClient(sg_key)
-            resp = sg.send(msg)
+            resp = _send_mail_object(msg)
             print("SendGrid response:", resp.status_code)
             return jsonify({"ok": True, "sent": True})
         except Exception as e:
@@ -2951,7 +2950,7 @@ def _new_since(articles, since_dt: datetime):
 
 def _send_alert_email(email: str, slug: str, freq: str, items: list):
     try:
-        sg_key = os.environ.get("SENDGRID_API_KEY")
+        sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
         if not sg_key:
             print("SENDGRID_API_KEY not set; skipping alert email.")
             return False
@@ -2971,8 +2970,7 @@ def _send_alert_email(email: str, slug: str, freq: str, items: list):
             plain_text_content="\n".join(lines),
             html_content="<pre style='font-family:monospace'>" + html.escape("\n".join(lines)) + "</pre>"
         )
-        sg = SendGridAPIClient(sg_key)
-        resp = sg.send(msg)
+        resp = _send_mail_object(msg)
         print("Alert email status:", resp.status_code)
         return True
     except Exception as e:
@@ -7844,6 +7842,44 @@ def _retry_analysis_json(raw_text, prior_attempts):
     return fix_resp.content[0].text
 
 
+def _send_mail_object(msg):
+    """Single email transport for every sender in the app. Takes an
+    already-constructed sendgrid Mail object (all call sites build one) and
+    ships it via Resend when RESEND_API_KEY is set, else via SendGrid — so the
+    provider is swappable with one env var and zero call-site changes. Every
+    site's key-gate checks (RESEND_API_KEY or SENDGRID_API_KEY), so setting
+    either turns all email paths on. Raises on failure; call sites already
+    wrap sends in try/except and log."""
+    payload = msg.get()   # sendgrid Mail serializes to the v3 API JSON shape
+    resend_key = os.environ.get("RESEND_API_KEY")
+    if resend_key:
+        pers = (payload.get('personalizations') or [{}])[0]
+        frm = payload.get('from') or {}
+        body = {
+            "from": (f"{frm.get('name')} <{frm.get('email')}>"
+                     if frm.get('name') else frm.get('email')),
+            "to": [t.get('email') for t in (pers.get('to') or []) if t.get('email')],
+            "subject": payload.get('subject') or pers.get('subject') or '(no subject)',
+        }
+        for c in payload.get('content') or []:
+            if c.get('type') == 'text/plain':
+                body['text'] = c.get('value')
+            elif c.get('type') == 'text/html':
+                body['html'] = c.get('value')
+        r = requests.post("https://api.resend.com/emails",
+                          headers={"Authorization": f"Bearer {resend_key}",
+                                   "Content-Type": "application/json"},
+                          json=body, timeout=15)
+        if r.status_code >= 300:
+            raise RuntimeError(f"Resend {r.status_code}: {r.text[:300]}")
+        return r
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not sg_key:
+        raise RuntimeError("no email provider configured (RESEND_API_KEY / SENDGRID_API_KEY)")
+    from sendgrid import SendGridAPIClient
+    return SendGridAPIClient(sg_key).send(msg)
+
+
 def _send_audit_failure_email(error, problem_statement, tier):
     """Fire-and-forget diagnostic email when an audit fails (AuditAnalysisError
     or any other exception during run_citation_audit).
@@ -7853,7 +7889,7 @@ def _send_audit_failure_email(error, problem_statement, tier):
     or AUDIT_DEBUG_EMAIL is unset.
     """
     recipient = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = os.environ.get("SENDGRID_API_KEY")
+    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not recipient or not sg_key:
         return
     try:
@@ -7923,7 +7959,7 @@ def _send_audit_failure_email(error, problem_statement, tier):
             plain_text_content=text_body,
             html_content=html_body,
         )
-        SendGridAPIClient(sg_key).send(msg)
+        _send_mail_object(msg)
     except Exception as e:
         print("Audit FAILURE-email send failed:", e)
 
@@ -7935,7 +7971,7 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
     Never raises — all errors are caught and logged.
     """
     recipient = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = os.environ.get("SENDGRID_API_KEY")
+    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not recipient or not sg_key:
         return
     try:
@@ -8076,7 +8112,7 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
             plain_text_content=text_body,
             html_content=html_body,
         )
-        SendGridAPIClient(sg_key).send(msg)
+        _send_mail_object(msg)
     except Exception as e:
         print("Audit debug-email send failed:", e)
 
@@ -9671,14 +9707,20 @@ def admin_test_email():
     if not _operator_ok():
         abort(404)
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = os.environ.get("SENDGRID_API_KEY")
-    info = {"sendgrid_key_set": bool(sg_key), "to": to}
-    if not sg_key:
-        info["result"] = ("SENDGRID_API_KEY is NOT set on this deploy — every alert email "
-                          "(first-open, new-visitor, audit-error) is silently skipped")
+    info = {
+        "resend_key_set": bool(os.environ.get("RESEND_API_KEY")),
+        "sendgrid_key_set": bool(os.environ.get("SENDGRID_API_KEY")),
+        "provider": ("resend" if os.environ.get("RESEND_API_KEY")
+                     else "sendgrid" if os.environ.get("SENDGRID_API_KEY") else None),
+        "to": to,
+    }
+    if not info["provider"]:
+        info["result"] = ("NO email provider configured — set RESEND_API_KEY (preferred) "
+                          "or SENDGRID_API_KEY on Render; until then every alert email "
+                          "(first-open, new-visitor, audit-error, lead reports) is "
+                          "silently skipped")
         return jsonify(info)
     try:
-        from sendgrid import SendGridAPIClient
         from sendgrid.helpers.mail import Mail
         msg = Mail(
             from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
@@ -9687,9 +9729,8 @@ def admin_test_email():
             plain_text_content="Test send from /admin/test-email — if you're reading "
                                "this, alert emails are working end to end.",
         )
-        resp = SendGridAPIClient(sg_key).send(msg)
-        info["result"] = f"accepted by SendGrid (HTTP {resp.status_code})"
-        info["sendgrid_status"] = resp.status_code
+        resp = _send_mail_object(msg)
+        info["result"] = f"accepted by {info['provider']} (HTTP {resp.status_code})"
     except Exception as e:
         info["result"] = f"SEND FAILED — {type(e).__name__}: {str(e)[:400]}"
     return jsonify(info)
@@ -10878,7 +10919,7 @@ def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats
     link — often the link being forwarded internally, a stronger buying signal.
     Skipped silently if SENDGRID_API_KEY or the recipient address unset."""
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = os.environ.get("SENDGRID_API_KEY")
+    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not to or not sg_key:
         return
     try:
@@ -10928,7 +10969,7 @@ def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats
             plain_text_content=text_body,
             html_content=html_body,
         )
-        SendGridAPIClient(sg_key).send(msg)
+        _send_mail_object(msg)
     except Exception as e:
         print("click-email send failed:", e)
 
@@ -10956,7 +10997,7 @@ def _send_dashboard_visitor_email(slug, brand, ip, ua, when_et, visitor_no, repo
     _send_click_email — the dedup lives in _log_page_visit). Someone typed,
     bookmarked, or was forwarded the raw report URL."""
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = os.environ.get("SENDGRID_API_KEY")
+    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not to or not sg_key:
         return
     try:
@@ -10995,7 +11036,7 @@ def _send_dashboard_visitor_email(slug, brand, ip, ua, when_et, visitor_no, repo
             plain_text_content=text_body,
             html_content=html_body,
         )
-        SendGridAPIClient(sg_key).send(msg)
+        _send_mail_object(msg)
     except Exception as e:
         print("dashboard-visitor email send failed:", e)
 
@@ -11701,7 +11742,7 @@ def _outreach_upsert(name, slug, title=None, company=None, channel='linkedin',
 def _send_outreach_digest_email(due):
     """Daily 'follow-ups due' digest with ready-to-paste proposed text."""
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = os.environ.get("SENDGRID_API_KEY")
+    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not to or not sg_key:
         return
     try:
@@ -11739,7 +11780,7 @@ def _send_outreach_digest_email(due):
             to_emails=[to], subject=subject,
             plain_text_content=text_body, html_content=html_body,
         )
-        SendGridAPIClient(sg_key).send(msg)
+        _send_mail_object(msg)
     except Exception as e:
         print("outreach digest email failed:", e)
 
@@ -11781,7 +11822,7 @@ def _send_daily_traffic_email(rows, total_opens):
     """'Who opened your reports in the last 24h' digest. Skipped silently if
     SENDGRID_API_KEY or the operator address is unset."""
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = os.environ.get("SENDGRID_API_KEY")
+    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not to or not sg_key:
         return
     try:
@@ -11828,7 +11869,7 @@ def _send_daily_traffic_email(rows, total_opens):
             to_emails=[to], subject=subject,
             plain_text_content=text_body, html_content=html_body,
         )
-        SendGridAPIClient(sg_key).send(msg)
+        _send_mail_object(msg)
     except Exception as e:
         print("daily traffic digest email failed:", e)
 
@@ -11851,7 +11892,7 @@ def _send_daily_inbound_email(items):
     """'Who ran the free audit in the last 24h' digest. Skipped silently if
     SENDGRID_API_KEY or the operator address is unset."""
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = os.environ.get("SENDGRID_API_KEY")
+    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not to or not sg_key:
         return
     try:
@@ -11901,7 +11942,7 @@ def _send_daily_inbound_email(items):
             to_emails=[to], subject=subject,
             plain_text_content=text_body, html_content=html_body,
         )
-        SendGridAPIClient(sg_key).send(msg)
+        _send_mail_object(msg)
         print(f"[inbound-digest] sent ({n} audits)")
     except Exception as e:
         print("daily inbound digest email failed:", str(e)[:160])
@@ -13037,7 +13078,7 @@ def citation_audit_request_demo():
     db.session.add(lead)
     db.session.commit()
 
-    sg_key = os.environ.get("SENDGRID_API_KEY")
+    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if sg_key:
         try:
             from sendgrid import SendGridAPIClient
@@ -13110,8 +13151,7 @@ def citation_audit_request_demo():
                 plain_text_content=text_body,
                 html_content=html_body,
             )
-            sg = SendGridAPIClient(sg_key)
-            sg.send(msg)
+            _send_mail_object(msg)
         except Exception as e:
             print("SendGrid lead notification error:", e)
 
@@ -13134,7 +13174,7 @@ def signal_feedback():
     db.session.add(fb)
     db.session.commit()
     try:
-        sg_key = os.environ.get("SENDGRID_API_KEY")
+        sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
         if sg_key:
             from sendgrid import SendGridAPIClient
             from sendgrid.helpers.mail import Mail
@@ -13147,7 +13187,7 @@ def signal_feedback():
                 plain_text_content=f"User rated audit {slug} as {rating}.\n\nReport: {link}",
                 html_content=f"<p>User rated audit <strong>{slug}</strong> as {emoji} <strong>{rating}</strong>.</p><p>Report: <a href=\"{link}\">{link}</a></p>",
             )
-            SendGridAPIClient(sg_key).send(msg)
+            _send_mail_object(msg)
     except Exception as e:
         print("Feedback email failed:", e)
     return jsonify({"ok": True})
@@ -13200,7 +13240,7 @@ def _signal_base_url():
 def _send_magic_link_email(email, raw_token):
     base = _signal_base_url()
     link = f"{base}{url_for('signal_auth', token=raw_token)}"
-    sg_key = os.environ.get("SENDGRID_API_KEY")
+    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not sg_key:
         print(f"[DEV] Magic-link for {email}: {link}")
         return link
@@ -13222,7 +13262,7 @@ def _send_magic_link_email(email, raw_token):
                 f'<p style="color:#888;font-size:13px">If you didn\'t request this, ignore this email.</p>'
             ),
         )
-        SendGridAPIClient(sg_key).send(msg)
+        _send_mail_object(msg)
     except Exception as e:
         print("SendGrid magic-link error:", e)
         print(f"[FALLBACK] Magic-link for {email}: {link}")
@@ -13290,7 +13330,7 @@ def signal_login():
     session['signal_post_login_next'] = nxt
     link = _send_magic_link_email(email, raw)
     # In dev (no SendGrid), expose the link inline so the user can sign in without email delivery.
-    dev_link = link if not os.environ.get("SENDGRID_API_KEY") else None
+    dev_link = link if not (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY")) else None
     return render_template(
         'signal_login.html',
         ga_measurement_id=GA_MEASUREMENT_ID,
