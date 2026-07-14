@@ -11252,6 +11252,31 @@ def _operator_ok():
     return False
 
 
+def _expire_orphaned_inbound(max_age_minutes=45):
+    """Janitor: an audit worker that dies mid-run (OOM/instance restart — the
+    Cadillac/Sweetgreen deaths of 2026-07-14) leaves its InboundAudit row stuck
+    at status='started' forever, polluting the incomplete-leads view. Flip
+    started-rows older than max_age with no slug to 'errored'. 45 min is ~3x
+    the longest legitimate audit, so an in-flight run can't be mislabeled.
+    Idempotent; runs at startup and on each /inbound view."""
+    try:
+        with app.app_context():
+            cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+            n = (InboundAudit.query
+                 .filter(InboundAudit.status == 'started',
+                         InboundAudit.slug.is_(None),
+                         InboundAudit.created_at < cutoff)
+                 .update({'status': 'errored'}, synchronize_session=False))
+            if n:
+                db.session.commit()
+                print(f"[inbound-janitor] expired {n} orphaned started-row(s) -> errored")
+            else:
+                db.session.rollback()
+    except Exception as e:
+        db.session.rollback()
+        print("[inbound-janitor] failed:", str(e)[:120])
+
+
 @app.route('/inbound')
 def inbound_view():
     """Operator-gated warm-lead pipeline: every self-serve audit run, newest first.
@@ -11260,6 +11285,7 @@ def inbound_view():
     (/inbound?key=<OPERATOR_KEY>)."""
     if not _operator_ok():
         abort(404)
+    _expire_orphaned_inbound()
     from datetime import timedelta
     now = datetime.utcnow()
     _INCOMPLETE = ['started', 'errored', 'rate_limited']
@@ -13764,6 +13790,7 @@ def _ensure_homepage_link():
 _ensure_outreach_columns()
 _ensure_inbound_columns()
 _backfill_inbound_operator_flags()
+_expire_orphaned_inbound()   # flip worker-death orphans (started, no slug) to errored
 _ensure_outreach_seed()
 _ensure_homepage_link()
 
