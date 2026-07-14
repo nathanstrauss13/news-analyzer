@@ -2612,7 +2612,7 @@ def email_summary():
         except Exception as e:
             print(f"Lead save error: {e}")
 
-        sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+        sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
         if not sg_key:
             return jsonify({"ok": True, "sent": False, "message": "SENDGRID_API_KEY not set; lead captured only"})
 
@@ -2950,7 +2950,7 @@ def _new_since(articles, since_dt: datetime):
 
 def _send_alert_email(email: str, slug: str, freq: str, items: list):
     try:
-        sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+        sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
         if not sg_key:
             print("SENDGRID_API_KEY not set; skipping alert email.")
             return False
@@ -7851,6 +7851,36 @@ def _send_mail_object(msg):
     either turns all email paths on. Raises on failure; call sites already
     wrap sends in try/except and log."""
     payload = msg.get()   # sendgrid Mail serializes to the v3 API JSON shape
+
+    # Preferred transport: Gmail SMTP via the Innate Workspace account — $0,
+    # best deliverability to Nathan's own inbox, replies land in the real
+    # mailbox. Gmail rewrites From to the authenticated user unless it's a
+    # registered send-as alias, so we send From the SMTP user (keeping the
+    # call site's display name); all call sites already use the same address.
+    gmail_pw = os.environ.get("GMAIL_SMTP_APP_PASSWORD")
+    if gmail_pw:
+        import smtplib
+        from types import SimpleNamespace
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        user = (os.environ.get("GMAIL_SMTP_USER") or "nstrauss@innatec3.com").strip()
+        pers = (payload.get('personalizations') or [{}])[0]
+        frm = payload.get('from') or {}
+        tos = [t.get('email') for t in (pers.get('to') or []) if t.get('email')]
+        m = MIMEMultipart('alternative')
+        m['From'] = f"{frm.get('name')} <{user}>" if frm.get('name') else user
+        m['To'] = ', '.join(tos)
+        m['Subject'] = payload.get('subject') or pers.get('subject') or '(no subject)'
+        for c in payload.get('content') or []:      # plain first, html last (preferred)
+            if c.get('type') == 'text/plain':
+                m.attach(MIMEText(c.get('value') or '', 'plain'))
+            elif c.get('type') == 'text/html':
+                m.attach(MIMEText(c.get('value') or '', 'html'))
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=20) as s:
+            s.login(user, gmail_pw)
+            s.sendmail(user, tos, m.as_string())
+        return SimpleNamespace(status_code=250)     # SMTP OK; mimics .status_code
+
     resend_key = os.environ.get("RESEND_API_KEY")
     if resend_key:
         pers = (payload.get('personalizations') or [{}])[0]
@@ -7889,7 +7919,7 @@ def _send_audit_failure_email(error, problem_statement, tier):
     or AUDIT_DEBUG_EMAIL is unset.
     """
     recipient = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+    sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not recipient or not sg_key:
         return
     try:
@@ -7971,7 +8001,7 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
     Never raises — all errors are caught and logged.
     """
     recipient = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+    sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not recipient or not sg_key:
         return
     try:
@@ -9708,17 +9738,19 @@ def admin_test_email():
         abort(404)
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
     info = {
+        "gmail_smtp_set": bool(os.environ.get("GMAIL_SMTP_APP_PASSWORD")),
         "resend_key_set": bool(os.environ.get("RESEND_API_KEY")),
         "sendgrid_key_set": bool(os.environ.get("SENDGRID_API_KEY")),
-        "provider": ("resend" if os.environ.get("RESEND_API_KEY")
+        "provider": ("gmail-smtp" if os.environ.get("GMAIL_SMTP_APP_PASSWORD")
+                     else "resend" if os.environ.get("RESEND_API_KEY")
                      else "sendgrid" if os.environ.get("SENDGRID_API_KEY") else None),
         "to": to,
     }
     if not info["provider"]:
-        info["result"] = ("NO email provider configured — set RESEND_API_KEY (preferred) "
-                          "or SENDGRID_API_KEY on Render; until then every alert email "
-                          "(first-open, new-visitor, audit-error, lead reports) is "
-                          "silently skipped")
+        info["result"] = ("NO email provider configured — set GMAIL_SMTP_APP_PASSWORD "
+                          "(preferred), RESEND_API_KEY or SENDGRID_API_KEY on Render; "
+                          "until then every alert email (first-open, new-visitor, "
+                          "audit-error, lead reports) is silently skipped")
         return jsonify(info)
     try:
         from sendgrid.helpers.mail import Mail
@@ -10919,7 +10951,7 @@ def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats
     link — often the link being forwarded internally, a stronger buying signal.
     Skipped silently if SENDGRID_API_KEY or the recipient address unset."""
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+    sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not to or not sg_key:
         return
     try:
@@ -10997,7 +11029,7 @@ def _send_dashboard_visitor_email(slug, brand, ip, ua, when_et, visitor_no, repo
     _send_click_email — the dedup lives in _log_page_visit). Someone typed,
     bookmarked, or was forwarded the raw report URL."""
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+    sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not to or not sg_key:
         return
     try:
@@ -11742,7 +11774,7 @@ def _outreach_upsert(name, slug, title=None, company=None, channel='linkedin',
 def _send_outreach_digest_email(due):
     """Daily 'follow-ups due' digest with ready-to-paste proposed text."""
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+    sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not to or not sg_key:
         return
     try:
@@ -11822,7 +11854,7 @@ def _send_daily_traffic_email(rows, total_opens):
     """'Who opened your reports in the last 24h' digest. Skipped silently if
     SENDGRID_API_KEY or the operator address is unset."""
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+    sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not to or not sg_key:
         return
     try:
@@ -11892,7 +11924,7 @@ def _send_daily_inbound_email(items):
     """'Who ran the free audit in the last 24h' digest. Skipped silently if
     SENDGRID_API_KEY or the operator address is unset."""
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
-    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+    sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not to or not sg_key:
         return
     try:
@@ -13078,7 +13110,7 @@ def citation_audit_request_demo():
     db.session.add(lead)
     db.session.commit()
 
-    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+    sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if sg_key:
         try:
             from sendgrid import SendGridAPIClient
@@ -13174,7 +13206,7 @@ def signal_feedback():
     db.session.add(fb)
     db.session.commit()
     try:
-        sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+        sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
         if sg_key:
             from sendgrid import SendGridAPIClient
             from sendgrid.helpers.mail import Mail
@@ -13240,7 +13272,7 @@ def _signal_base_url():
 def _send_magic_link_email(email, raw_token):
     base = _signal_base_url()
     link = f"{base}{url_for('signal_auth', token=raw_token)}"
-    sg_key = (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
+    sg_key = (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY"))
     if not sg_key:
         print(f"[DEV] Magic-link for {email}: {link}")
         return link
@@ -13330,7 +13362,7 @@ def signal_login():
     session['signal_post_login_next'] = nxt
     link = _send_magic_link_email(email, raw)
     # In dev (no SendGrid), expose the link inline so the user can sign in without email delivery.
-    dev_link = link if not (os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY")) else None
+    dev_link = link if not (os.environ.get("GMAIL_SMTP_APP_PASSWORD") or os.environ.get("RESEND_API_KEY") or os.environ.get("SENDGRID_API_KEY")) else None
     return render_template(
         'signal_login.html',
         ga_measurement_id=GA_MEASUREMENT_ID,
