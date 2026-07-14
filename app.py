@@ -11252,13 +11252,14 @@ def _operator_ok():
     return False
 
 
-def _expire_orphaned_inbound(max_age_minutes=45):
-    """Janitor: an audit worker that dies mid-run (OOM/instance restart — the
-    Cadillac/Sweetgreen deaths of 2026-07-14) leaves its InboundAudit row stuck
-    at status='started' forever, polluting the incomplete-leads view. Flip
-    started-rows older than max_age with no slug to 'errored'. 45 min is ~3x
-    the longest legitimate audit, so an in-flight run can't be mislabeled.
-    Idempotent; runs at startup and on each /inbound view."""
+def _expire_orphaned_inbound(max_age_minutes=30):
+    """Janitor: an audit worker that dies mid-run (a deploy/instance restart
+    SIGTERMs the detached worker thread — the Cadillac/Sweetgreen deaths of
+    2026-07-14) leaves its InboundAudit row stuck at status='started' forever,
+    polluting the incomplete-leads view. Flip started-rows older than max_age
+    with no slug to 'errored'. 30 min is ~2x the longest legitimate audit
+    (~8-15 min incl. the URL-verification tail), so an in-flight run can't be
+    mislabeled. Idempotent; runs at startup and on each /inbound + /inbound.csv."""
     try:
         with app.app_context():
             cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
