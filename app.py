@@ -339,7 +339,9 @@ class TrackedLink(db.Model):
     follow-up can be timed while the brand is top of mind."""
     __tablename__ = 'tracked_links'
     id = db.Column(db.Integer, primary_key=True)
-    token = db.Column(db.String(16), unique=True, index=True, nullable=False)
+    # 64 (widened from 16 at startup by _ensure_inbound_columns) so vanity
+    # tokens like 'citi-flagship-proposal' fit; random tokens are 8 hex chars.
+    token = db.Column(db.String(64), unique=True, index=True, nullable=False)
     slug = db.Column(db.String(32), nullable=False, index=True)
     recipient = db.Column(db.String(160), nullable=True)   # e.g. "Jennifer McGuire — Swarovski"
     campaign = db.Column(db.String(80), nullable=True)      # optional grouping label
@@ -11186,10 +11188,39 @@ def mint_tracked_link_route():
         return Response(f"No report found for slug '{slug}'.\n", status=404, mimetype='text/plain')
     recipient = (request.args.get('to') or '').strip()[:160] or None
     campaign = (request.args.get('campaign') or '').strip()[:80] or None
-    vanity = (request.args.get('token') or '').strip()[:64] or None
+    vanity = (request.args.get('token') or '').strip() or None
+    if vanity and not re.fullmatch(r'[A-Za-z0-9-]{1,64}', vanity):
+        return Response("Vanity tokens: letters, digits and dashes only, max 64 chars.\n",
+                        status=400, mimetype='text/plain')
     link = _mint_tracked_link(slug, recipient, campaign, token=vanity)
     url = request.url_root.rstrip('/') + '/r/' + link.token
     return Response(url + "\n", mimetype='text/plain')
+
+
+@app.route('/r-del')
+def delete_tracked_link_route():
+    """Operator: delete a mis-minted tracked link (/r-del?token=xyz). SAFETY:
+    refuses if the link has ANY human opens — real engagement history is never
+    deletable; this exists only for typo'd/test mints, which otherwise clutter
+    /r-stats forever (there's no other delete path short of a DB shell). Bot
+    hits on the deleted token are removed with it."""
+    if not _operator_ok():
+        abort(404)
+    token = (request.args.get('token') or '').strip()
+    if not token:
+        return Response("Provide ?token=<token-to-delete>\n", mimetype='text/plain')
+    link = TrackedLink.query.filter_by(token=token).first()
+    if not link:
+        return Response(f"No tracked link with token '{token}'.\n", status=404, mimetype='text/plain')
+    humans = LinkClick.query.filter_by(token=token, is_bot=False).count()
+    if humans:
+        return Response(f"Refusing: /r/{token} has {humans} human open(s) — engagement "
+                        f"history is not deletable.\n", status=409, mimetype='text/plain')
+    bots = LinkClick.query.filter_by(token=token).delete()
+    db.session.delete(link)
+    db.session.commit()
+    return Response(f"Deleted /r/{token} (slug {link.slug}, {bots} bot hits removed).\n",
+                    mimetype='text/plain')
 
 
 def _link_stats_rows(as_json=False):
@@ -11990,6 +12021,10 @@ def _ensure_inbound_columns():
         # Every pre-existing row was written only on completion, so mark them done.
         "UPDATE inbound_audits SET status='completed' WHERE status IS NULL AND slug IS NOT NULL",
         "UPDATE inbound_audits SET is_operator=FALSE WHERE is_operator IS NULL",
+        # Widen tracked_links.token 16 -> 64 so vanity tokens fit (a 17-char
+        # token 500'd the mint). Widening is lossless; SQLite doesn't enforce
+        # VARCHAR length and errors on this ALTER — caught and skipped below.
+        "ALTER TABLE tracked_links ALTER COLUMN token TYPE VARCHAR(64)",
     ]
     try:
         with app.app_context():
