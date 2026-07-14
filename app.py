@@ -6130,10 +6130,18 @@ def _brand_present_in_text(forms, text):
 # generic to safely count without false positives (GE HealthCare's alias "Discovery"
 # collides with generic usage of the word; "Innova" collides with "innovation").
 # Small and high-confidence on purpose — extend only on a confirmed false positive.
+# Competitor-candidate names that are common category nouns, not companies —
+# extend only on a confirmed live false positive (like _GENERIC_ALIAS_WORDS).
+# 'shadow': surfaced at #1 for an AI-consulting audit via 'shadow AI/IT' prose.
+_GENERIC_COMPETITOR_NAMES = {'shadow'}
+
 _GENERIC_ALIAS_WORDS = {
     'discovery', 'signature', 'precision', 'vitality', 'freedom', 'horizon',
     'access', 'edge', 'core', 'pulse', 'vision', 'summit', 'origin', 'spark', 'signa',
     'innova', 'innovation', 'connect', 'plus', 'pro', 'max', 'one', 'go', 'live',
+    # 'ultimate': superlative that appears Titlecased in guide/product titles,
+    # so the corpus gate alone can't catch it (Ultimate.ai counted 33/50 falsely).
+    'ultimate',
 }
 
 
@@ -6171,15 +6179,16 @@ def _compute_per_llm_visibility(brand, all_responses, aliases=None):
     brand cited in 9/10 Gemini responses but 0/10 on ChatGPT/Claude/Grok is
     concentrated in one (search-grounded) assistant, not broadly embedded.
 
-    Counts answer-PRESENCE directly from the raw response text via distinctive-token
-    matching (NOT the corpus-gated _count_brand_mentions, which undercounts a brand
-    referred to by short form on a per-LLM subset — e.g. Grok/Perplexity saying
-    'JetBlue', not 'JetBlue Airways'). Returns {llm, mentions, total, rate, grounded}
-    sorted by rate desc.
+    Counts answer-PRESENCE via the SAME corpus-aware forms as the stored brand
+    count and the QA recount (_brand_count_forms) — short forms like 'JetBlue'
+    for 'JetBlue Airways' are kept (CamelCase distinctive token), while generic
+    collisions ('STACK'/'tech stack') are dropped, so per-LLM rows always sum
+    consistently with the headline count and pass the QA per-LLM check.
+    Returns {llm, mentions, total, rate, grounded} sorted by rate desc.
     """
     if not brand or not all_responses:
         return []
-    forms = _brand_match_forms(brand, aliases)
+    _, _union = _brand_count_forms(brand, aliases, all_responses)
     order = []
     seen = set()
     for r in all_responses:
@@ -6191,7 +6200,7 @@ def _compute_per_llm_visibility(brand, all_responses, aliases=None):
     for l in order:
         subset = [r for r in all_responses if r.get('llm') == l]
         n = len(subset)
-        m = sum(1 for r in subset if _brand_present_in_text(forms, _response_text(r)))
+        m = sum(1 for r in subset if _union.search(_response_text(r)))
         # Prefer the per-response `grounded` flag (present on audits run after
         # the grounded-retrieval change): an assistant is "grounded" here if a
         # majority of its responses actually retrieved. Fall back to the static
@@ -7680,6 +7689,15 @@ def _compute_audit_anomaly_flags(result, duration_seconds, per_provider_done, pe
                 flags.append("HIGH_LLM_ERROR_RATE")
                 break
 
+        # A provider that returned ZERO responses for the whole run (quota
+        # exhaustion — e.g. Perplexity 2026-07-14, OpenAI 429s previously) —
+        # distinct from HIGH_LLM_ERROR_RATE, which requires done > 0. Named
+        # per provider so the debug-email subject says who died.
+        _providers = set(per_provider_done or {}) | set(per_provider_errors or {})
+        for provider in sorted(_providers):
+            if (per_provider_done or {}).get(provider, 0) == 0:
+                flags.append(f"PROVIDER_ZERO:{provider}")
+
         # LLM dominance: if one provider produced >70% of total citations.
         provider_citation_counts = {}
         for r in (result.get("all_responses") or []):
@@ -8286,6 +8304,83 @@ def _qa_union(forms):
                               if f), re.IGNORECASE)
 
 
+# URL-ish spans in response text — stripped before the generic-usage corpus
+# gate in _brand_count_forms so a brand's own domain (lumen.com) doesn't make
+# its name look like common English.
+_URLISH_RE = re.compile(r"https?://\S+|www\.\S+|\b[a-z0-9][a-z0-9.-]*\.(?:com|net|org|io|ai|co)(?:/\S*)?", re.I)
+
+
+def _count_alias_verdict(alias, all_responses):
+    """Shared alias gate for the brand-count forms AND the QA alias_quality
+    check — one implementation so the stored count and the QA recount cannot
+    drift. Returns (ok, reason)."""
+    def rc(pat):
+        return sum(1 for r in all_responses if pat.search(r.get('response') or ''))
+    if len(alias) < 3:
+        return False, 'under 3 chars'
+    if alias.lower() in _GENERIC_ALIAS_WORDS:
+        return False, 'generic English word'
+    ci = rc(_qa_wb(alias))
+    cs = rc(_qa_wb(alias, case_sensitive=True))
+    if ci == 0:
+        return False, 'zero mentions in raw text'
+    if (ci - cs) >= 3 and cs < ci * 0.5:
+        return False, 'lowercase-dominated (common word)'
+    return True, ''
+
+
+def _brand_count_forms(brand, aliases, all_responses):
+    """Corpus-aware match forms for the brand MENTION COUNT — the single
+    source of truth shared by the audit pipeline, the per-LLM visibility
+    split, the rerender recount, and the QA gate's brand_recount. Extracted
+    from the QA gate 2026-07-14 after three stored-vs-recount mismatches
+    caused by the looser _brand_match_forms: STACK counted 'tech stack' (an
+    ALLCAPS token whose lowercase form is common English), Signet counted
+    generic 'jewelers' (the longest-token fallback), Scribes counted generic
+    'scribes'. Forms: full brand name + distinctive proper tokens (CamelCase/
+    ALLCAPS, dropped when the corpus shows their lowercase form is common) +
+    a corpus-attested acronym + verified aliases. Returns (forms, union_regex).
+    NOTE: _brand_match_forms remains for OUTLET-level presence tests (wins,
+    brand_mix), where per-answer recall matters more than count precision."""
+    ar = all_responses or []
+    def rc(pat):
+        return sum(1 for r in ar if pat.search(r.get('response') or ''))
+    # URL-stripped corpus for the generic-usage gate: 'lumen' inside
+    # lumen.com/... citation links is brand evidence, not common-English usage,
+    # and must not disqualify the 'Lumen' token (real case: Lumen 11 -> 6).
+    plain = [_URLISH_RE.sub(' ', r.get('response') or '') for r in ar]
+    def rc_plain(pat):
+        return sum(1 for t in plain if pat.search(t))
+    forms = [brand] if brand else []
+    # Tokens come from the brand name WITHOUT any parenthetical — sub-brand
+    # annotations like "Ultimate (Zendesk Ultimate)" or "Signet Jewelers (Kay,
+    # Zales…)" must not turn a PARENT/sibling name into a match form (Zendesk
+    # is not Ultimate); the paren contents arrive as verified aliases instead.
+    brand_main = re.sub(r'\(.*?\)', ' ', brand or '')
+    for t in re.findall(r"[A-Za-z][\w&'-]*", brand_main):
+        tl = t.lower()
+        if len(t) < 3 or tl in _GENERIC_ALIAS_WORDS or tl in _BRAND_GENERIC_TOKENS:
+            continue
+        camel = re.search(r'[a-z][A-Z]', t) or (t.isupper() and len(t) >= 3)
+        # Titlecase tokens (Lumen, Signet) count too — the corpus gate below is
+        # what separates them from capitalized generics ('Jewelers', 'Consulting',
+        # 'Infrastructure'), which all appear lowercase in prose >= 3 times.
+        title = t[:1].isupper() and t[1:].islower()
+        if not (camel or title):
+            continue
+        lower_cs = rc_plain(re.compile(r'(?<![A-Za-z0-9])' + re.escape(tl) + r'(?![A-Za-z0-9])'))
+        if lower_cs < 3:
+            forms.append(t)
+    words = [w for w in re.findall(r"[A-Za-z]+", brand_main) if w.lower() not in ('the', 'of', 'and', '&')]
+    if len(words) >= 2:
+        acr = ''.join(w[0] for w in words).upper()
+        if len(acr) >= 3 and rc(_qa_wb(acr, case_sensitive=True)) >= 2:
+            forms.append(acr)
+    verified = [a for a in (aliases or []) if _count_alias_verdict(a, ar)[0]]
+    all_forms = list(dict.fromkeys(forms + verified))
+    return all_forms, _qa_union(all_forms)
+
+
 def _qa_audit(payload):
     """Ground-truth QA validation for a completed audit. Returns
     {checks[], flags[], client_ready, blocking_failures, corrected}. `corrected`
@@ -8322,41 +8417,15 @@ def _qa_audit(payload):
         if not ok:
             flags.append(name)
 
-    # ---- verified aliases (reuses the same guard as the live counting path) ----
-    def alias_verdict(a):
-        if len(a) < 3:
-            return False, 'under 3 chars'
-        if a.lower() in _GENERIC_ALIAS_WORDS:
-            return False, 'generic English word'
-        ci, cs, dom = lowercase_dominated(a)
-        if ci == 0:
-            return False, 'zero mentions in raw text'
-        if dom:
-            return False, 'lowercase-dominated (common word)'
-        return True, ''
+    # ---- verified aliases + brand forms: the SHARED corpus-aware builder the
+    # pipeline/rerender/per-LLM counting paths also use, so stored == recount
+    # by construction. The verdict loop is kept only for check-2 reporting.
     verified, bad = [], []
     for a in aliases:
-        ok, why = alias_verdict(a)
+        ok, why = _count_alias_verdict(a, ar)
         (verified if ok else bad).append((a, why))
     verified_names = [a for a, _ in verified]
-
-    # ---- brand distinctive forms: full name + proper distinctive tokens + acronym ----
-    forms = [brand]
-    for t in re.findall(r"[A-Za-z][\w&'-]*", brand):
-        if len(t) < 3:
-            continue
-        proper = re.search(r'[a-z][A-Z]', t) or (t.isupper() and len(t) >= 3)
-        if proper:
-            lower_cs = rc(re.compile(r'(?<![A-Za-z0-9])' + re.escape(t.lower()) + r'(?![A-Za-z0-9])'))
-            if lower_cs < 3 and t.lower() not in _GENERIC_ALIAS_WORDS:
-                forms.append(t)
-    words = [w for w in re.findall(r"[A-Za-z]+", brand) if w.lower() not in ('the', 'of', 'and', '&')]
-    if len(words) >= 2:
-        acr = ''.join(w[0] for w in words).upper()
-        if len(acr) >= 3 and rc(_qa_wb(acr, case_sensitive=True)) >= 2:
-            forms.append(acr)
-    all_forms = list(dict.fromkeys(forms + verified_names))
-    union = _qa_union(all_forms)
+    all_forms, union = _brand_count_forms(brand, aliases, ar)
 
     # ---- CHECK 1: brand recount + per-LLM ----
     true_brand = rc(union)
@@ -8735,8 +8804,10 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     total_citations = sum(d['count'] for d in ranked_domains)
     brand_aliases = _resolve_brand_aliases(brand)   # sub-brands (e.g. iShares for BlackRock)
     brand_aliases = _verify_brand_aliases(brand_aliases, all_responses)  # drop hallucinated/generic aliases
-    brand_mention_count = sum(1 for r in all_responses
-                              if _brand_present_in_text(_brand_match_forms(brand, brand_aliases), _response_text(r)))
+    # Corpus-aware forms shared with the QA gate — stored count == QA recount
+    # by construction (see _brand_count_forms for the STACK/Signet/Scribes bugs).
+    _cnt_forms, _cnt_union = _brand_count_forms(brand, brand_aliases, all_responses)
+    brand_mention_count = sum(1 for r in all_responses if _cnt_union.search(_response_text(r)))
     # Per-assistant visibility — computed here (before the analysis prompt) so
     # the summary can call out lopsided concentration. (Re-stored on the
     # analysis dict below for the UI.)
@@ -8754,9 +8825,23 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     competitor_candidates = _extract_competitor_candidates(brand, category, all_responses)
     competitor_counts = []
     for name in competitor_candidates:
-        cnt = _count_brand_mentions(name, all_responses)
-        if cnt > 0:
-            competitor_counts.append({"name": name, "mention_count": cnt})
+        nm = (name or '').strip()
+        # Common category nouns the extractor mistakes for companies —
+        # confirmed live false positives ("Shadow" at #1 via 'shadow AI/IT').
+        if nm.lower() in _GENERIC_COMPETITOR_NAMES:
+            continue
+        cnt = _count_brand_mentions(nm, all_responses)
+        if cnt <= 0:
+            continue
+        # Build-time version of the QA competitor_generic_overcount check: a
+        # short single-word candidate whose corpus usage is lowercase-dominated
+        # is a common noun, not a brand — drop it before it can rank.
+        if len(nm.split()) == 1 and len(nm) <= 6:
+            _ci = sum(1 for r in all_responses if _qa_wb(nm).search(_response_text(r)))
+            _cs = sum(1 for r in all_responses if _qa_wb(nm, case_sensitive=True).search(_response_text(r)))
+            if (_ci - _cs) >= 3 and _cs < _ci * 0.5:
+                continue
+        competitor_counts.append({"name": nm, "mention_count": cnt})
     competitor_counts.sort(key=lambda c: c["mention_count"], reverse=True)
     # Drop chip/hardware suppliers (NVIDIA, AMD...) BEFORE the top-10 cut so real
     # competitors backfill the freed slots instead of being crowded out.
@@ -10362,8 +10447,8 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     # Recount the brand's own mention total (alias-aware, so iShares counts toward
     # BlackRock) so the headline reflects current guardrails + the brand's sub-brands.
     if all_responses and brand:
-        _bforms = _brand_match_forms(brand, brand_aliases)
-        new_brand_count = sum(1 for r in all_responses if _brand_present_in_text(_bforms, _response_text(r)))
+        _, _bunion = _brand_count_forms(brand, brand_aliases, all_responses)
+        new_brand_count = sum(1 for r in all_responses if _bunion.search(_response_text(r)))
         if new_brand_count != (data.get('brand_mention_count') or 0):
             print(f"[rerender] brand_mention_count (alias-aware) recount: "
                   f"{data.get('brand_mention_count')} -> {new_brand_count}")
