@@ -11353,6 +11353,7 @@ def inbound_csv():
     include them."""
     if not _operator_ok():
         abort(404)
+    _expire_orphaned_inbound()   # self-clean here too (biz-dev pulls the CSV)
     import csv
     import io
     _q = InboundAudit.query
