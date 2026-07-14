@@ -9530,6 +9530,9 @@ def _log_page_visit(kind, slug=None):
                 ref_host = None if (not h or 'innatec3.com' in h) else h[:160]
             except Exception:
                 ref_host = None
+        # New-unique-visitor check BEFORE inserting this row.
+        seen_before = bool(kind == 'report' and slug and PageVisit.query.filter_by(
+            kind='report', slug=slug, ip=ip).count())
         db.session.add(PageVisit(
             kind=kind, path=(request.path or '')[:200], slug=slug, ip=ip,
             referrer=ref or None, ref_host=ref_host,
@@ -9538,6 +9541,40 @@ def _log_page_visit(kind, slug=None):
             utm_campaign=(request.args.get('utm_campaign') or '')[:120] or None,
         ))
         db.session.commit()
+
+        # Email on a NEW unique visitor to a report — unless they arrived via a
+        # tracked /r/ link moments ago (that path already emails via
+        # _send_click_email; without this dedup one click would ping twice).
+        if kind == 'report' and slug and not seen_before:
+            tokens = [t.token for t in TrackedLink.query.filter_by(slug=slug).all()]
+            recent_click = bool(tokens and LinkClick.query.filter(
+                LinkClick.token.in_(tokens), LinkClick.is_bot.is_(False),
+                LinkClick.ip == ip,
+                LinkClick.clicked_at >= datetime.utcnow() - timedelta(minutes=3)).count())
+            # Same datacenter-IP filter the /r/ click path uses — LinkedIn/
+            # corporate URL scanners fetch with browser UAs from hosting IPs
+            # and would otherwise email as "new visitors". Checked here (not at
+            # log time) so the ip-api lookup only runs on would-notify events.
+            if not recent_click and not _ip_is_hosting(ip):
+                from sqlalchemy import distinct as _distinct
+                visitor_no = (db.session.query(db.func.count(_distinct(PageVisit.ip)))
+                              .filter(PageVisit.kind == 'report', PageVisit.slug == slug)
+                              .scalar() or 1)
+                brand = None
+                try:
+                    rec = (InboundAudit.query.filter_by(slug=slug)
+                           .filter(InboundAudit.brand.isnot(None))
+                           .order_by(InboundAudit.created_at.desc()).first())
+                    brand = rec.brand if rec else None
+                except Exception:
+                    pass
+                report_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=slug)
+                threading.Thread(
+                    target=_send_dashboard_visitor_email,
+                    args=(slug, brand, ip, request.headers.get('User-Agent', ''),
+                          _fmt_et(datetime.utcnow()), visitor_no, report_url, ref_host),
+                    daemon=True,
+                ).start()
     except Exception:
         try:
             db.session.rollback()
@@ -10797,9 +10834,13 @@ def _mint_tracked_link(slug, recipient=None, campaign=None, token=None):
     return link
 
 
-def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats_url):
-    """Fire-and-forget alert when a recipient opens their report for the first
-    time. Skipped silently if SENDGRID_API_KEY or the recipient address unset."""
+def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats_url,
+                      visitor_no=1):
+    """Fire-and-forget alert when a tracked link gets a NEW unique visitor
+    (a human open from an IP that hasn't opened this link before). visitor_no=1
+    is the classic first-open ping; 2+ means a new device/network on the same
+    link — often the link being forwarded internally, a stronger buying signal.
+    Skipped silently if SENDGRID_API_KEY or the recipient address unset."""
     to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
     sg_key = os.environ.get("SENDGRID_API_KEY")
     if not to or not sg_key:
@@ -10809,19 +10850,27 @@ def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats
         from sendgrid.helpers.mail import Mail
 
         who = recipient or f"Someone (link {token})"
-        subject = f"📬 {who} opened your Signal Finder report"
+        if visitor_no <= 1:
+            subject = f"📬 {who} opened your Signal Finder report"
+            lead = f"{who} just opened the report you shared."
+            tail = f"This is their first open. Re-opens and the full list live at {stats_url}"
+        else:
+            subject = f"👀 New visitor #{visitor_no} on {who}'s link"
+            lead = (f"{who}'s link was just opened from a new device/network — "
+                    f"unique visitor #{visitor_no} on this link. If you only sent it to "
+                    f"one person, it's likely being shared internally.")
+            tail = f"Full open history at {stats_url}"
         text_body = (
-            f"{who} just opened the report you shared.\n\n"
+            f"{lead}\n\n"
             f"Report:  {slug}  ({report_url})\n"
             f"When:    {when_et}\n"
             f"Link:    /r/{token}\n"
             f"IP:      {ip}\n"
             f"Device:  {ua[:300]}\n\n"
-            f"This is their first open. Re-opens and the full list live at {stats_url}"
+            f"{tail}"
         )
         html_body = (
-            f'<p style="font-size:15px;margin:0 0 10px"><strong>{html.escape(who)}</strong> '
-            f'just opened the report you shared.</p>'
+            f'<p style="font-size:15px;margin:0 0 10px">{html.escape(lead).replace(html.escape(who), "<strong>" + html.escape(who) + "</strong>", 1)}</p>'
             f'<table style="font-size:13px;border-collapse:collapse">'
             f'<tr><td style="padding:2px 12px 2px 0;color:#777">Report</td>'
             f'<td><a href="{html.escape(report_url)}">{html.escape(slug)}</a></td></tr>'
@@ -10832,8 +10881,9 @@ def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats
             f'<tr><td style="padding:2px 12px 2px 0;color:#777">IP</td>'
             f'<td>{html.escape(ip or "")}</td></tr>'
             f'</table>'
-            f'<p style="font-size:12px;color:#999;margin-top:12px">First open. '
-            f'Re-opens and the full list: <a href="{html.escape(stats_url)}">{html.escape(stats_url)}</a></p>'
+            f'<p style="font-size:12px;color:#999;margin-top:12px">'
+            f'{"First open. " if visitor_no <= 1 else f"Unique visitor #{visitor_no} on this link. "}'
+            f'Full history: <a href="{html.escape(stats_url)}">{html.escape(stats_url)}</a></p>'
         )
         msg = Mail(
             from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
@@ -10864,6 +10914,56 @@ def _tracked_link_target(slug):
     return url_for('view_signal_report', slug=slug)
 
 
+def _send_dashboard_visitor_email(slug, brand, ip, ua, when_et, visitor_no, report_url, ref_host):
+    """Fire-and-forget alert when a report dashboard gets a NEW unique visitor
+    who did NOT arrive via a tracked /r/ link (those are covered by
+    _send_click_email — the dedup lives in _log_page_visit). Someone typed,
+    bookmarked, or was forwarded the raw report URL."""
+    to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    if not to or not sg_key:
+        return
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+
+        label = f"{brand} ({slug})" if brand else slug
+        subject = f"👀 New visitor on the {label} dashboard"
+        via = f"via {ref_host}" if ref_host else "direct (no referrer)"
+        text_body = (
+            f"A new unique visitor (#{visitor_no}) just viewed the {label} dashboard — "
+            f"not through a tracked link.\n\n"
+            f"Report:  {report_url}\n"
+            f"When:    {when_et}\n"
+            f"Source:  {via}\n"
+            f"IP:      {ip}\n"
+            f"Device:  {(ua or '')[:300]}\n\n"
+            f"Unique-visitor counts live at /traffic."
+        )
+        html_body = (
+            f'<p style="font-size:15px;margin:0 0 10px">A new unique visitor '
+            f'(<strong>#{visitor_no}</strong>) just viewed the '
+            f'<a href="{html.escape(report_url)}">{html.escape(label)}</a> dashboard — '
+            f'not through a tracked link.</p>'
+            f'<table style="font-size:13px;border-collapse:collapse">'
+            f'<tr><td style="padding:2px 12px 2px 0;color:#777">When</td><td>{html.escape(when_et)}</td></tr>'
+            f'<tr><td style="padding:2px 12px 2px 0;color:#777">Source</td><td>{html.escape(via)}</td></tr>'
+            f'<tr><td style="padding:2px 12px 2px 0;color:#777">IP</td><td>{html.escape(ip or "")}</td></tr>'
+            f'<tr><td style="padding:2px 12px 2px 0;color:#777">Device</td><td>{html.escape((ua or "")[:300])}</td></tr>'
+            f'</table>'
+        )
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[to],
+            subject=subject,
+            plain_text_content=text_body,
+            html_content=html_body,
+        )
+        SendGridAPIClient(sg_key).send(msg)
+    except Exception as e:
+        print("dashboard-visitor email send failed:", e)
+
+
 @app.route('/r/<token>')
 def track_and_redirect(token):
     """Log a hit on a tracked pitch link, then 302 to the real target — a
@@ -10884,9 +10984,12 @@ def track_and_redirect(token):
     # _client_ip having unwrapped the true visitor IP from Cloudflare.)
     is_bot = _is_link_preview_bot(ua, request.method) or _ip_is_hosting(ip)
 
-    # Is this the first genuine human open? Check BEFORE inserting this row.
-    first_human = (not is_bot) and (
-        LinkClick.query.filter_by(token=token, is_bot=False).count() == 0
+    # Notify on every NEW unique visitor: a human open from an IP that hasn't
+    # opened THIS link before (checked BEFORE inserting this row). The first
+    # open is visitor #1; later new IPs usually mean the link was forwarded.
+    # Repeat opens from a known IP stay silent.
+    new_ip = (not is_bot) and (
+        LinkClick.query.filter_by(token=token, is_bot=False, ip=ip).count() == 0
     )
     try:
         db.session.add(LinkClick(
@@ -10911,13 +11014,18 @@ def track_and_redirect(token):
             db.session.rollback()
             print("outreach open-sync failed:", e)
 
-    if first_human:
+    if new_ip:
+        from sqlalchemy import distinct as _distinct
+        visitor_no = (db.session.query(db.func.count(_distinct(LinkClick.ip)))
+                      .filter(LinkClick.token == token, LinkClick.is_bot.is_(False))
+                      .scalar() or 1)   # AFTER insert, so this open is included
         report_url = request.url_root.rstrip('/') + _tracked_link_target(link.slug)
         stats_url = request.url_root.rstrip('/') + '/r-stats'
         when_et = _fmt_et(datetime.utcnow())
         threading.Thread(
             target=_send_click_email,
             args=(link.recipient, link.slug, token, ip, ua, when_et, report_url, stats_url),
+            kwargs={'visitor_no': visitor_no},
             daemon=True,
         ).start()
 
