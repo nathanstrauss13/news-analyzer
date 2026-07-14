@@ -9661,6 +9661,40 @@ def healthz():
     }), 200
 
 
+@app.route('/admin/test-email')
+def admin_test_email():
+    """Operator: attempt a real alert-email send SYNCHRONOUSLY and report the
+    outcome. The alert helpers (_send_click_email etc.) are fire-and-forget
+    threads that swallow errors into logs, so 'no email ever arrived' is
+    undiagnosable from outside without this. Returns whether the key is set,
+    the SendGrid HTTP status, or the exact exception."""
+    if not _operator_ok():
+        abort(404)
+    to = os.environ.get("AUDIT_DEBUG_EMAIL", "nstrauss@innatec3.com").strip()
+    sg_key = os.environ.get("SENDGRID_API_KEY")
+    info = {"sendgrid_key_set": bool(sg_key), "to": to}
+    if not sg_key:
+        info["result"] = ("SENDGRID_API_KEY is NOT set on this deploy — every alert email "
+                          "(first-open, new-visitor, audit-error) is silently skipped")
+        return jsonify(info)
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            to_emails=[to],
+            subject="✅ Signal Finder alert-email test",
+            plain_text_content="Test send from /admin/test-email — if you're reading "
+                               "this, alert emails are working end to end.",
+        )
+        resp = SendGridAPIClient(sg_key).send(msg)
+        info["result"] = f"accepted by SendGrid (HTTP {resp.status_code})"
+        info["sendgrid_status"] = resp.status_code
+    except Exception as e:
+        info["result"] = f"SEND FAILED — {type(e).__name__}: {str(e)[:400]}"
+    return jsonify(info)
+
+
 @app.route('/whoami')
 def whoami_diagnostic():
     """Operator diagnostic: how does THIS request's IP resolve + classify? Used to
