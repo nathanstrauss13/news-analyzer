@@ -5006,7 +5006,7 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
                 return {"verb": "Extend", "outlet": _cd, "text": text}
             _where = (f" — keep your cadence at {_topdom} and the other outlets where "
                       f"you already lead" if _topdom else "")
-            text = (f"Maintain. {b} already holds top-tier AI visibility in this category — it leads "
+            text = (f"Maintain. {b} holds a leading position in this sample — it leads "
                     f"or ties the field at the outlets AI cites most, and no competitor is pulling "
                     f"away. There's no urgent earned-media lever right now{_where}; re-audit next "
                     f"quarter to catch any shift early.")
@@ -5116,8 +5116,8 @@ def _compute_headline_move(brand, outlet_sov, media_targets=None):
             return {"verb": "Defend", "outlet": dom, "text": text}
         r = max(pool, key=lambda x: (_n(x), _brand_at(x)))
         dom, n, ba = r.get('domain'), _n(r), _brand_at(r)
-        text = (f"Defend {dom}. {b} owns the AI conversation there ({ba} of {n} responses) "
-                f"with no competitor present — lock it in with a follow-up story.")
+        text = (f"Defend {dom}. {b} is named in most of the answers there ({ba} of {n} responses) "
+                f"with no competitor present — a position worth reinforcing with a follow-up story.")
         return {"verb": "Defend", "outlet": dom, "text": text}
 
     # 4. Thin / all-emerging — cultivate the most-cited outlet.
@@ -6260,8 +6260,9 @@ def _llm_visibility_read(brand, per_llm):
     # retrieve, so reframe around live-search reach.
     if all(x.get('grounded') for x in per_llm):
         if not present:
-            return (f"{b} is absent from all {total} assistants even in live-search mode — "
-                    f"no discoverable web presence in this category yet.")
+            return (f"{b} does not yet appear in this small sample across any of the {total} "
+                    f"assistants in live-search mode — an opportunity to build discoverable "
+                    f"presence in the category.")
         if len(present) == total:
             # "All 5 surfacing" doesn't mean broad+deep. Three honest reads:
             # DEEP (named in most answers everywhere) → strong, consistent;
@@ -6286,8 +6287,9 @@ def _llm_visibility_read(brand, per_llm):
                 f"the underlying web coverage AI can find is thin.")
 
     if not present:
-        return (f"{b} doesn't surface on any of the {total} assistants for unbranded "
-                f"category queries — effectively invisible in AI today.")
+        return (f"{b} does not yet surface on any of the {total} assistants for unbranded "
+                f"category queries in this sample — an opportunity to establish presence, "
+                f"common for newer or more specialized firms.")
     if len(present) == total:
         # Present on every assistant — but gate the "embedded" claim on DEPTH.
         # 3/10 on each assistant is recognition across the board, NOT broadly
@@ -9196,7 +9198,7 @@ Respond with ONLY valid JSON:
       "analyst_play": "One sentence on the specific analyst relations move: which evaluation to target, briefing cadence to establish, sponsored research, or client subscription that would shift citations"
     }}
   ],
-  "executive_summary": "EXACTLY 3 sentences — this is the 'What we found' headline a comms director will paste into a CMO briefing. Each sentence must carry a specific, non-obvious finding tied to the actual numbers. Lead with the single most important insight, not a throat-clearing preamble. STRUCTURE:\n  Sentence 1 — THE POSITION: {brand}'s AI mindshare ({brand_mention_count} of {len(all_responses)} responses) framed against the top competitor's count. If {brand} >= top competitor, lead with strength ('{brand} leads/holds the AI conversation in [category]…'); if behind, lead with the gap. NEVER say 'lacks authority' if the brand out-mentions competitors.\n  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. STRONGLY PREFER the PER-ASSISTANT VISIBILITY finding when it's lopsided — if the brand surfaces on only one or two of the five assistants and is absent from the rest, lead the surprise with that (e.g. 'almost all of {brand}'s visibility is Gemini; it's absent from ChatGPT, Claude, and Grok'), because it means the brand is search-surfaced but not embedded in the models people use most. Otherwise: a specific outlet where the brand is absent but a competitor owns it; analyst firms (Gartner/Forrester/etc.) dominating citations over editorial press; a competitor you'd expect to lead that doesn't. Name the specific entity + number.\n  Sentence 3 — THE STAKE (the strategic implication, NOT a tactic — the single highest-leverage ACTION is shown separately on the page as the report's #1 move, so do NOT duplicate it, name its outlet, or use its action verbs). State what the position MEANS or what is at risk: e.g. the gap is structural (evenly thin across assistants) rather than platform-specific; the brand is discoverable but not yet the default answer; a competitive/category dynamic that defines the challenge or the window to act. Frame it to the brand's real standing — if it LEADS the category overall, a position to protect; if it TRAILS the leader (lower overall mindshare) — even when it leads the few outlets that cite it — a gap that won't close on its own (never 'top-tier'/'maintain' for a trailing brand). Diagnose, don't prescribe.\n  RULES: No filler ('this audit reveals…', 'in today's landscape…'). No generic 'competitors dominate' unless the per-outlet data supports it (empty competitors_citing = open whitespace, not a bloodbath). Discuss analysts ONLY if analyst_targets has entries OR analyst firms appear heavily in the citation data; silence is fine for consumer categories. Write it so a CMO who reads ONLY these 3 sentences still walks away with the strategic takeaway."
+  "executive_summary": "EXACTLY 3 sentences summarizing a PRELIMINARY, small-sample read \u2014 a directional teaser drawn from {len(all_responses)} answers, NOT a definitive verdict. The purpose is to surface something interesting enough that the reader wants a fuller, rigorous audit. Write in a measured, objective, appropriately hedged voice \u2014 a senior consultant stating what this small sample shows, never indicting the brand and never alarming the reader (a report may be read by the brand itself). STRUCTURE:\n  Sentence 1 \u2014 THE PRELIMINARY POSITION: how often {brand} appears, WITH the sample framing \u2014 e.g. 'In this small sample of {len(all_responses)} answers, {brand} appears in {brand_mention_count} of them', then how that compares to competitors ('competitors are cited more often here', 'roughly on par with [name]', or 'more often than [name]'). If {brand} appears rarely or not at all, frame it plainly and neutrally as an opportunity to establish presence \u2014 common for newer, smaller, or more specialized firms \u2014 NEVER as a failure, absence of authority, or deficiency.\n  Sentence 2 \u2014 A NOTABLE PATTERN: the single most interesting thing this sample SUGGESTS, stated as directional ('these results suggest\u2026', 'notably\u2026'). STRONGLY PREFER the PER-ASSISTANT VISIBILITY finding when it is lopsided \u2014 if the brand surfaces on only one or two assistants and not the rest, note that ('{brand}'s appearances are concentrated on Gemini and it is not yet surfaced by ChatGPT, Claude, or Grok'), which suggests it is search-surfaced but not yet embedded in the models. Otherwise: a specific outlet where competitors are cited more often, or analyst firms appearing heavily among the sources. Name the specific entity + number, but keep the claim hedged and preliminary.\n  Sentence 3 \u2014 THE OPEN QUESTION: what a fuller, more rigorous audit would clarify or confirm \u2014 the strategic question this preliminary read opens, phrased as an invitation, not a prescription (the single highest-leverage ACTION is shown separately as the #1 move card, so do NOT duplicate it, name its outlet, or use its action verbs). E.g. 'a fuller audit across more queries and all five assistants would confirm whether this pattern holds and where the most efficient openings lie.' Open the question; do not close it with a verdict.\n  COMPETITOR RULE: only name a competitor if it is clearly a real, specific company; never present a generic or ambiguous term (e.g. 'Shadow', 'Cloud', 'Legacy') as the category leader or as fact.\n  BANNED LANGUAGE (house style, not preference): all superlatives and hyperbole; 'cited zero times', 'not a single', 'without a single foothold', 'complete lack', 'across the board', 'dominates', 'commands', 'crushes', 'owns the category', 'risks being invisible', 'lacks authority', 'fails to', 'leaves {brand} without'; filler ('this audit reveals\u2026', 'in today's landscape\u2026'). Discuss analysts ONLY if they genuinely dominate the sources. Write it so a reader who sees ONLY these 3 sentences comes away curious for the full audit \u2014 not lectured or alarmed."
 }}"""
 
     # Retry once with reduced output budget on APITimeoutError. The most common
@@ -10343,7 +10345,7 @@ def _regenerate_executive_summary(data):
         hm_block = (f"{hm.get('outlet') or ''} — {hm.get('text') or ''}".strip(" —")
                     or "(none — build the move around the strongest opportunity above)")
 
-        prompt = f"""You are an AI citation intelligence analyst writing the headline finding of a brand's AI Mindshare Briefing. The reader is a comms director who will paste your 3 sentences into a CMO briefing.
+        prompt = f"""You are a senior communications analyst summarizing a PRELIMINARY, small-sample read of how AI assistants answer category questions. This is a directional teaser drawn from a limited sample of {total} answers — NOT a definitive verdict. Its purpose is to surface something interesting enough that the reader wants a fuller, rigorous audit. Write in a measured, objective, appropriately hedged voice: a consultant stating what this small sample shows, never indicting the brand and never alarming the reader.
 
 Brand: {brand}
 Category: {category}
@@ -10371,12 +10373,13 @@ MOST-CITED SOURCE DOMAINS (all types — note if analyst firms like Gartner/Forr
 THE #1 MOVE (computed from this data and shown as its OWN separate card on the page — your summary must stay directionally CONSISTENT with it but must NOT duplicate it: do not reuse its outlet, its action verb, or its tactical steps. The summary DIAGNOSES the position; the card PRESCRIBES the action):
 {hm_block}
 
-Write EXACTLY 3 sentences. Lead with the single most important insight, no preamble.
-  Sentence 1 — THE POSITION: {brand}'s mindshare framed against the top competitor's count. If {brand} >= top competitor, lead with strength; if behind, lead with the gap. NEVER say 'lacks authority' if {brand} out-mentions competitors.
-  Sentence 2 — THE SURPRISE: the single most non-obvious thing in the data. STRONGLY PREFER the per-assistant concentration when it's lopsided — e.g. "{brand}'s visibility is almost entirely one assistant (Gemini 9/10) and absent from ChatGPT, Claude, and Grok". Otherwise surface the sharpest share-of-voice gap — name a specific OUTLET and the competitor out-citing {brand} there (but NOT the #1-move outlet — save that for Sentence 3).
-  Sentence 3 — THE STAKE: the strategic implication of the position — what it MEANS or what is at risk — NOT a tactic (the tactic is shown separately as the #1 move card, so DON'T restate it). Good Sentence 3s: the gap is structural (e.g. evenly thin across all assistants) rather than platform-specific; the brand is discoverable but not yet the default answer; a category/competitive dynamic that defines the challenge or the window to act. Stay consistent with the brand's real standing — if it LEADS overall, a position to protect; if it TRAILS, a gap that won't close on its own (never imply 'top-tier'/'maintain' for a trailing brand) — but DIAGNOSE, don't prescribe: do NOT name the #1 move's outlet and do NOT reuse its action verbs (pitch/defend/build/hold/widen/cultivate).
-FRAMING RULE (critical): these are AI-citation SHARE-OF-VOICE signals — how often each AI names {brand} vs competitors when it cites an outlet — NOT press clips. Never say an outlet "covers", "features", or "wrote about" {brand}; say {brand} "over-indexes at", "is out-cited at", or "is absent from" the outlet.
-BANNED: filler like 'this audit reveals', 'in today's landscape'. Discuss analysts only if they actually dominate the source domains above. Respond with ONLY the 3 sentences — no preamble, no JSON, no labels."""
+Write EXACTLY 3 sentences, measured and evidence-based, each appropriately hedged. Ground the reader in the sample; do not overstate.
+  Sentence 1 — THE PRELIMINARY POSITION: how often {brand} appears, WITH the sample framing and the EXACT precomputed numbers — e.g. "In this small sample of {total} answers, {brand} appears in [X] of them ([Y]%)", then how that compares to competitors ("competitors are cited more often here", "roughly on par with [name]", or "more often than [name]"). If {brand} appears rarely or not at all, frame it plainly and neutrally as an opportunity to establish presence — common for newer, smaller, or more specialized firms — NEVER as a failure, absence of authority, or deficiency.
+  Sentence 2 — A NOTABLE PATTERN: the single most interesting thing this sample SUGGESTS, stated as directional ("these results suggest…", "notably…", "one pattern worth noting…"). Prefer a lopsided per-assistant pattern ("{brand}'s appearances are concentrated on [assistant] and it is not yet surfaced by the others") or a specific outlet where competitors are cited more often. Name specific entities and numbers, but keep the claim hedged and preliminary.
+  Sentence 3 — THE OPEN QUESTION: what a fuller, more rigorous audit would clarify or confirm — the strategic question this preliminary read opens, phrased as an invitation, not a prescription. E.g. "a fuller audit across more queries and all five assistants would confirm whether this pattern holds and where the most efficient openings lie." Do NOT restate the #1 move, name its outlet, or reuse its action verbs (pitch/defend/build/hold/widen/cultivate).
+FRAMING RULE (critical): these are AI-citation SHARE-OF-VOICE signals — how often each AI names {brand} vs competitors when it cites an outlet — NOT press clips. Never say an outlet "covers", "features", or "wrote about" {brand}; say {brand} "appears in", "is named less often at", or "does not yet appear at" the outlet.
+COMPETITOR RULE: only name a competitor if it is clearly a real, specific company from the TOP COMPETITORS list; never present a generic or ambiguous term (e.g. "Shadow", "Cloud", "Legacy") as the category leader or as fact.
+BANNED LANGUAGE (a report may be read by the brand itself — this is house style, not a preference): all superlatives and hyperbole; "cited zero times", "not a single", "without a single foothold", "complete lack", "across the board", "dominates", "commands", "crushes", "owns the category", "risks being invisible", "lacks authority", "fails to", "leaves {brand} without". Also banned: filler ("this audit reveals", "in today's landscape"). Discuss analyst firms only if they genuinely dominate the source domains above. Respond with ONLY the 3 sentences — no preamble, no JSON, no labels."""
 
         resp = anthropic.messages.create(
             model=CLAUDE_SONNET,
@@ -10446,12 +10449,14 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     out['brand_aliases'] = brand_aliases
     # Recount the brand's own mention total (alias-aware, so iShares counts toward
     # BlackRock) so the headline reflects current guardrails + the brand's sub-brands.
+    _count_changed = False
     if all_responses and brand:
         _, _bunion = _brand_count_forms(brand, brand_aliases, all_responses)
         new_brand_count = sum(1 for r in all_responses if _bunion.search(_response_text(r)))
         if new_brand_count != (data.get('brand_mention_count') or 0):
             print(f"[rerender] brand_mention_count (alias-aware) recount: "
                   f"{data.get('brand_mention_count')} -> {new_brand_count}")
+            _count_changed = True
         out['brand_mention_count'] = new_brand_count
     # Sync the denominator to the cleaned response set so mindshare % is over
     # what was actually delivered (a dropped-error rerender shrinks this from
@@ -10684,10 +10689,15 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     except Exception:
         out['headline_move'] = None
 
-    # Optionally refresh the 'What we found' executive summary with the
-    # current prompt wording — the one piece the pure-Python pass can't
-    # regenerate. One Claude call.
-    if regenerate_summary:
+    # Refresh the 'What we found' executive summary with the current prompt
+    # wording — the one piece the pure-Python pass can't regenerate (one Claude
+    # call). Forced whenever the brand count changed even if not explicitly
+    # requested: stale prose that cites the OLD number (e.g. "34% mindshare"
+    # over a corrected 0/50) is worse than the ~$0.01 regen. A persist-rerender
+    # that corrects counts therefore always corrects the narrative too.
+    if regenerate_summary or _count_changed:
+        if _count_changed and not regenerate_summary:
+            print("[rerender] brand count changed — auto-regenerating executive summary")
         out['executive_summary'] = _regenerate_executive_summary(out)
 
     # Mark this view so the UI / operator knows it's a rerender, not the
