@@ -422,6 +422,57 @@ anthropic = Anthropic(api_key=ANTHROPIC_API_KEY, timeout=60.0)
 # env vars without a code change.
 CLAUDE_SONNET = os.environ.get("CLAUDE_SONNET_MODEL", "claude-sonnet-4-6")
 CLAUDE_HAIKU = os.environ.get("CLAUDE_HAIKU_MODEL", "claude-haiku-4-5-20251001")
+# Mechanical structured-extraction calls (competitor discovery + classification,
+# editorial-domain verification, media-landscape watchlist) run on Haiku by
+# default — 1/3 the price of Sonnet, and these are list/label tasks, not the
+# nuanced narrative. All are backstopped by deterministic guards downstream
+# (_count_brand_mentions, _drop_generic_competitors, the editorial allowlist),
+# so a slightly weaker discovery model can't inject junk. Flip back to Sonnet
+# with one env var if quality regresses: CLAUDE_MECHANICAL_MODEL=claude-sonnet-4-6
+CLAUDE_MECHANICAL = os.environ.get("CLAUDE_MECHANICAL_MODEL", CLAUDE_HAIKU)
+
+# ── Anthropic token-usage accounting ──────────────────────────────────────
+# The app made ZERO cost telemetry before this: the grounded panel's injected
+# web-search tokens (~80% of spend) were invisible. Every audit-path Claude
+# call routes through _claude_msg(), which accumulates input/output/cache
+# tokens + web_search counts per model into a process-global counter, surfaced
+# (with a $ estimate) at /admin/usage. Thread-safe (the panel runs in a pool).
+_USAGE_LOCK = threading.Lock()
+_USAGE = {}   # model -> {calls,in,out,cache_read,cache_write,searches}
+# Per-1M token pricing (input, output) + web-search per-1k, for the estimate.
+_CLAUDE_PRICES = {
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5-20251001": (1.0, 5.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+_WEB_SEARCH_PER_1K = 10.0
+
+
+def _claude_msg(**kwargs):
+    """Single entry point for every audit-path Anthropic call. Transparent
+    passthrough to messages.create (same kwargs incl. per-request `timeout`),
+    plus it records resp.usage — token counts and server-side web_search
+    requests — into the process-global _USAGE counter for /admin/usage. Failure
+    to record never affects the call."""
+    resp = anthropic.messages.create(**kwargs)
+    try:
+        u = getattr(resp, "usage", None)
+        if u is not None:
+            st = getattr(u, "server_tool_use", None)
+            searches = (getattr(st, "web_search_requests", 0) or 0) if st else 0
+            model = kwargs.get("model", "?")
+            with _USAGE_LOCK:
+                d = _USAGE.setdefault(model, {"calls": 0, "in": 0, "out": 0,
+                                              "cache_read": 0, "cache_write": 0, "searches": 0})
+                d["calls"] += 1
+                d["in"] += getattr(u, "input_tokens", 0) or 0
+                d["out"] += getattr(u, "output_tokens", 0) or 0
+                d["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
+                d["cache_write"] += getattr(u, "cache_creation_input_tokens", 0) or 0
+                d["searches"] += searches
+    except Exception:
+        pass
+    return resp
 try:
     openai_client = OpenAI(api_key=OPENAI_API_KEY, timeout=60.0) if OPENAI_API_KEY else None
 except Exception:
@@ -498,7 +549,7 @@ def analyze_articles(articles, query):
             article['sentiment'] = 0
     else:
         try:
-            response = anthropic.messages.create(
+            response = _claude_msg(
                 model=CLAUDE_HAIKU,
                 max_tokens=1000,
                 messages=[{
@@ -2028,7 +2079,7 @@ Key points to address:
 
 Articles: {json.dumps(summarized_articles[:50])}"""
             
-            response = anthropic.messages.create(
+            response = _claude_msg(
                 model=CLAUDE_HAIKU,
                 max_tokens=1000,
                 messages=[{
@@ -3587,8 +3638,8 @@ def verify_editorial_domains(editorial_domains, brand, category):
             f"docs.{brand_slug}.com.\n"
         )
     try:
-        resp = anthropic.messages.create(
-            model=CLAUDE_SONNET,
+        resp = _claude_msg(
+            model=CLAUDE_MECHANICAL,
             max_tokens=1500,
             messages=[{
                 "role": "user",
@@ -4310,8 +4361,8 @@ def _classify_competitor_types(brand, category, competitor_counts):
             f'Return ONLY a JSON object mapping name -> type. Use the EXACT names from '
             f'the list. No prose, no markdown, just the JSON.'
         )
-        resp = anthropic.messages.create(
-            model=CLAUDE_SONNET, max_tokens=600, timeout=30.0,
+        resp = _claude_msg(
+            model=CLAUDE_MECHANICAL, max_tokens=600, timeout=30.0,
             messages=[{"role": "user", "content": prompt}],
         )
         txt = (resp.content[0].text or "").strip()
@@ -4354,8 +4405,8 @@ def _extract_competitor_candidates(brand, category, all_responses, max_candidate
         excerpts += f"\n--- Response {i+1} [{r.get('llm','?')}] ---\n{text}\n"
 
     try:
-        resp = anthropic.messages.create(
-            model=CLAUDE_SONNET,
+        resp = _claude_msg(
+            model=CLAUDE_MECHANICAL,
             max_tokens=600,
             messages=[{
                 "role": "user",
@@ -5173,7 +5224,7 @@ def _resolve_brand_aliases(brand):
         return _BRAND_ALIASES_CACHE[key]
     out = []
     try:
-        resp = anthropic.messages.create(
+        resp = _claude_msg(
             model=CLAUDE_HAIKU, max_tokens=200,
             messages=[{"role": "user", "content": (
                 f'The company/brand "{brand}" may have well-known SUB-BRANDS or product-line brands '
@@ -5214,7 +5265,7 @@ def _resolve_brand_domains(brand, category=None):
         return _BRAND_DOMAINS_CACHE[key]
     out = []
     try:
-        resp = anthropic.messages.create(
+        resp = _claude_msg(
             model=CLAUDE_HAIKU, max_tokens=200,
             messages=[{"role": "user", "content": (
                 f'What are the official website domain(s) owned by the company/brand "{brand}"? '
@@ -5736,7 +5787,7 @@ def _enrich_owned_recommendations(brand, category, owned):
     listing = "\n".join(f'{i+1}. "{g.get("topic", "")}"' for i, g in enumerate(gaps))
     b = brand or 'the brand'
     try:
-        resp = anthropic.messages.create(
+        resp = _claude_msg(
             model=CLAUDE_HAIKU, max_tokens=700,
             messages=[{"role": "user", "content": (
                 f'Brand: {b}\nCategory: {category or ""}\n\n'
@@ -6399,8 +6450,8 @@ def _compute_media_landscape(brand, category, all_responses, ranked_domains):
             f'{{"name":"Outlet Name","domain":"outlet.com","type":"consumer|trade|business|advocacy"}}. '
             f"Real primary domains only (no www, no paths). No prose, no markdown."
         )
-        resp = anthropic.messages.create(
-            model=CLAUDE_SONNET, max_tokens=1400, timeout=45.0,
+        resp = _claude_msg(
+            model=CLAUDE_MECHANICAL, max_tokens=1400, timeout=45.0,
             messages=[{"role": "user", "content": prompt}],
         )
         txt = (resp.content[0].text or "").strip()
@@ -7462,12 +7513,12 @@ def _claude_grounded(prompt):
     """Claude Sonnet 4 with the native web_search tool, bounded to 3 searches
     (the bound is what keeps latency/memory sane — the reverted version ran
     unbounded). Builds the answer from text blocks + harvests cited URLs."""
-    resp = anthropic.with_options(timeout=120.0).messages.create(
+    resp = _claude_msg(timeout=120.0, 
         model=CLAUDE_SONNET,
         max_tokens=2500,
         system=CITATION_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
-        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
     )
     parts, urls = [], []
     for block in (resp.content or []):
@@ -7554,7 +7605,7 @@ def _call_llm(provider, enriched_prompt):
                 return (_claude_grounded(enriched_prompt), True)
             except Exception as e:
                 print("Claude web_search failed; parametric fallback:", str(e)[:160])
-        resp = anthropic.messages.create(
+        resp = _claude_msg(
             model=CLAUDE_SONNET,
             max_tokens=2000,
             system=CITATION_SYSTEM_PROMPT,
@@ -7881,7 +7932,7 @@ def _parse_analysis_json(raw_text, retry_callback=None):
 def _retry_analysis_json(raw_text, prior_attempts):
     """Ask Claude to fix its own broken JSON. Returns the corrected text."""
     last_err = (prior_attempts[-1] if prior_attempts else {}).get('err', 'unknown')
-    fix_resp = anthropic.messages.create(
+    fix_resp = _claude_msg(
         model=CLAUDE_SONNET,
         max_tokens=8000,
         timeout=150.0,  # explicit: the client default (60s) was too short to
@@ -8219,7 +8270,7 @@ def _generate_audit_prompts(problem_statement, tier="free"):
     cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
     prompt_count = cfg["prompt_count"]
 
-    prompt_gen_response = anthropic.messages.create(
+    prompt_gen_response = _claude_msg(
         model=CLAUDE_SONNET,
         max_tokens=4000 if prompt_count > 20 else 2000,
         messages=[{
@@ -8272,7 +8323,7 @@ def _generate_announcement_prompts(brand, announcement_text, product_name=None, 
     cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
     prompt_count = cfg["prompt_count"]
     pname = (product_name or '').strip()
-    resp = anthropic.messages.create(
+    resp = _claude_msg(
         model=CLAUDE_SONNET,
         max_tokens=4000 if prompt_count > 20 else 2000,
         messages=[{"role": "user", "content": f"""You are an AI citation strategist measuring whether a specific product ANNOUNCEMENT has propagated into AI assistants' answers.
@@ -8679,7 +8730,7 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         # problem statement via a small Claude call.
         emit("prompts", "Preparing your curated prompts...", 0, 1)
         try:
-            brand_resp = anthropic.messages.create(
+            brand_resp = _claude_msg(
                 model=CLAUDE_SONNET,
                 max_tokens=300,
                 messages=[{
@@ -9236,7 +9287,7 @@ Respond with ONLY valid JSON:
     # cause of timeout is Claude generating until it hits max_tokens; trimming
     # the budget forces it to ship concise JSON inside the deadline.
     def _call_analysis(max_tok):
-        return anthropic.messages.create(
+        return _claude_msg(
             model=CLAUDE_SONNET,
             max_tokens=max_tok,
             timeout=analysis_call_timeout,
@@ -9847,6 +9898,43 @@ def healthz():
     }), 200
 
 
+@app.route('/admin/usage')
+def admin_usage():
+    """Operator: Anthropic token usage + estimated $ since process start (or the
+    last ?reset=1). Broken down per model with web-search counts. To measure ONE
+    audit's exact cost: hit ?reset=1, run the audit, then hit /admin/usage. Note:
+    process-global — a Render restart (deploy) zeroes it, and concurrent audits
+    pool together (cap is 2)."""
+    if not _operator_ok():
+        abort(404)
+    with _USAGE_LOCK:
+        snap = {m: dict(d) for m, d in _USAGE.items()}
+    rows, total = [], 0.0
+    for m, d in sorted(snap.items(), key=lambda kv: -(kv[1].get('in', 0) + kv[1].get('out', 0))):
+        pin, pout = _CLAUDE_PRICES.get(m, (3.0, 15.0))
+        billable_in = max(0, d['in'] - d['cache_read'])
+        cost = (billable_in / 1e6 * pin
+                + d['cache_read'] / 1e6 * pin * 0.1        # cache reads ~0.1x input
+                + d['cache_write'] / 1e6 * pin * 1.25      # cache writes ~1.25x input
+                + d['out'] / 1e6 * pout
+                + d['searches'] / 1000.0 * _WEB_SEARCH_PER_1K)
+        total += cost
+        rows.append({'model': m, **d, 'est_cost_usd': round(cost, 4)})
+    calls = sum(d['calls'] for d in snap.values())
+    out = {
+        'total_est_usd': round(total, 4),
+        'total_calls': calls,
+        'est_per_audit_usd': round(total / calls * 18, 4) if calls else 0,  # ~18 Claude calls/audit
+        'by_model': rows,
+        'note': 'Estimate; input includes injected web-search page tokens. Reset with ?reset=1.',
+    }
+    if request.args.get('reset') == '1':
+        with _USAGE_LOCK:
+            _USAGE.clear()
+        out['reset'] = True
+    return jsonify(out)
+
+
 @app.route('/admin/test-email')
 def admin_test_email():
     """Operator: attempt a real alert-email send SYNCHRONOUSLY and report the
@@ -10412,7 +10500,7 @@ FRAMING RULE (critical): these are AI-citation SHARE-OF-VOICE signals — how of
 COMPETITOR RULE: only name a competitor if it is clearly a real, specific company from the TOP COMPETITORS list; never present a generic or ambiguous term (e.g. "Shadow", "Cloud", "Legacy") as the category leader or as fact.
 BANNED LANGUAGE (a report may be read by the brand itself — this is house style, not a preference): all superlatives and hyperbole; "cited zero times", "not a single", "without a single foothold", "complete lack", "across the board", "dominates", "commands", "crushes", "owns the category", "risks being invisible", "lacks authority", "fails to", "leaves {brand} without". Also banned: filler ("this audit reveals", "in today's landscape"). Discuss analyst firms only if they genuinely dominate the source domains above. Respond with ONLY the 3 sentences — no preamble, no JSON, no labels."""
 
-        resp = anthropic.messages.create(
+        resp = _claude_msg(
             model=CLAUDE_SONNET,
             max_tokens=400,
             timeout=60.0,
