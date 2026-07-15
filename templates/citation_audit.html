@@ -3276,6 +3276,42 @@
                 results.insertBefore(banner, results.firstChild);
             }
         }
+
+        // ── Autostart contract for the innatec3.com embed widget ──────────
+        // The widget composes ?autostart=1&brand=<enc>&focus=<enc>&utm_...=…
+        // and opens it in a new tab; we populate the two-field hero and fire
+        // the SAME submit as clicking "Run the audit" — no email, no prompt
+        // review — so the visitor lands already in the collection/progress
+        // state. Runs cost real LLM spend, so this is gated hard:
+        //   • Client-side on load only — a crawler that doesn't execute JS
+        //     never triggers a run (the server GET renders the homepage inert).
+        //   • Skipped for known bot/preview UAs even if they run JS.
+        //   • Requires BOTH brand and focus; anything missing → normal homepage.
+        //   • Never fires on a shared-report view.
+        //   • The per-IP daily cap + hosting-IP bot filter still apply server-side.
+        // UTM capture is unaffected (the server reads it from the same URL).
+        (function autostartFromEmbed() {
+            try {
+                if (window.SHARED_REPORT) return;
+                const params = new URLSearchParams(window.location.search);
+                if (params.get('autostart') !== '1') return;
+                const brand = (params.get('brand') || '').trim();
+                const focus = (params.get('focus') || '').trim();
+                if (!brand || !focus) return;                 // incomplete → normal homepage
+                const ua = navigator.userAgent || '';
+                if (/bot|crawl|spider|slurp|preview|facebookexternalhit|bingpreview|embedly|headless/i.test(ua)) return;
+                const bEl = document.getElementById('brandInput');
+                const tEl = document.getElementById('topicInput');
+                if (!bEl || !tEl) return;
+                // Show the visitor exactly what's being audited, then submit.
+                bEl.value = brand;
+                tEl.value = focus;
+                const stmt = _syncProblemInput();
+                if (!stmt) return;
+                // Defer one tick so the loading/progress DOM is fully wired.
+                setTimeout(() => runAudit({ input: stmt }), 0);
+            } catch (e) {}
+        })();
     </script>
 </body>
 </html>
