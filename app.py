@@ -12,6 +12,7 @@ import threading
 import secrets
 import ipaddress
 import socket
+import contextvars
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
@@ -438,7 +439,11 @@ CLAUDE_MECHANICAL = os.environ.get("CLAUDE_MECHANICAL_MODEL", CLAUDE_HAIKU)
 # tokens + web_search counts per model into a process-global counter, surfaced
 # (with a $ estimate) at /admin/usage. Thread-safe (the panel runs in a pool).
 _USAGE_LOCK = threading.Lock()
-_USAGE = {}   # model -> {calls,in,out,cache_read,cache_write,searches}
+_USAGE = {}   # model -> {calls,in,out,cache_read,cache_write,searches}  (process-global)
+# Per-audit sink: a list of per-call usage rows, propagated into the panel's
+# ThreadPoolExecutor via contextvars.copy_context() so pool-thread calls attribute
+# to the right audit. None outside an audit (e.g. a standalone prompt-preview).
+_audit_usage_ctx = contextvars.ContextVar("audit_usage", default=None)
 # Per-1M token pricing (input, output) + web-search per-1k, for the estimate.
 _CLAUDE_PRICES = {
     "claude-sonnet-4-6": (3.0, 15.0),
@@ -448,28 +453,65 @@ _CLAUDE_PRICES = {
 _WEB_SEARCH_PER_1K = 10.0
 
 
+def _usage_cost(agg):
+    """agg: {model: {in,out,cache_read,cache_write,searches,...}} → (total_usd, rows).
+    Single cost formula shared by /admin/usage and the per-audit email."""
+    rows, total = [], 0.0
+    for m, d in sorted(agg.items(), key=lambda kv: -(kv[1].get("in", 0) + kv[1].get("out", 0))):
+        pin, pout = _CLAUDE_PRICES.get(m, (3.0, 15.0))
+        billable_in = max(0, d.get("in", 0) - d.get("cache_read", 0))
+        cost = (billable_in / 1e6 * pin
+                + d.get("cache_read", 0) / 1e6 * pin * 0.1        # cache reads ~0.1x input
+                + d.get("cache_write", 0) / 1e6 * pin * 1.25      # cache writes ~1.25x input
+                + d.get("out", 0) / 1e6 * pout
+                + d.get("searches", 0) / 1000.0 * _WEB_SEARCH_PER_1K)
+        total += cost
+        rows.append({"model": m, **d, "est_cost_usd": round(cost, 4)})
+    return round(total, 4), rows
+
+
+def _aggregate_usage_rows(rows):
+    """A list of per-call usage rows → {model: summed dict}."""
+    agg = {}
+    for r in (rows or []):
+        d = agg.setdefault(r.get("model", "?"),
+                           {"calls": 0, "in": 0, "out": 0, "cache_read": 0, "cache_write": 0, "searches": 0})
+        d["calls"] += 1
+        for k in ("in", "out", "cache_read", "cache_write", "searches"):
+            d[k] += r.get(k, 0) or 0
+    return agg
+
+
 def _claude_msg(**kwargs):
     """Single entry point for every audit-path Anthropic call. Transparent
     passthrough to messages.create (same kwargs incl. per-request `timeout`),
     plus it records resp.usage — token counts and server-side web_search
-    requests — into the process-global _USAGE counter for /admin/usage. Failure
-    to record never affects the call."""
+    requests — into (1) the process-global _USAGE counter for /admin/usage and
+    (2) the current audit's usage sink (if any) for the per-audit cost email.
+    Failure to record never affects the call."""
     resp = anthropic.messages.create(**kwargs)
     try:
         u = getattr(resp, "usage", None)
         if u is not None:
             st = getattr(u, "server_tool_use", None)
             searches = (getattr(st, "web_search_requests", 0) or 0) if st else 0
-            model = kwargs.get("model", "?")
+            row = {
+                "model": kwargs.get("model", "?"),
+                "in": getattr(u, "input_tokens", 0) or 0,
+                "out": getattr(u, "output_tokens", 0) or 0,
+                "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
+                "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
+                "searches": searches,
+            }
             with _USAGE_LOCK:
-                d = _USAGE.setdefault(model, {"calls": 0, "in": 0, "out": 0,
-                                              "cache_read": 0, "cache_write": 0, "searches": 0})
+                d = _USAGE.setdefault(row["model"], {"calls": 0, "in": 0, "out": 0,
+                                                     "cache_read": 0, "cache_write": 0, "searches": 0})
                 d["calls"] += 1
-                d["in"] += getattr(u, "input_tokens", 0) or 0
-                d["out"] += getattr(u, "output_tokens", 0) or 0
-                d["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
-                d["cache_write"] += getattr(u, "cache_creation_input_tokens", 0) or 0
-                d["searches"] += searches
+                for k in ("in", "out", "cache_read", "cache_write", "searches"):
+                    d[k] += row[k]
+            sink = _audit_usage_ctx.get()
+            if sink is not None:
+                sink.append(row)   # list.append is atomic under the GIL — pool-thread safe
     except Exception:
         pass
     return resp
@@ -8108,7 +8150,8 @@ def _send_audit_failure_email(error, problem_statement, tier):
         print("Audit FAILURE-email send failed:", e)
 
 
-def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_provider_errors, tier, problem_statement=""):
+def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_provider_errors, tier,
+                            problem_statement="", cost_total=None, cost_rows=None):
     """Fire-and-forget summary email to the owner after each audit.
 
     Skipped silently if SENDGRID_API_KEY or AUDIT_DEBUG_EMAIL is unset.
@@ -8138,12 +8181,30 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
             try:
                 base = request.url_root.rstrip("/")
             except Exception:
-                base = ""
+                # The email fires from a background worker with NO request
+                # context, so request.url_root raises here — which used to leave
+                # base="" and a RELATIVE /signal/... link that email clients
+                # can't open. Default to the production origin so the link is
+                # always absolute + clickable.
+                base = "https://signal.innatec3.com"
         report_link = f"{base}/signal/{slug}" if slug != "(no slug)" else "(unavailable)"
         json_link = f"{base}/signal/{slug}.json" if slug != "(no slug)" else "(unavailable)"
 
         flags = _compute_audit_anomaly_flags(result, duration_seconds, per_provider_done, per_provider_errors)
         flags_label = ", ".join(flags) if flags else "OK"
+
+        # Est. Anthropic cost for THIS audit (from the per-audit usage sink).
+        if cost_total is not None:
+            _seg, _tot_search = [], 0
+            for r in (cost_rows or []):
+                _m = r.get("model", "")
+                _short = "sonnet" if "sonnet" in _m else ("haiku" if "haiku" in _m else _m)
+                _seg.append(f"{_short} ${r.get('est_cost_usd', 0):.3f}")
+                _tot_search += r.get("searches", 0)
+            cost_label = f"~${cost_total:.2f}"
+            cost_detail = (f" ({', '.join(_seg)}; {_tot_search} web searches)" if _seg else "")
+        else:
+            cost_label, cost_detail = "(not measured)", ""
 
         # Per-provider error summary.
         err_lines = []
@@ -8158,7 +8219,7 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
         top_competitors = sorted(competitors, key=lambda c: c.get("mention_count", 0), reverse=True)[:3]
         top_comp_lines = [f"{c.get('name', '?')} ({c.get('mention_count', 0)})" for c in top_competitors] or ["(none)"]
 
-        subject = f"[Signal Finder · {tier}] {brand} — {flags_label}"
+        subject = f"[Signal Finder · {tier}] {brand} — {flags_label} · {cost_label}"
 
         # Plain text body
         text_lines = [
@@ -8171,6 +8232,7 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
             f"Report: {report_link}",
             f"Raw JSON: {json_link}",
             f"",
+            f"Est. Anthropic cost: {cost_label}{cost_detail}",
             f"Duration: {duration_seconds:.1f}s" if duration_seconds else "Duration: (unknown)",
             f"",
             f"Stats:",
@@ -8222,10 +8284,23 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
             if problem_statement else ''
         )
         duration_html = f'{duration_seconds:.1f}s' if duration_seconds else '(unknown)'
+        cost_html = (
+            f'<p style="margin:10px 0"><strong>Est. Anthropic cost:</strong> '
+            f'<span style="font-weight:700">{html.escape(cost_label)}</span>'
+            f'<span style="color:#666">{html.escape(cost_detail)}</span></p>'
+        )
+        report_button = (
+            f'<p style="margin:14px 0"><a href="{html.escape(report_link)}" '
+            f'style="display:inline-block;background:#1a1a1a;color:#fff;text-decoration:none;'
+            f'font-weight:600;padding:10px 18px;border-radius:8px">Open report &rarr;</a></p>'
+            if slug != "(no slug)" else ''
+        )
 
         html_body = (
             f'<h3>PR Signal Finder audit completed</h3>'
             f'{flag_html}'
+            f'{cost_html}'
+            f'{report_button}'
             f'<p><strong>Brand:</strong> {html.escape(brand)}<br>'
             f'<strong>Category:</strong> {html.escape(category)}<br>'
             f'<strong>Tier:</strong> {html.escape(tier)}<br>'
@@ -8804,7 +8879,16 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     emit("llm", f"Querying {len(llms)} LLMs × {len(prompts)} prompts ({total_calls} calls)...", 0, total_calls)
     executor = ThreadPoolExecutor(max_workers=max_workers)
     try:
-        future_map = {executor.submit(run_one, *t): t for t in tasks}
+        # Run each panel task inside a copy of the current context so its Claude
+        # calls attribute to THIS audit's usage sink (contextvars don't cross the
+        # thread-pool boundary on their own). A SEPARATE copy_context() per task
+        # is required — a single shared Context.run() raises RuntimeError when two
+        # pool threads enter it at once (which overlapping LLM calls always do).
+        # copy_context() runs here in the audit thread (where the sink is set) and
+        # every copy shares the same sink LIST by reference, so appends from any
+        # pool thread land in the same per-audit list.
+        future_map = {executor.submit(contextvars.copy_context().run, run_one, *t): t
+                      for t in tasks}
         deadline = datetime.utcnow() + timedelta(seconds=batch_deadline_seconds)
         timed_out = False
         for fut in as_completed(future_map.keys(), timeout=batch_deadline_seconds):
@@ -9909,17 +9993,7 @@ def admin_usage():
         abort(404)
     with _USAGE_LOCK:
         snap = {m: dict(d) for m, d in _USAGE.items()}
-    rows, total = [], 0.0
-    for m, d in sorted(snap.items(), key=lambda kv: -(kv[1].get('in', 0) + kv[1].get('out', 0))):
-        pin, pout = _CLAUDE_PRICES.get(m, (3.0, 15.0))
-        billable_in = max(0, d['in'] - d['cache_read'])
-        cost = (billable_in / 1e6 * pin
-                + d['cache_read'] / 1e6 * pin * 0.1        # cache reads ~0.1x input
-                + d['cache_write'] / 1e6 * pin * 1.25      # cache writes ~1.25x input
-                + d['out'] / 1e6 * pout
-                + d['searches'] / 1000.0 * _WEB_SEARCH_PER_1K)
-        total += cost
-        rows.append({'model': m, **d, 'est_cost_usd': round(cost, 4)})
+    total, rows = _usage_cost(snap)
     calls = sum(d['calls'] for d in snap.values())
     out = {
         'total_est_usd': round(total, 4),
@@ -10180,6 +10254,11 @@ def citation_audit():
         _inbound_id = _capture_inbound_lead(
             'started', problem_statement, ip, lead_email, _is_operator,
             _inbound_attr, geo=_coarse_geo(ip))
+        # Per-audit Anthropic usage sink — set BEFORE run_citation_audit so its
+        # main-thread calls AND its panel pool (via copy_context) both attribute
+        # here. Read after the run for the cost line in the debug email.
+        _usage_sink = []
+        _audit_usage_ctx.set(_usage_sink)
         try:
             result = run_citation_audit(
                 problem_statement,
@@ -10245,6 +10324,10 @@ def citation_audit():
             # queue so the user-visible response never waits on email send.
             duration_seconds = (datetime.utcnow() - start_dt).total_seconds()
             try:
+                _cost_total, _cost_rows = _usage_cost(_aggregate_usage_rows(_usage_sink))
+            except Exception:
+                _cost_total, _cost_rows = None, []
+            try:
                 _send_audit_debug_email(
                     result,
                     duration_seconds,
@@ -10252,6 +10335,8 @@ def citation_audit():
                     per_provider_errors,
                     tier,
                     problem_statement=problem_statement,
+                    cost_total=_cost_total,
+                    cost_rows=_cost_rows,
                 )
             except Exception as email_err:
                 print("debug-email dispatch error:", email_err)
