@@ -13424,21 +13424,25 @@ def citation_audit_request_demo():
     email = (data.get('email') or '').strip()
     slug = (data.get('slug') or '').strip() or None
     problem_statement = (data.get('problem_statement') or '').strip()
-    # 'csv' when triggered by Request CSV button; 'bespoke' otherwise.
-    # Controls email subject + body so the operator can triage CSV-export
-    # requests separately from full-engagement leads.
+    # Free-text note from the "Tell us more" form (capped to keep the email + row sane).
+    message = (data.get('message') or '').strip()[:2000]
+    # 'csv' = Request CSV button; 'tellmore' = the open-inquiry "Tell us more"
+    # form (carries a message); 'bespoke' otherwise. Controls email subject +
+    # body so the operator can triage each separately.
     request_type = (data.get('request_type') or 'bespoke').strip().lower()
-    if request_type not in ('csv', 'bespoke'):
+    if request_type not in ('csv', 'bespoke', 'tellmore'):
         request_type = 'bespoke'
 
     if not name or not email:
         return jsonify({"error": "Name and email are required."}), 400
     if '@' not in email or '.' not in email:
         return jsonify({"error": "Please enter a valid email address."}), 400
+    if request_type == 'tellmore' and not message:
+        return jsonify({"error": "Please add a short message so we know how to help."}), 400
 
     extra = json.dumps({"name": name, "title": title, "org": org,
                         "problem_statement": problem_statement,
-                        "request_type": request_type})
+                        "message": message, "request_type": request_type})
     lead = LeadCapture(email=email, slug=slug, app_name='signal_finder_demo', extra=extra)
     db.session.add(lead)
     db.session.commit()
@@ -13466,6 +13470,10 @@ def citation_audit_request_demo():
                     "responses (Claude / ChatGPT / Gemini), and every citation "
                     "URL extracted."
                 )
+            elif request_type == 'tellmore':
+                lead_label = "message"
+                subject_prefix = "[PR Signal Finder · MESSAGE]"
+                lead_note = ""
             else:
                 lead_label = "bespoke audit request"
                 subject_prefix = "[PR Signal Finder]"
@@ -13477,7 +13485,8 @@ def citation_audit_request_demo():
                 f"Title: {title or '(not provided)'}\n"
                 f"Organization: {org or '(not provided)'}\n"
                 f"Email: {email}\n\n"
-                f"Problem statement they audited:\n{problem_statement or '(not provided)'}\n\n"
+                + (f"Their message:\n{message}\n\n" if message else "")
+                + f"Problem statement they audited:\n{problem_statement or '(not provided)'}\n\n"
                 f"Their light audit report: {report_link}\n"
             )
             if lead_note:
@@ -13493,7 +13502,10 @@ def citation_audit_request_demo():
                 f"<strong>Title:</strong> {html.escape(title) or '<em>(not provided)</em>'}<br>"
                 f"<strong>Organization:</strong> {html.escape(org) or '<em>(not provided)</em>'}<br>"
                 f"<strong>Email:</strong> {email_link_html}</p>"
-                f"<p><strong>Problem they audited:</strong><br>{html.escape(problem_statement) or '<em>(not provided)</em>'}</p>"
+                + (f'<p style="background:#eef4ff;padding:10px 14px;border-left:3px solid #2563eb;'
+                   f'border-radius:4px"><strong>Their message:</strong><br>'
+                   f'{html.escape(message).replace(chr(10), "<br>")}</p>' if message else "")
+                + f"<p><strong>Problem they audited:</strong><br>{html.escape(problem_statement) or '<em>(not provided)</em>'}</p>"
                 f"<p><strong>Their light audit report:</strong> {report_link_html}</p>"
             )
             if lead_note:

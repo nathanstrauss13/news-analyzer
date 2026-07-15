@@ -2101,6 +2101,10 @@
                     <label>Email *</label>
                     <input type="email" id="demoEmail" autocomplete="email">
                 </div>
+                <div class="modal-field" id="demoMessageField" style="display:none">
+                    <label id="demoMessageLabel">What would you like to know?</label>
+                    <textarea id="demoMessage" rows="4" style="width:100%;box-sizing:border-box;resize:vertical;font:inherit;padding:9px 11px;border-radius:8px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.05);color:#e6e6ee" placeholder="Tell us what you're hoping to learn, your goals, or a question about your results…"></textarea>
+                </div>
                 <button type="button" class="modal-submit" id="demoSubmit" onclick="submitDemoRequest()">Request a call</button>
                 <div class="modal-error" id="demoError"></div>
                 <div class="modal-alt">Prefer to pick a time now? <a href="https://calendly.com/nstrauss-innatec3/30min" target="_blank" rel="noopener">Book a 30-min call &rarr;</a></div>
@@ -2938,7 +2942,7 @@
                     <div class="feedback-actions">
                         <button class="feedback-btn" data-rating="up" onclick="submitFeedback('up', this)">&#128077; Yes</button>
                         <button class="feedback-btn" data-rating="down" onclick="submitFeedback('down', this)">&#128078; Not really</button>
-                        <button class="feedback-btn" onclick="openDemoModal()">&#9993;&#65039; Tell us more</button>
+                        <button class="feedback-btn" onclick="openDemoModal('tellmore')">&#9993;&#65039; Tell us more</button>
                     </div>
                     <div class="feedback-thanks" style="display:none">Thanks &mdash; your feedback was recorded.</div>
                 </div>
@@ -3009,7 +3013,8 @@
         // distinguishes "CSV request" from generic bespoke-audit interest.
         let currentDemoContext = 'bespoke';
         function openDemoModal(context) {
-            currentDemoContext = (context === 'csv') ? 'csv' : 'bespoke';
+            currentDemoContext = (context === 'csv') ? 'csv'
+                : (context === 'tellmore') ? 'tellmore' : 'bespoke';
             const titleEl = document.getElementById('demoFormTitle');
             const descEl = document.getElementById('demoFormDesc');
             const subdescEl = document.getElementById('demoFormSubdesc');
@@ -3023,6 +3028,13 @@
                 if (submitBtn) submitBtn.textContent = 'Send my CSV request';
                 if (successTitle) successTitle.textContent = "Thanks — your CSV is on the way.";
                 if (successBody) successBody.textContent = "We'll email the CSV with a short read-me within 24 hours.";
+            } else if (currentDemoContext === 'tellmore') {
+                if (titleEl) titleEl.textContent = 'Tell us more';
+                if (descEl) descEl.innerHTML = "Send us a note and we'll get back to you — a question about your results, what you're hoping to achieve, or how a bespoke engagement (100+ prompts across up to 10 LLMs, plus a strategic roadmap and ongoing analysis) could work for your team.";
+                if (subdescEl) subdescEl.textContent = "Add your details and message below; we'll reply within 24 hours.";
+                if (submitBtn) submitBtn.textContent = 'Send message';
+                if (successTitle) successTitle.textContent = "Thanks — message received.";
+                if (successBody) successBody.textContent = "We've got your note and we'll reply within 24 hours.";
             } else {
                 if (titleEl) titleEl.textContent = 'Request a call';
                 if (descEl) descEl.innerHTML = 'This free audit runs 10 prompts &times; 5 leading AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.';
@@ -3031,6 +3043,15 @@
                 if (successTitle) successTitle.textContent = "Thanks — we'll be in touch.";
                 if (successBody) successBody.textContent = "Your request is in. We'll reach out within 24 hours to scope your bespoke analysis.";
             }
+            // Message field: shown for the open-inquiry paths (tell-us-more +
+            // bespoke), hidden for the CSV export request. Required only for
+            // tell-us-more (that's the whole point of the button).
+            const msgField = document.getElementById('demoMessageField');
+            const msgLabel = document.getElementById('demoMessageLabel');
+            if (msgField) msgField.style.display = (currentDemoContext === 'csv') ? 'none' : 'block';
+            if (msgLabel) msgLabel.textContent = (currentDemoContext === 'tellmore')
+                ? 'What would you like to know? *'
+                : "Anything specific you'd like us to cover? (optional)";
             document.getElementById('demoForm').style.display = 'block';
             document.getElementById('demoSuccess').style.display = 'none';
             document.getElementById('demoError').classList.remove('active');
@@ -3046,12 +3067,19 @@
             const title = document.getElementById('demoTitle').value.trim();
             const org = document.getElementById('demoOrg').value.trim();
             const email = document.getElementById('demoEmail').value.trim();
+            const message = document.getElementById('demoMessage').value.trim();
             const errEl = document.getElementById('demoError');
             const btn = document.getElementById('demoSubmit');
+            const submitLabel = btn.textContent;   // restore the mode's own label on error
 
             errEl.classList.remove('active');
             if (!name || !email) {
                 errEl.textContent = 'Name and email are required.';
+                errEl.classList.add('active');
+                return;
+            }
+            if (currentDemoContext === 'tellmore' && !message) {
+                errEl.textContent = 'Please add a short message so we know how to help.';
                 errEl.classList.add('active');
                 return;
             }
@@ -3062,7 +3090,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        name, title, org, email,
+                        name, title, org, email, message,
                         slug: lastAuditContext.slug,
                         problem_statement: lastAuditContext.problem_statement,
                         request_type: currentDemoContext,
@@ -3073,7 +3101,7 @@
                     errEl.textContent = data.error || 'Something went wrong.';
                     errEl.classList.add('active');
                     btn.disabled = false;
-                    btn.textContent = 'Request a call';
+                    btn.textContent = submitLabel;
                     return;
                 }
                 document.getElementById('demoForm').style.display = 'none';
@@ -3085,7 +3113,7 @@
                 errEl.textContent = 'Network error: ' + (e && e.message ? e.message : 'unknown');
                 errEl.classList.add('active');
                 btn.disabled = false;
-                btn.textContent = 'Request a call';
+                btn.textContent = submitLabel;
             }
         }
 
