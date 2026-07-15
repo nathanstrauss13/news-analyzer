@@ -2107,7 +2107,7 @@
                 </div>
                 <button type="button" class="modal-submit" id="demoSubmit" onclick="submitDemoRequest()">Request a call</button>
                 <div class="modal-error" id="demoError"></div>
-                <div class="modal-alt">Prefer to pick a time now? <a href="https://calendly.com/nstrauss-innatec3/30min" target="_blank" rel="noopener">Book a 30-min call &rarr;</a></div>
+                <div class="modal-alt">Prefer to pick a time now? <a href="https://calendly.com/nstrauss-innatec3/new-meeting" target="_blank" rel="noopener">Book a 30-min call &rarr;</a></div>
             </div>
             <div class="modal-success" id="demoSuccess" style="display:none">
                 <h3 id="demoSuccessTitle">Thanks — we'll be in touch.</h3>
@@ -2123,7 +2123,7 @@
         const CIRCUMFERENCE = 2 * Math.PI * 96; // 603.19 — matches the r=96 progress ring
         // Soft "book a call" path on the result page (lower friction than the
         // lead-capture modal). Update here if the Calendly link ever changes.
-        const CALENDLY_URL = 'https://calendly.com/nstrauss-innatec3/30min';
+        const CALENDLY_URL = 'https://calendly.com/nstrauss-innatec3/new-meeting';
         // GA4 funnel: fire audit_started (once per user-initiated run) and
         // audit_completed (on result). No-ops if gtag is blocked/absent.
         function track(name, params) {
