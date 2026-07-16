@@ -599,9 +599,9 @@ def bar_rows(items, you_name=None, denom=None):
         pp = i.get("per_platform") or {}
         tip = ""
         if pp:
-            parts = [f'{p} {pp.get(p, 0)}' for p in PLATFORM_ORDER if p in pp or pp.get(p)]
             parts = [f'{p} {pp[p]}' for p in PLATFORM_ORDER if pp.get(p)]
-            tip_txt = f'{i["name"]}: named per assistant\n' + " &middot; ".join(parts or ["(none)"])
+            # plain text only: CSS attr() tooltips render characters, not HTML
+            tip_txt = f'{i["name"]}, named per assistant:\n' + ", ".join(parts or ["(none)"])
             tip = f' data-tip="{esc(tip_txt)}"'
         w = round(100 * i["count"] / mx)
         out.append(
@@ -638,12 +638,21 @@ def platform_cards(a, branded):
         top3 = sorted(d["top_sources"].items(), key=lambda kv: -kv[1])[:3]
         tip = ""
         if top3:
-            tip_txt = f'{p}: top sources\n' + "\n".join(f'{r} &middot; {c} citations' for r, c in top3)
+            tip_txt = f'{p}, top sources:\n' + "\n".join(f'{r}: {c} citations' for r, c in top3)
             tip = f' data-tip="{esc(tip_txt)}"'
         out.append(f'<div class="plat"{tip}><div class="pn">{esc(p)}</div>'
                    f'<div class="pv{cls}">{big}</div>'
                    f'<div class="pl">{sub}</div>{mix}</div>')
-    return f'<div class="plats">{"".join(out)}</div>'
+    # one legend for all the mix bars: which color is which source type
+    types_present = [t for t, _l, _c in TYPE_LABELS
+                     if any(a["per_platform"][p]["types"].get(t) for p in a["platforms"])]
+    legend = ""
+    if types_present:
+        sw = "".join(f'<span><i class="mix-{t}"></i>{TYPE_INDEX[t][0]}</span>' for t in types_present)
+        legend = (f'<div class="econlegend" style="margin-top:12px">'
+                  f'<span style="color:var(--muted)">Bar under each assistant: its citation mix by source type.</span>'
+                  f'{sw}</div>')
+    return f'<div class="plats">{"".join(out)}</div>{legend}'
 
 
 def economy_bar(a):
