@@ -254,7 +254,9 @@ def analyze(rows, cfg):
     # brand presence per response / per platform
     n = len(rows)
     brand_rows = 0
-    per_platform = {p: {"total": 0, "brand": 0, "citations": 0} for p in platforms}
+    per_platform = {p: {"total": 0, "brand": 0, "citations": 0,
+                        "types": defaultdict(int), "top_sources": defaultdict(int)}
+                    for p in platforms}
     for r in rows:
         hit = present(bforms, r["response"])
         r["brand_hit"] = hit
@@ -264,23 +266,30 @@ def analyze(rows, cfg):
         pp["brand"] += 1 if hit else 0
         pp["citations"] += len(r["urls"])
 
-    # competitor presence (word-boundary, alias-aware, assistants excluded)
+    # competitor presence (word-boundary, alias-aware, assistants excluded),
+    # with a per-assistant breakdown for the landscape hover tooltips.
     comp_counts = []
     for c in comp_cfg:
         nm = c["name"]
         if nm.lower() in ASSISTANT_NAMES:
             continue
         forms = match_forms(nm, c.get("aliases"), corpus)
-        cnt = sum(1 for r in rows if present(forms, r["response"]))
-        comp_counts.append({"name": nm, "count": cnt})
+        per_plat = defaultdict(int)
+        cnt = 0
+        for r in rows:
+            if present(forms, r["response"]):
+                cnt += 1
+                per_plat[r["platform"]] += 1
+        comp_counts.append({"name": nm, "count": cnt, "per_platform": dict(per_plat)})
     comp_counts.sort(key=lambda x: -x["count"])
+    brand_per_plat = {p: d["brand"] for p, d in per_platform.items()}
 
-    # citations: per-URL and per-root aggregation
+    # citations: per-URL and per-root aggregation (+ per-platform counts for
+    # the source-table assistant dots and the per-assistant mix bars)
     url_counts = defaultdict(int)          # display url -> citations
-    root_agg = {}                          # root -> {count, answers:set, platforms:set, type}
+    root_agg = {}                          # root -> {count, answers:set, platforms:{p:n}, type}
     total_citations = 0
     for i, r in enumerate(rows):
-        seen_roots_this_row = set()
         for u in r["urls"]:
             root = root_of(host_of(u))
             if root in exclude:      # config escape hatch for junk sources
@@ -290,15 +299,17 @@ def analyze(rows, cfg):
                 continue
             total_citations += 1
             url_counts[(u, typ)] += 1
-            a = root_agg.setdefault(root, {"count": 0, "answers": set(), "platforms": set(), "type": typ})
+            a = root_agg.setdefault(root, {"count": 0, "answers": set(),
+                                           "platforms": defaultdict(int), "type": typ})
             a["count"] += 1
             a["answers"].add(i)
-            a["platforms"].add(r["platform"])
-            seen_roots_this_row.add(root)
+            a["platforms"][r["platform"]] += 1
+            pp = per_platform[r["platform"]]
+            pp["types"][typ] += 1
+            pp["top_sources"][root] += 1
 
     sources = [{"root": k, "count": v["count"], "answers": len(v["answers"]),
-                "platforms": sorted(v["platforms"], key=lambda p: PLATFORM_ORDER.index(p) if p in PLATFORM_ORDER else 99),
-                "type": v["type"]}
+                "platforms": dict(v["platforms"]), "type": v["type"]}
                for k, v in root_agg.items()]
     sources.sort(key=lambda s: (-s["count"], s["root"]))
 
@@ -326,7 +337,8 @@ def analyze(rows, cfg):
             gap_sources.append({**s, "brand_in": brand_in})
 
     return {
-        "rows": rows, "n": n, "platforms": platforms,
+        "rows": rows, "n": n, "platforms": platforms, "bforms": bforms,
+        "brand_per_platform": brand_per_plat,
         "brand_rows": brand_rows, "per_platform": per_platform,
         "competitors": comp_counts,
         "sources": sources, "type_totals": dict(type_totals),
@@ -447,6 +459,51 @@ tr:hover td{background:rgba(255,255,255,.015)}
  border-radius:999px;padding:6px 13px;cursor:pointer}
 .sfbtn:hover{color:var(--ink);border-color:rgba(203,171,109,.4)}
 .sfbtn.on{color:#2a1008;background:var(--cta);border-color:transparent}
+/* v1.2 interactivity */
+.navlinks a.on{color:var(--gold);background:rgba(203,171,109,.08)}
+.card,.plat{transition:transform .25s cubic-bezier(.2,.7,.2,1),box-shadow .3s}
+.card:hover,.plat:hover{transform:translateY(-3px);box-shadow:0 0 40px -22px var(--gold-g),0 24px 60px -44px #000}
+.pre{opacity:0;transform:translateY(16px)}
+.go{opacity:1;transform:none;transition:opacity .6s ease,transform .6s cubic-bezier(.2,.7,.2,1)}
+.of{transition:width 1s cubic-bezier(.2,.7,.2,1)}
+[data-tip]{position:relative;cursor:default}
+[data-tip]:hover::after{content:attr(data-tip);position:absolute;left:0;bottom:calc(100% + 8px);
+ z-index:40;background:#191c24;border:1px solid rgba(255,255,255,.12);border-radius:9px;
+ padding:8px 12px;font-size:11.5px;line-height:1.5;color:var(--ink);white-space:pre-line;
+ min-width:200px;max-width:320px;box-shadow:0 18px 50px -18px #000;font-family:'Inter',sans-serif;font-weight:400}
+.mixbar{display:flex;height:7px;border-radius:999px;overflow:hidden;margin-top:10px;background:rgba(255,255,255,.05)}
+.mixbar span{display:block;height:100%}
+.mix-owned{background:linear-gradient(90deg,#5aa8f0,#74d0ff)}
+.mix-editorial{background:linear-gradient(90deg,#cbab6d,#e2c98f)}
+.mix-competitor{background:#d9a24f}
+.mix-institutional{background:#93a9ff}
+.mix-reviews{background:#f2b8d0}
+.mix-community{background:#8ce6aa}
+.mix-social{background:#c8aaf5}
+.mix-reference{background:#8cd6cd}
+.mix-corporate{background:#8a93a6}
+.econrow{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:16px 20px;margin:0 0 16px}
+.econbar{display:flex;height:16px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,.05)}
+.econbar span{display:block;height:100%}
+.econlegend{display:flex;flex-wrap:wrap;gap:12px;margin-top:11px;font-size:11.5px;color:var(--ink2)}
+.econlegend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--gold)}
+th.sortable::after{content:' \\2195';opacity:.4}
+tr.xrow{display:none}
+#appx .showall,.showall{margin-top:12px;display:inline-block}
+mark.bm{background:rgba(116,208,255,.18);color:var(--cyan);border-radius:3px;padding:0 2px}
+.qsearch{width:100%;max-width:360px;box-sizing:border-box;font:inherit;font-size:13px;color:var(--ink);
+ background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:999px;padding:9px 16px;outline:none}
+.qsearch:focus{border-color:rgba(203,171,109,.4)}
+.dlegend li{cursor:default}
+.dlegend li.hl a{color:var(--cyan)}
+.donut path{transition:opacity .2s,transform .2s;transform-origin:110px 110px}
+.donut path.hl{opacity:.85;transform:scale(1.03)}
+@media print{.pre{opacity:1!important;transform:none!important}
+ .of{transition:none}
+ tr.xrow{display:table-row!important}
+ [data-tip]:hover::after{display:none}}
 .kindtag{display:inline-block;font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;
  color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:2.5px 9px;background:rgba(255,255,255,.03)}
 .kindtag.home{color:var(--gold);border-color:rgba(203,171,109,.35);background:rgba(203,171,109,.07)}
@@ -507,6 +564,8 @@ footer a{color:var(--gold);text-decoration:none}
 
 
 def bar_rows(items, you_name=None, denom=None):
+    """SoV bars with grow-in animation + hover tooltip carrying the
+    per-assistant breakdown when the item provides one."""
     if not items:
         return '<div class="gsub">(none surfaced)</div>'
     mx = max(i["count"] for i in items) or 1
@@ -514,15 +573,25 @@ def bar_rows(items, you_name=None, denom=None):
     for i in items:
         you = you_name and i["name"].lower() == you_name.lower()
         pct = f'{round(100*i["count"]/denom)}%' if denom else str(i["count"])
+        pp = i.get("per_platform") or {}
+        tip = ""
+        if pp:
+            parts = [f'{p} {pp.get(p, 0)}' for p in PLATFORM_ORDER if p in pp or pp.get(p)]
+            parts = [f'{p} {pp[p]}' for p in PLATFORM_ORDER if pp.get(p)]
+            tip_txt = f'{i["name"]}: named per assistant\n' + " &middot; ".join(parts or ["(none)"])
+            tip = f' data-tip="{esc(tip_txt)}"'
+        w = round(100 * i["count"] / mx)
         out.append(
-            f'<div class="orow"><span class="bar-name{" you" if you else ""}">{esc(i["name"])}'
+            f'<div class="orow"{tip}><span class="bar-name{" you" if you else ""}">{esc(i["name"])}'
             f'{" (you)" if you else ""}</span>'
-            f'<span class="ot"><span class="of{" you" if you else ""}" style="width:{round(100*i["count"]/mx)}%"></span></span>'
+            f'<span class="ot"><span class="of{" you" if you else ""} anim" style="--w:{w}%;width:{w}%"></span></span>'
             f'<span class="ov">{i["count"]} &middot; {pct}</span></div>')
     return "".join(out)
 
 
 def platform_cards(a, branded):
+    """Per-assistant cards, each with a stacked source-mix bar (its sourcing
+    personality) and a hover tooltip naming its top sources."""
     out = []
     for p in a["platforms"]:
         d = a["per_platform"][p]
@@ -535,10 +604,40 @@ def platform_cards(a, branded):
             cls = ""
         else:
             big, sub = f'{d["brand"]}/{d["total"]}', "of its answers name the brand"
-        out.append(f'<div class="plat"><div class="pn">{esc(p)}</div>'
+        # stacked mix bar of this assistant's citation types
+        tot = sum(d["types"].values())
+        mix = ""
+        if tot:
+            segs = "".join(
+                f'<span class="mix-{t}" style="width:{100*d["types"][t]/tot:.1f}%" title="{TYPE_INDEX[t][0]}: {d["types"][t]}"></span>'
+                for t, _l, _c in TYPE_LABELS if d["types"].get(t))
+            mix = f'<div class="mixbar">{segs}</div>'
+        top3 = sorted(d["top_sources"].items(), key=lambda kv: -kv[1])[:3]
+        tip = ""
+        if top3:
+            tip_txt = f'{p}: top sources\n' + "\n".join(f'{r} &middot; {c} citations' for r, c in top3)
+            tip = f' data-tip="{esc(tip_txt)}"'
+        out.append(f'<div class="plat"{tip}><div class="pn">{esc(p)}</div>'
                    f'<div class="pv{cls}">{big}</div>'
-                   f'<div class="pl">{sub}</div></div>')
+                   f'<div class="pl">{sub}</div>{mix}</div>')
     return f'<div class="plats">{"".join(out)}</div>'
+
+
+def economy_bar(a):
+    """One stacked bar: the dataset's citation share by source type. The
+    'source economy' of the category at a glance (editorial-driven vs
+    community-driven vs review-driven)."""
+    tot = sum(v["count"] for v in a["type_totals"].values()) or 1
+    segs, legend = [], []
+    for t, lbl, _c in TYPE_LABELS:
+        v = a["type_totals"].get(t)
+        if not v:
+            continue
+        pct = 100 * v["count"] / tot
+        segs.append(f'<span class="mix-{t}" style="width:{pct:.1f}%" title="{lbl}: {v["count"]} citations ({pct:.0f}%)"></span>')
+        legend.append(f'<span><i class="mix-{t}"></i>{lbl} {pct:.0f}%</span>')
+    return (f'<div class="econrow"><div class="econbar">{"".join(segs)}</div>'
+            f'<div class="econlegend">{"".join(legend)}</div></div>')
 
 
 _DONUT_COLORS = ["#74d0ff", "#cbab6d", "#f0876a", "#5cf08a", "#d8c6f5", "rgba(255,255,255,.22)"]
@@ -575,7 +674,8 @@ def owned_donut(a, brand):
         d = (f"M{x0o:.1f},{y0o:.1f} A{r_out},{r_out} 0 {large} 1 {x1o:.1f},{y1o:.1f} "
              f"L{x0i:.1f},{y0i:.1f} A{r_in},{r_in} 0 {large} 0 {x1i:.1f},{y1i:.1f} Z")
         color = _DONUT_COLORS[idx % len(_DONUT_COLORS)]
-        path = f'<path d="{d}" fill="{color}"><title>{esc(it["label"])}: {it["count"]} citations</title></path>'
+        path = (f'<path d="{d}" fill="{color}" data-di="{idx}">'
+                f'<title>{esc(it["label"])}: {it["count"]} citations</title></path>')
         if it["href"]:
             path = f'<a href="{esc(it["href"])}" target="_blank" rel="noopener">{path}</a>'
         paths.append(path)
@@ -583,7 +683,7 @@ def owned_donut(a, brand):
         name = (f'<a href="{esc(it["href"])}" target="_blank" rel="noopener">{esc(short)}</a>'
                 if it["href"] else f'<span style="color:var(--muted)">{esc(short)}</span>')
         kind = f'<span class="dk">{esc(it["kind"])}</span>' if it["kind"] else ""
-        legend.append(f'<li><span class="sw" style="background:{color}"></span>'
+        legend.append(f'<li data-di="{idx}"><span class="sw" style="background:{color}"></span>'
                       f'<span style="min-width:0">{name}{kind}</span>'
                       f'<span class="dv">{it["count"]}&times; &middot; {round(100*it["count"]/total)}%</span></li>')
         ang += sweep
@@ -597,7 +697,9 @@ def owned_donut(a, brand):
 
 
 def sources_table(a, table_id, limit=18):
-    """Classified source table with per-type filter chips (client-side)."""
+    """Classified source table: per-type filter chips, sortable numeric
+    columns, source link-outs, per-assistant citation counts on the dots, and
+    a show-all toggle past the fold. Client-side only, print-safe."""
     types_present = []
     for k, lbl, cls in TYPE_LABELS:
         if any(s["type"] == k for s in a["sources"]):
@@ -606,19 +708,30 @@ def sources_table(a, table_id, limit=18):
     chips += [f'<button class="sfbtn" data-t="{k}" onclick="srcFilter(\'{table_id}\',this)">{lbl}</button>'
               for k, lbl in types_present]
     rows = []
-    for s in a["sources"][:limit]:
+    for idx, s in enumerate(a["sources"]):
         lbl, cls = TYPE_INDEX[s["type"]]
-        dots = "".join(f'<span class="pdot{" on" if p in s["platforms"] else ""}" title="{esc(p)}"></span>'
-                       for p in PLATFORM_ORDER)
-        rows.append(f'<tr data-t="{s["type"]}"><td class="src">{esc(s["root"])}</td>'
+        dots = "".join(
+            f'<span class="pdot{" on" if s["platforms"].get(p) else ""}" '
+            f'title="{esc(p)}: {s["platforms"].get(p, 0)} citations"></span>'
+            for p in PLATFORM_ORDER)
+        hidden = ' class="xrow"' if idx >= limit else ""
+        rows.append(f'<tr data-t="{s["type"]}"{hidden}>'
+                    f'<td class="src"><a class="upath" href="https://{esc(s["root"])}" target="_blank" '
+                    f'rel="noopener">{esc(s["root"])}</a></td>'
                     f'<td><span class="typechip {cls}">{lbl}</span></td>'
-                    f'<td class="num">{s["count"]}</td>'
-                    f'<td class="num">{s["answers"]}/{a["n"]}</td>'
+                    f'<td class="num" data-v="{s["count"]}">{s["count"]}</td>'
+                    f'<td class="num" data-v="{s["answers"]}">{s["answers"]}/{a["n"]}</td>'
                     f'<td class="pdots">{dots}</td></tr>')
+    more = ""
+    if len(a["sources"]) > limit:
+        more = (f'<button class="sfbtn showall" onclick="showAllRows(\'{table_id}\',this)">'
+                f'Show all {len(a["sources"])} sources</button>')
     return (f'<div id="{table_id}"><div class="srcfilters">{"".join(chips)}</div>'
-            '<table><thead><tr><th>Source</th><th>Type</th><th>Citations</th>'
-            '<th>Answers citing</th><th>Assistants</th></tr></thead><tbody>'
-            + "".join(rows) + "</tbody></table></div>")
+            f'<table><thead><tr><th>Source</th><th>Type</th>'
+            f'<th class="sortable" onclick="sortRows(\'{table_id}\',2)">Citations</th>'
+            f'<th class="sortable" onclick="sortRows(\'{table_id}\',3)">Answers citing</th>'
+            f'<th>Assistants</th></tr></thead><tbody>'
+            + "".join(rows) + f"</tbody></table>{more}</div>")
 
 
 def owned_pages_block(a, brand):
@@ -649,12 +762,31 @@ def owned_pages_block(a, brand):
     return f'<table><thead><tr><th>Page</th><th>Citations</th></tr></thead><tbody>{"".join(rows)}</tbody></table>{note}'
 
 
+def _highlight(text_esc, forms):
+    """Wrap brand mentions in <mark> inside already-escaped text: the receipts,
+    visible at a glance when a response is expanded."""
+    if not forms:
+        return text_esc
+    pat = re.compile(r"\b(" + "|".join(re.escape(f) for f in sorted(forms, key=len, reverse=True)) + r")\b",
+                     re.IGNORECASE)
+    return pat.sub(lambda m: f'<mark class="bm">{m.group(0)}</mark>', text_esc)
+
+
 def query_appendix(a, dataset_label, idx_prefix):
     groups = {}
     for r in a["rows"]:
         groups.setdefault(r["query"], {})[r["platform"]] = r
-    out = [f'<div class="qtools"><button class="qbtn" onclick="toggleAll(\'{idx_prefix}\',true)">Expand all</button>'
-           f'<button class="qbtn" onclick="toggleAll(\'{idx_prefix}\',false)">Collapse all</button></div>']
+    pid = idx_prefix.lower()
+    plat_chips = "".join(
+        f'<button class="qbtn" data-p="{esc(p)}" onclick="platFilter(\'{pid}\',this)">{esc(p)}</button>'
+        for p in a["platforms"])
+    out = [f'<div class="qtools" id="{pid}tools">'
+           f'<button class="qbtn" onclick="toggleAll(\'{pid}\',true)">Expand all</button>'
+           f'<button class="qbtn" onclick="toggleAll(\'{pid}\',false)">Collapse all</button>'
+           f'<button class="qbtn on" data-p="all" onclick="platFilter(\'{pid}\',this)">All assistants</button>'
+           f'{plat_chips}'
+           f'<input class="qsearch" type="search" placeholder="Filter questions&hellip;" '
+           f'oninput="qSearch(\'{pid}\',this.value)"></div>']
     for qi, (q, plats) in enumerate(groups.items()):
         marks = []
         for p in PLATFORM_ORDER:
@@ -673,10 +805,11 @@ def query_appendix(a, dataset_label, idx_prefix):
             cites = " &middot; ".join(
                 f'<a href="https://{esc(u)}" target="_blank" rel="noopener">{esc(u if len(u) <= 70 else u[:67] + "...")}</a>'
                 for u in r["urls"][:12]) or '<em>(no citations)</em>'
-            bodies.append(f'<div class="qresp"><div class="rl">{esc(p)}</div>'
-                          f'<div class="rt">{esc(r["response"])}</div>'
+            bodies.append(f'<div class="qresp" data-p="{esc(p)}"><div class="rl">{esc(p)} '
+                          f'&middot; {len(r["urls"])} citations</div>'
+                          f'<div class="rt">{_highlight(esc(r["response"]), a.get("bforms"))}</div>'
                           f'<div class="rc">{cites}</div></div>')
-        out.append(f'<div class="qrow" id="{idx_prefix}q{qi}">'
+        out.append(f'<div class="qrow" id="{pid}q{qi}" data-q="{esc(q.lower())}">'
                    f'<div class="qhead" onclick="this.parentNode.classList.toggle(\'open\')">'
                    f'<span class="qq">{esc(q)}</span><span class="qmarks">{"".join(marks)}</span></div>'
                    f'<div class="qbody">{"".join(bodies)}</div></div>')
@@ -839,7 +972,7 @@ def build(cfg, branded, organic, out_path):
             continue
         chip = '<span class="modechip br">by name</span>' if label.startswith("Branded") else '<span class="modechip org">by category</span>'
         src_blocks.append(f'<h2 style="font-size:19px;margin-top:{"34" if src_blocks else "0"}px">{label} {chip}</h2>'
-                          + sources_table(ds, tid))
+                          + economy_bar(ds) + sources_table(ds, tid))
     add("sources", "Sources", f'''
 <section id="sources">
   <div class="gh">Source intelligence</div>
@@ -922,19 +1055,125 @@ def build(cfg, branded, organic, out_path):
 </section>''')
 
     js = """
-function toggleAll(prefix, open){
-  document.querySelectorAll('.qrow[id^="'+prefix.charAt(0).toLowerCase()+'q"]').forEach(function(r){
+function toggleAll(pid, open){
+  document.querySelectorAll('.qrow[id^="'+pid+'q"]').forEach(function(r){
     r.classList.toggle('open', open);
   });
 }
 function srcFilter(tableId, btn){
   var box = document.getElementById(tableId);
   var t = btn.getAttribute('data-t');
-  box.querySelectorAll('.sfbtn').forEach(function(b){ b.classList.toggle('on', b === btn); });
+  box.querySelectorAll('.srcfilters .sfbtn').forEach(function(b){ b.classList.toggle('on', b === btn); });
+  var shown = 0;
   box.querySelectorAll('tbody tr').forEach(function(r){
-    r.style.display = (t === 'all' || r.getAttribute('data-t') === t) ? '' : 'none';
+    var match = (t === 'all' || r.getAttribute('data-t') === t);
+    // filtering reveals all matching rows, including those past the fold
+    r.style.display = match ? '' : 'none';
+    if (match && t !== 'all') r.classList.remove('xrow');
   });
 }
+function showAllRows(tableId, btn){
+  document.querySelectorAll('#'+tableId+' tr.xrow').forEach(function(r){ r.classList.remove('xrow'); });
+  btn.style.display = 'none';
+}
+function sortRows(tableId, col){
+  var tb = document.querySelector('#'+tableId+' tbody');
+  var rows = Array.prototype.slice.call(tb.querySelectorAll('tr'));
+  var dir = tb.getAttribute('data-dir') === 'asc' ? -1 : 1;
+  tb.setAttribute('data-dir', dir === 1 ? 'asc' : 'desc');
+  rows.sort(function(a, b){
+    var av = parseFloat(a.cells[col].getAttribute('data-v') || 0);
+    var bv = parseFloat(b.cells[col].getAttribute('data-v') || 0);
+    return dir * (bv - av);
+  });
+  rows.forEach(function(r){ tb.appendChild(r); });
+}
+function platFilter(pid, btn){
+  var tools = document.getElementById(pid + 'tools');
+  var p = btn.getAttribute('data-p');
+  tools.querySelectorAll('.qbtn[data-p]').forEach(function(b){ b.classList.toggle('on', b === btn); });
+  document.querySelectorAll('.qrow[id^="'+pid+'q"] .qresp').forEach(function(r){
+    r.style.display = (p === 'all' || r.getAttribute('data-p') === p) ? '' : 'none';
+  });
+}
+function qSearch(pid, term){
+  term = (term || '').toLowerCase();
+  document.querySelectorAll('.qrow[id^="'+pid+'q"]').forEach(function(r){
+    r.style.display = (!term || (r.getAttribute('data-q') || '').indexOf(term) >= 0) ? '' : 'none';
+  });
+}
+// donut: legend row <-> slice hover sync
+document.querySelectorAll('.donutwrap').forEach(function(w){
+  function set(idx, on){
+    w.querySelectorAll('[data-di="'+idx+'"]').forEach(function(el){ el.classList.toggle('hl', on); });
+  }
+  w.querySelectorAll('.dlegend li[data-di]').forEach(function(li){
+    li.addEventListener('mouseenter', function(){ set(li.getAttribute('data-di'), true); });
+    li.addEventListener('mouseleave', function(){ set(li.getAttribute('data-di'), false); });
+  });
+  w.querySelectorAll('.donut path[data-di]').forEach(function(pa){
+    pa.addEventListener('mouseenter', function(){ set(pa.getAttribute('data-di'), true); });
+    pa.addEventListener('mouseleave', function(){ set(pa.getAttribute('data-di'), false); });
+  });
+});
+// scroll-reveal + SoV bar grow-in + hero count-up (all print-safe: final
+// values live in the markup; JS only animates toward them)
+(function(){
+  if (!('IntersectionObserver' in window)) return;
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if (!e.isIntersecting) return;
+      e.target.classList.add('go');
+      e.target.querySelectorAll('.of.anim').forEach(function(bar){
+        var w = bar.style.getPropertyValue('--w');
+        bar.style.width = '0%';
+        requestAnimationFrame(function(){ requestAnimationFrame(function(){ bar.style.width = w; }); });
+        bar.classList.remove('anim');
+      });
+      io.unobserve(e.target);
+    });
+  }, {threshold: 0.12});
+  document.querySelectorAll('section, header.hero').forEach(function(s){
+    var r = s.getBoundingClientRect();
+    if (r.top > window.innerHeight) s.classList.add('pre');
+    io.observe(s);
+  });
+  // count-up on hero stats
+  document.querySelectorAll('.stat-n').forEach(function(el){
+    var m = (el.textContent || '').match(/^(\\d+)(.*)$/);
+    if (!m) return;
+    var target = parseInt(m[1], 10), suffix = m[2], t0 = null;
+    if (target < 2) return;
+    function tick(ts){
+      if (!t0) t0 = ts;
+      var f = Math.min((ts - t0) / 900, 1);
+      el.textContent = Math.round(target * (1 - Math.pow(1 - f, 3))) + suffix;
+      if (f < 1) requestAnimationFrame(tick);
+    }
+    var seen = new IntersectionObserver(function(es){
+      es.forEach(function(e){
+        if (e.isIntersecting){ requestAnimationFrame(tick); seen.unobserve(el); }
+      });
+    }, {threshold: 0.4});
+    seen.observe(el);
+  });
+  // scrollspy: highlight the nav link for the section in view
+  var links = {};
+  document.querySelectorAll('.navlinks a[href^="#"]').forEach(function(a){
+    links[a.getAttribute('href').slice(1)] = a;
+  });
+  var spy = new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      var a = links[e.target.id];
+      if (!a) return;
+      if (e.isIntersecting){
+        Object.keys(links).forEach(function(k){ links[k].classList.remove('on'); });
+        a.classList.add('on');
+      }
+    });
+  }, {rootMargin: '-30% 0px -60% 0px'});
+  document.querySelectorAll('section[id]').forEach(function(s){ spy.observe(s); });
+})();
 """
 
     page = f'''<!DOCTYPE html>
