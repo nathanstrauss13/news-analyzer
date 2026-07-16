@@ -915,12 +915,21 @@ def build(cfg, branded, organic, out_path):
                 f'({share}%){ext_note}. Who AI trusts to tell the story matters more than whether it answers.')
         if organic:
             o = organic
-            leader = o["competitors"][0]["name"] if o["competitors"] else "the category leader"
-            exec_ps.append(
-                f'On unbranded category questions, {brand} appears in {o["brand_rows"]} of {o["n"]} answers in this sample, '
-                f'while {leader} and other established names carry most of the conversation. '
-                f'This is a common shape for a specialized company in a category with large incumbents, '
-                f'and it maps where discovery can grow.')
+            top = o["competitors"][0] if o["competitors"] else None
+            if top and o["brand_rows"] >= top["count"]:
+                # leader framing: the brand out-appears every configured competitor
+                exec_ps.append(
+                    f'On unbranded category questions, {brand} appears in {o["brand_rows"]} of {o["n"]} answers '
+                    f'in this sample, the most of any name measured ({top["name"]} follows at {top["count"]}). '
+                    f'With presence this established, the working questions shift from being found to being '
+                    f'the default recommendation: prominence within answers, and which sources carry the story.')
+            else:
+                leader = top["name"] if top else "the category leader"
+                exec_ps.append(
+                    f'On unbranded category questions, {brand} appears in {o["brand_rows"]} of {o["n"]} answers in this sample, '
+                    f'while {leader} and other established names carry most of the conversation. '
+                    f'This is a common shape for a specialized company in a category with large incumbents, '
+                    f'and it maps where discovery can grow.')
         if both:
             exec_ps.append(
                 'Read together, the two runs separate destination from discovery: AI already tells the brand\'s story '
@@ -1010,11 +1019,11 @@ def build(cfg, branded, organic, out_path):
 
     # source intelligence (use primary dataset; both if present -> two tables)
     src_blocks = []
-    for label, ds, tid in (("Branded questions", branded, "srcB"),
-                           ("Unbranded category questions", organic, "srcO")):
+    for label, ds, tid in (("Sources behind the branded answers", branded, "srcB"),
+                           ("Sources behind the unbranded category answers", organic, "srcO")):
         if not ds:
             continue
-        chip = '<span class="modechip br">by name</span>' if label.startswith("Branded") else '<span class="modechip org">by category</span>'
+        chip = '<span class="modechip br">by name</span>' if ds is branded else '<span class="modechip org">by category</span>'
         src_blocks.append(f'<h2 style="font-size:19px;margin-top:{"34" if src_blocks else "0"}px">{label} {chip}</h2>'
                           + economy_bar(ds) + sources_table(ds, tid))
     add("sources", "Sources", f'''

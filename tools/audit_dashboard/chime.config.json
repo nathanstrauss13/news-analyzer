@@ -1,0 +1,25 @@
+{
+  "brand": "Chime",
+  "slug": "chime",
+  "prepared_for": "Chime",
+  "title": "Chime: how AI sees you",
+  "category": "Online banks, neobanks, and fee-free checking",
+  "date": "July 2026",
+  "aliases": ["Chime"],
+  "owned_domains": ["chime.com"],
+  "competitors": [
+    {"name": "SoFi", "domains": ["sofi.com"]},
+    {"name": "Ally Bank", "aliases": ["Ally"], "domains": ["ally.com"]},
+    {"name": "Capital One 360", "aliases": ["Capital One"], "domains": ["capitalone.com"]},
+    {"name": "Current", "domains": ["current.com"]},
+    {"name": "Varo", "aliases": ["Varo Bank"], "domains": ["varomoney.com", "varo.com"]},
+    {"name": "Alliant Credit Union", "aliases": ["Alliant"], "domains": ["alliantcreditunion.org"]},
+    {"name": "Discover", "domains": ["discover.com"]},
+    {"name": "Marcus by Goldman Sachs", "aliases": ["Marcus"], "domains": ["marcus.com"]},
+    {"name": "Axos Bank", "aliases": ["Axos"], "domains": ["axosbank.com"]}
+  ],
+  "organic_data": "data/chime_organic.json",
+  "exec_summary": null,
+  "recommendations": [],
+  "exclude_sources": []
+}
