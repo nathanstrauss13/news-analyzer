@@ -1101,8 +1101,9 @@ def build(cfg, branded, organic, out_path):
             '<div class="gh">Prominence</div>'
             '<h2>Present is one thing, first is another</h2>'
             '<div class="gsub">AI answers are read top-down and often summarized further, so the first '
-            'brand named carries outsized weight. For each answer we find which measured name appears '
-            'first. Directional, like everything in this sample.</div>'
+            'brand named carries outsized weight. Definition: for each answer, the measured name (the '
+            'brand or a configured competitor) whose first word-boundary mention appears earliest in '
+            'the answer text is counted as named first. Directional, like everything in this sample.</div>'
             '<div class="cards" style="grid-template-columns:repeat(2,1fr);max-width:640px">'
             f'<div class="card"><div class="stat-n gold">{first_share}</div>'
             f'<div class="stat-l">answers naming {esc(brand)} put it ahead of every measured '
@@ -1201,6 +1202,10 @@ def build(cfg, branded, organic, out_path):
     per assistant; every citation URL is captured, redirect-resolved where applicable, deduplicated
     and classified. Brand and competitor counts use word-boundary matching over the full response text
     and can be reproduced from the appendix above.</p>
+    <p style="margin-top:10px"><b>Per-assistant differences:</b> the assistants retrieve differently
+    by design; some build answers on many citations, others on few. Citation volume is a property of
+    each model\'s retrieval behavior, not a verdict on the brand\'s visibility, which is why presence
+    and prominence are measured per answer rather than by citation count.</p>
     <p style="margin-top:10px"><b>Reading this honestly:</b> this is a small, directional sample
     designed to map the terrain, not a census. Answers vary run to run; the patterns worth acting on
     are the ones that persist across assistants and questions, which a fuller audit confirms.</p>
@@ -1363,6 +1368,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--out", default=None, help="output dir (default: alongside config)")
+    ap.add_argument("--print-slim", action="store_true",
+                    help="also emit <slug>_dashboard_print.html with appendix responses "
+                         "clamped (mailable PDF weight; full receipts stay in the "
+                         "interactive HTML)")
     args = ap.parse_args()
 
     with open(args.config) as f:
@@ -1382,6 +1391,16 @@ def main():
     path = build(cfg, branded, organic, out)
     n = (branded["n"] if branded else 0) + (organic["n"] if organic else 0)
     print(f"built {path}  ({n} answers analyzed)")
+    if args.print_slim:
+        page = open(path).read()
+        slim_css = ("<style>@media print{.qresp .rt{max-height:150px;overflow:hidden}"
+                    ".qbody::after{content:'Full verbatim responses live in the interactive "
+                    "version of this dashboard.';display:block;font-size:11px;"
+                    "color:#6b7280;margin-top:8px}}</style></head>")
+        slim = page.replace("</head>", slim_css, 1)
+        spath = path.replace("_dashboard.html", "_dashboard_print.html")
+        open(spath, "w").write(slim)
+        print(f"built {spath}  (print-slim variant)")
 
 
 if __name__ == "__main__":
