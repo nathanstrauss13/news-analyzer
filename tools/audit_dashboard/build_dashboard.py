@@ -48,6 +48,10 @@ ASSISTANT_NAMES = {"chatgpt", "claude", "gemini", "grok", "perplexity",
                    "copilot", "bard", "openai", "anthropic"}
 ASSISTANT_DOMAINS = {"chatgpt.com", "openai.com", "claude.ai", "anthropic.com",
                      "gemini.google.com", "perplexity.ai", "x.ai", "grok.com"}
+# Assistant redirect/artifact HOSTS (checked pre-root-grouping: the root of
+# vertexaisearch.cloud.google.com is google.com, which would misfile these
+# as corporate citations; they are retrieval plumbing, not sources).
+ASSISTANT_HOSTS = {"vertexaisearch.cloud.google.com"}
 
 # Multi-label public suffixes we care about for registrable-root grouping.
 _SECOND_LEVEL = {"co.uk", "ac.uk", "org.uk", "gov.uk", "com.au", "net.au",
@@ -165,6 +169,8 @@ def page_kind(disp):
     if not p:
         return "homepage"
     h = host.lower()
+    if "zendesk" in h or h.startswith(("help.", "support.", "faq.")):
+        return "help center"
     if h.startswith("ir.") or "investor" in p:
         return "investor relations"
     if h.startswith(("news.", "press.")) or re.search(r"newsroom|/news(?:/|$)|/press|/media(?:/|$)", p):
@@ -238,7 +244,16 @@ def analyze(rows, cfg):
     brand = cfg["brand"]
     exclude = {root_of(host_of(norm_url("https://" + d))) for d in cfg.get("exclude_sources", [])}
     corporate_roots = {root_of(host_of(norm_url("https://" + d))) for d in cfg.get("corporate_sources", [])}
-    owned_roots = {root_of(host_of(norm_url("https://" + d))) for d in cfg.get("owned_domains", [])}
+    # Owned domains: a bare registrable domain (babylist.com) matches by root;
+    # a platform-hosted subdomain (healthbabylist.zendesk.com) matches by host
+    # suffix only, so OTHER brands' zendesk help centers stay third-party.
+    owned_roots, owned_hosts = set(), set()
+    for d in cfg.get("owned_domains", []):
+        h = host_of(norm_url("https://" + d))
+        if h == root_of(h):
+            owned_roots.add(h)
+        else:
+            owned_hosts.add(h)
     comp_cfg = cfg.get("competitors", [])
     competitor_roots = set()
     for c in comp_cfg:
@@ -291,10 +306,17 @@ def analyze(rows, cfg):
     total_citations = 0
     for i, r in enumerate(rows):
         for u in r["urls"]:
-            root = root_of(host_of(u))
+            host = host_of(u)
+            if host in ASSISTANT_HOSTS:
+                continue             # retrieval plumbing, not a source
+            root = root_of(host)
             if root in exclude:      # config escape hatch for junk sources
                 continue
-            typ = classify_root(root, owned_roots, competitor_roots, corporate_roots)
+            if any(host == oh or host.endswith("." + oh) for oh in owned_hosts):
+                typ = "owned"
+                root = host          # aggregate under the brand's help-center host
+            else:
+                typ = classify_root(root, owned_roots, competitor_roots, corporate_roots)
             if typ is None:
                 continue
             total_citations += 1
@@ -323,7 +345,8 @@ def analyze(rows, cfg):
          for (u, typ), c in url_counts.items() if typ == "owned"],
         key=lambda x: (-x["count"], x["url"]))
     owned_citations = sum(p["count"] for p in owned_pages)
-    owned_answers = len(set().union(*[root_agg[r]["answers"] for r in owned_roots if r in root_agg]) if any(r in root_agg for r in owned_roots) else set())
+    _owned_answer_sets = [v["answers"] for v in root_agg.values() if v["type"] == "owned"]
+    owned_answers = len(set().union(*_owned_answer_sets)) if _owned_answer_sets else 0
     home_ct = sum(p["count"] for p in owned_pages if p["kind"] == "homepage")
 
     # opportunity: sources cited in answers where brand is absent but competitors present
@@ -636,8 +659,20 @@ def economy_bar(a):
         pct = 100 * v["count"] / tot
         segs.append(f'<span class="mix-{t}" style="width:{pct:.1f}%" title="{lbl}: {v["count"]} citations ({pct:.0f}%)"></span>')
         legend.append(f'<span><i class="mix-{t}"></i>{lbl} {pct:.0f}%</span>')
+    # Four-bucket rollup (matches the roundtable deck's owned/earned/social/
+    # reference view) so the two artifacts reconcile at a glance while the
+    # finer practitioner taxonomy above stays primary.
+    tt = a["type_totals"]
+    def _s(*keys):
+        return sum(tt.get(k, {}).get("count", 0) for k in keys)
+    ro = {"Owned": _s("owned"),
+          "Third-party earned": _s("editorial", "institutional", "corporate", "competitor"),
+          "Social &amp; community": _s("social", "community"),
+          "Reference &amp; reviews": _s("reference", "reviews")}
+    rollup = " &middot; ".join(f'{k} {round(100*v/tot)}%' for k, v in ro.items() if v)
     return (f'<div class="econrow"><div class="econbar">{"".join(segs)}</div>'
-            f'<div class="econlegend">{"".join(legend)}</div></div>')
+            f'<div class="econlegend">{"".join(legend)}</div>'
+            f'<div style="margin-top:9px;font-size:11px;color:var(--muted)">Rolled up: {rollup}</div></div>')
 
 
 _DONUT_COLORS = ["#74d0ff", "#cbab6d", "#f0876a", "#5cf08a", "#d8c6f5", "rgba(255,255,255,.22)"]
@@ -987,6 +1022,38 @@ def build(cfg, branded, organic, out_path):
     opp_items = []
     for rec in (cfg.get("recommendations") or []):
         opp_items.append(f'<div class="opp"><h4>{rec.get("title","")}</h4><p>{rec.get("body","")}</p></div>')
+    if not opp_items and not organic and branded:
+        b = branded
+        # deterministic branded-mode reads: sourcing asymmetries and absences
+        pp = b["per_platform"]
+        weakest = min(b["platforms"], key=lambda p: pp[p]["types"].get("owned", 0))
+        strongest = max(b["platforms"], key=lambda p: pp[p]["types"].get("owned", 0))
+        if pp[strongest]["types"].get("owned", 0) >= 2 * max(1, pp[weakest]["types"].get("owned", 0)):
+            opp_items.append(
+                f'<div class="opp"><h4>Uneven owned sourcing across assistants</h4>'
+                f'<p>{esc(strongest)} cites {esc(brand)}\'s own site <b>{pp[strongest]["types"].get("owned", 0)}</b> times '
+                f'in this sample while {esc(weakest)} cites it <b>{pp[weakest]["types"].get("owned", 0)}</b> times on the same '
+                f'questions. Understanding what {esc(weakest)} retrieves instead would show where owned '
+                f'content is under-surfaced.</p></div>')
+        for t, lbl, _c in TYPE_LABELS:
+            if t in ("owned", "competitor", "corporate", "social"):
+                continue
+            if not b["type_totals"].get(t):
+                opp_items.append(
+                    f'<div class="opp"><h4>No {lbl.lower().replace("&amp;", "and")} sources in the mix</h4>'
+                    f'<p>None of the {b["n"]} answers cite a {lbl.lower().replace("&amp;", "and")} source for '
+                    f'{esc(brand)}. Categories usually develop one; being present there early tends to be '
+                    f'cheaper than displacing someone later.</p></div>')
+                if len(opp_items) >= 3:
+                    break
+        eds = [s2 for s2 in b["sources"] if s2["type"] == "editorial"]
+        if len(eds) >= 2 and eds[0]["count"] >= 3 * eds[1]["count"]:
+            opp_items.append(
+                f'<div class="opp"><h4>Editorial concentration in one outlet</h4>'
+                f'<p>{esc(eds[0]["root"])} carries <b>{eds[0]["count"]}</b> citations while the next editorial '
+                f'source carries {eds[1]["count"]}. A single-outlet dependence is worth broadening before '
+                f'it becomes the whole story.</p></div>')
+        opp_items = opp_items[:3]
     if not opp_items and organic:
         o = organic
         for g in o["gap_sources"][:5]:
