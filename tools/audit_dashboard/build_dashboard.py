@@ -299,6 +299,46 @@ def analyze(rows, cfg):
     comp_counts.sort(key=lambda x: -x["count"])
     brand_per_plat = {p: d["brand"] for p, d in per_platform.items()}
 
+    # PROMINENCE: being present is one thing; being named EARLY and FIRST is
+    # the leader question. For each answer, find the first-mention offset of
+    # the brand and each competitor; whoever appears first among the measured
+    # names is "named first" for that answer.
+    def first_pos(forms, text):
+        best = None
+        for f in forms:
+            m = re.search(r"\b" + re.escape(f) + r"\b", text or "", re.I)
+            if m and (best is None or m.start() < best):
+                best = m.start()
+        return best
+    comp_forms = {c["name"]: match_forms(c["name"],
+                  next((cc.get("aliases") for cc in comp_cfg if cc["name"] == c["name"]), None),
+                  corpus) for c in comp_counts}
+    named_first = defaultdict(int)
+    brand_pos_shares = []
+    for r in rows:
+        text = r["response"]
+        entries = []
+        bp = first_pos(bforms, text)
+        if bp is not None:
+            entries.append(("__brand__", bp))
+            if len(text) > 0:
+                brand_pos_shares.append(bp / len(text))
+        for nm, forms in comp_forms.items():
+            cp = first_pos(forms, text)
+            if cp is not None:
+                entries.append((nm, cp))
+        if entries:
+            named_first[min(entries, key=lambda e: e[1])[0]] += 1
+    prominence = {
+        "brand_first": named_first.get("__brand__", 0),
+        "brand_present": brand_rows,
+        "avg_entry": (sum(brand_pos_shares) / len(brand_pos_shares)) if brand_pos_shares else None,
+        "leaderboard": sorted(
+            [{"name": brand, "count": named_first.get("__brand__", 0)}] +
+            [{"name": nm, "count": named_first.get(nm, 0)} for nm in comp_forms],
+            key=lambda x: -x["count"]),
+    }
+
     # citations: per-URL and per-root aggregation (+ per-platform counts for
     # the source-table assistant dots and the per-assistant mix bars)
     url_counts = defaultdict(int)          # display url -> citations
@@ -359,8 +399,26 @@ def analyze(rows, cfg):
         if s["answers"] >= 2 and brand_in == 0:
             gap_sources.append({**s, "brand_in": brand_in})
 
+    # PRESENCE / ABSENCE DRIVERS: which sources travel with answers that name
+    # the brand, and which dominate the answers that omit it.
+    hit_src, miss_src = defaultdict(int), defaultdict(int)
+    for i, r in enumerate(rows):
+        for u in r["urls"]:
+            host = host_of(u)
+            if host in ASSISTANT_HOSTS:
+                continue
+            root = root_of(host)
+            if root in exclude or classify_root(root, owned_roots, competitor_roots, corporate_roots) is None:
+                continue
+            (hit_src if r["brand_hit"] else miss_src)[root] += 1
+    presence_drivers = sorted(((k, v) for k, v in hit_src.items()), key=lambda kv: -kv[1])[:4]
+    absence_drivers = sorted(((k, v) for k, v in miss_src.items() if k not in owned_roots),
+                             key=lambda kv: -kv[1])[:4]
+
     return {
         "rows": rows, "n": n, "platforms": platforms, "bforms": bforms,
+        "prominence": prominence,
+        "presence_drivers": presence_drivers, "absence_drivers": absence_drivers,
         "brand_per_platform": brand_per_plat,
         "brand_rows": brand_rows, "per_platform": per_platform,
         "competitors": comp_counts,
@@ -697,10 +755,10 @@ def owned_donut(a, brand):
     rest = pages[5:]
     items = [{"label": p["url"], "count": p["count"], "kind": p["kind"],
               "href": "https://" + p["url"]} for p in top]
-    if rest:
-        items.append({"label": f"{len(rest)} more pages", "count": sum(p["count"] for p in rest),
-                      "kind": "", "href": None})
+    # geometry over the top-5 sum (full ring, no filler slice); legend
+    # percentages over ALL owned citations so shares stay honest
     total = sum(i["count"] for i in items) or 1
+    owned_total = a["owned_citations"] or 1
     import math
     cx = cy = 110
     r_out, r_in = 104, 64
@@ -729,7 +787,7 @@ def owned_donut(a, brand):
         kind = f'<span class="dk">{esc(it["kind"])}</span>' if it["kind"] else ""
         legend.append(f'<li data-di="{idx}"><span class="sw" style="background:{color}"></span>'
                       f'<span style="min-width:0">{name}{kind}</span>'
-                      f'<span class="dv">{it["count"]}&times; &middot; {round(100*it["count"]/total)}%</span></li>')
+                      f'<span class="dv">{it["count"]}&times; &middot; {round(100*it["count"]/owned_total)}% of owned</span></li>')
         ang += sweep
     svg = (f'<svg class="donut" viewBox="0 0 220 220" role="img" '
            f'aria-label="Top {esc(brand)} pages AI cites">{"".join(paths)}'
@@ -737,7 +795,9 @@ def owned_donut(a, brand):
            f'font-weight="700" font-size="30">{a["owned_citations"]}</text>'
            f'<text x="110" y="126" text-anchor="middle" fill="#9aa1ad" font-family="Inter,sans-serif" '
            f'font-size="10.5">owned citations</text></svg>')
-    return f'<div class="donutwrap">{svg}<ul class="dlegend">{"".join(legend)}</ul></div>'
+    cap = (f'<li style="border-bottom:none;color:var(--muted);font-size:11px">Top 5 pages shown'
+           + (f'; {len(rest)} more in the table below' if rest else '') + '</li>')
+    return f'<div class="donutwrap">{svg}<ul class="dlegend">{"".join(legend)}{cap}</ul></div>'
 
 
 def sources_table(a, table_id, limit=18):
@@ -913,6 +973,24 @@ def build(cfg, branded, organic, out_path):
                 f'which is the expected baseline for branded questions. The informative read is the sourcing: '
                 f'{brand}\'s own site accounts for {b["owned_citations"]} of the citations behind those answers '
                 f'({share}%){ext_note}. Who AI trusts to tell the story matters more than whether it answers.')
+            # sourcing contributors: assistant asymmetry + owned depth
+            pp = b["per_platform"]
+            hi = max(b["platforms"], key=lambda p: pp[p]["citations"])
+            lo = min(b["platforms"], key=lambda p: pp[p]["citations"])
+            deep = b["owned_citations"] - b["owned_home_citations"]
+            depth_note = (f'{deep} of the {b["owned_citations"]} owned citations pull pages deeper than the '
+                          f'homepage, so the site\'s publishing is carrying the story'
+                          if b["owned_citations"] and deep >= b["owned_home_citations"] else
+                          f'{b["owned_home_citations"]} of the {b["owned_citations"]} owned citations point at the '
+                          f'homepage, so deeper citable pages are the clearest owned opening')
+            if pp[hi]["citations"] >= 2 * max(1, pp[lo]["citations"]):
+                exec_ps.append(
+                    f'Two patterns shape that sourcing. The assistants differ sharply in how much they retrieve: '
+                    f'{hi} builds its answers on {pp[hi]["citations"]} citations while {lo} uses '
+                    f'{pp[lo]["citations"]} on the same questions, so the brand\'s citable footprint matters most '
+                    f'where retrieval is heaviest. And {depth_note}.')
+            else:
+                exec_ps.append(f'On the owned side, {depth_note}.')
         if organic:
             o = organic
             top = o["competitors"][0] if o["competitors"] else None
@@ -930,6 +1008,22 @@ def build(cfg, branded, organic, out_path):
                     f'while {leader} and other established names carry most of the conversation. '
                     f'This is a common shape for a specialized company in a category with large incumbents, '
                     f'and it maps where discovery can grow.')
+            # contributors: which sources travel with presence vs absence
+            pd, ad = o.get("presence_drivers") or [], o.get("absence_drivers") or []
+            drv = []
+            if pd:
+                drv.append('presence travels with ' + ' and '.join(f'{r}' for r, _c in pd[:2])
+                           + f' ({pd[0][1]}'
+                           + (f' and {pd[1][1]}' if len(pd) > 1 else '')
+                           + f' citations in the answers that name {brand})')
+            if ad:
+                drv.append('the answers that omit it lean on ' + ' and '.join(f'{r}' for r, _c in ad[:2]))
+            pr = o.get("prominence") or {}
+            if pr.get("brand_present"):
+                drv.append(f'where {brand} does appear, it is the first name mentioned in '
+                           f'{pr.get("brand_first", 0)} of those {pr["brand_present"]} answers')
+            if drv:
+                exec_ps.append(('Behind the topline: ' + '; '.join(drv) + '.').replace('  ', ' '))
         if both:
             exec_ps.append(
                 'Read together, the two runs separate destination from discovery: AI already tells the brand\'s story '
@@ -988,6 +1082,37 @@ def build(cfg, branded, organic, out_path):
   {bar_rows(comp_items, you_name=brand, denom=o["n"])}
 </section>''')
 
+    # prominence (organic): present is one thing, named first is another
+    if organic and (organic.get("prominence") or {}).get("leaderboard"):
+        o = organic
+        pr = o["prominence"]
+        lead_items = [{"name": x["name"], "count": x["count"]}
+                      for x in pr["leaderboard"][:8] if x["count"] > 0]
+        entry = pr.get("avg_entry")
+        entry_card = ""
+        if entry is not None:
+            entry_card = (f'<div class="card"><div class="stat-n cyan">top {max(1, round(entry * 100))}%</div>'
+                          f'<div class="stat-l">average entry point of the first {esc(brand)} mention '
+                          f'within the answer text, when it appears</div></div>')
+        first_share = (f'{pr["brand_first"]} of {pr["brand_present"]}'
+                       if pr.get("brand_present") else "0")
+        prom_html = (
+            '<section id="prominence">'
+            '<div class="gh">Prominence</div>'
+            '<h2>Present is one thing, first is another</h2>'
+            '<div class="gsub">AI answers are read top-down and often summarized further, so the first '
+            'brand named carries outsized weight. For each answer we find which measured name appears '
+            'first. Directional, like everything in this sample.</div>'
+            '<div class="cards" style="grid-template-columns:repeat(2,1fr);max-width:640px">'
+            f'<div class="card"><div class="stat-n gold">{first_share}</div>'
+            f'<div class="stat-l">answers naming {esc(brand)} put it ahead of every measured '
+            'competitor</div></div>'
+            f'{entry_card}</div>'
+            f'<h2 style="font-size:19px;margin-top:26px">Named first, across all {o["n"]} answers</h2>'
+            f'{bar_rows(lead_items, you_name=brand, denom=o["n"])}'
+            '</section>')
+        add("prominence", "Prominence", prom_html)
+
     # branded per-platform + owned pages
     if branded:
         b = branded
@@ -1034,62 +1159,6 @@ def build(cfg, branded, organic, out_path):
   publications, references and platforms that shape what AI says here, which makes them
   the working map for content, comms and partnerships.</div>
   {"".join(src_blocks)}
-</section>''')
-
-    # opportunities
-    opp_items = []
-    for rec in (cfg.get("recommendations") or []):
-        opp_items.append(f'<div class="opp"><h4>{rec.get("title","")}</h4><p>{rec.get("body","")}</p></div>')
-    if not opp_items and not organic and branded:
-        b = branded
-        # deterministic branded-mode reads: sourcing asymmetries and absences
-        pp = b["per_platform"]
-        weakest = min(b["platforms"], key=lambda p: pp[p]["types"].get("owned", 0))
-        strongest = max(b["platforms"], key=lambda p: pp[p]["types"].get("owned", 0))
-        if pp[strongest]["types"].get("owned", 0) >= 2 * max(1, pp[weakest]["types"].get("owned", 0)):
-            opp_items.append(
-                f'<div class="opp"><h4>Uneven owned sourcing across assistants</h4>'
-                f'<p>{esc(strongest)} cites {esc(brand)}\'s own site <b>{pp[strongest]["types"].get("owned", 0)}</b> times '
-                f'in this sample while {esc(weakest)} cites it <b>{pp[weakest]["types"].get("owned", 0)}</b> times on the same '
-                f'questions. Understanding what {esc(weakest)} retrieves instead would show where owned '
-                f'content is under-surfaced.</p></div>')
-        for t, lbl, _c in TYPE_LABELS:
-            if t in ("owned", "competitor", "corporate", "social"):
-                continue
-            if not b["type_totals"].get(t):
-                opp_items.append(
-                    f'<div class="opp"><h4>No {lbl.lower().replace("&amp;", "and")} sources in the mix</h4>'
-                    f'<p>None of the {b["n"]} answers cite a {lbl.lower().replace("&amp;", "and")} source for '
-                    f'{esc(brand)}. Categories usually develop one; being present there early tends to be '
-                    f'cheaper than displacing someone later.</p></div>')
-                if len(opp_items) >= 3:
-                    break
-        eds = [s2 for s2 in b["sources"] if s2["type"] == "editorial"]
-        if len(eds) >= 2 and eds[0]["count"] >= 3 * eds[1]["count"]:
-            opp_items.append(
-                f'<div class="opp"><h4>Editorial concentration in one outlet</h4>'
-                f'<p>{esc(eds[0]["root"])} carries <b>{eds[0]["count"]}</b> citations while the next editorial '
-                f'source carries {eds[1]["count"]}. A single-outlet dependence is worth broadening before '
-                f'it becomes the whole story.</p></div>')
-        opp_items = opp_items[:3]
-    if not opp_items and organic:
-        o = organic
-        for g in o["gap_sources"][:5]:
-            lbl, _cls = TYPE_INDEX[g["type"]]
-            kind = lbl.lower().replace("&amp;", "and")
-            article = "An" if kind[0] in "aeiou" else "A"
-            opp_items.append(
-                f'<div class="opp"><h4>{esc(g["root"])}</h4>'
-                f'<p>Cited in <b>{g["answers"]} of {o["n"]}</b> category answers, none of which mention '
-                f'{esc(brand)}. {article} {kind} source already shaping this conversation, '
-                f'and a natural place to earn presence.</p></div>')
-    add("opportunities", "Opportunities", f'''
-<section id="opportunities">
-  <div class="gh">Where to act</div>
-  <h2>Openings this sample suggests</h2>
-  <div class="gsub">Directional, drawn from where competitors are cited and the brand is not yet.
-  A fuller audit ranks these by effort and expected lift.</div>
-  {"".join(opp_items) or '<div class="gsub">(curated recommendations pending)</div>'}
 </section>''')
 
     # query appendices
@@ -1222,25 +1291,6 @@ document.querySelectorAll('.donutwrap').forEach(function(w){
     var r = s.getBoundingClientRect();
     if (r.top > window.innerHeight) s.classList.add('pre');
     io.observe(s);
-  });
-  // count-up on hero stats
-  document.querySelectorAll('.stat-n').forEach(function(el){
-    var m = (el.textContent || '').match(/^(\\d+)(.*)$/);
-    if (!m) return;
-    var target = parseInt(m[1], 10), suffix = m[2], t0 = null;
-    if (target < 2) return;
-    function tick(ts){
-      if (!t0) t0 = ts;
-      var f = Math.min((ts - t0) / 900, 1);
-      el.textContent = Math.round(target * (1 - Math.pow(1 - f, 3))) + suffix;
-      if (f < 1) requestAnimationFrame(tick);
-    }
-    var seen = new IntersectionObserver(function(es){
-      es.forEach(function(e){
-        if (e.isIntersecting){ requestAnimationFrame(tick); seen.unobserve(el); }
-      });
-    }, {threshold: 0.4});
-    seen.observe(el);
   });
   // scrollspy: highlight the nav link for the section in view
   var links = {};
