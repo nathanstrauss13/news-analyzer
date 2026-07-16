@@ -1,0 +1,102 @@
+{
+  "brand": "Phasecraft",
+  "slug": "phasecraft",
+  "prepared_for": "Phasecraft",
+  "title": "Phasecraft: how AI sees you",
+  "category": "Quantum computing software",
+  "date": "July 2026",
+  "aliases": [
+    "Phasecraft"
+  ],
+  "owned_domains": [
+    "phasecraft.io"
+  ],
+  "competitors": [
+    {
+      "name": "IBM",
+      "aliases": [
+        "IBM Quantum"
+      ],
+      "domains": [
+        "ibm.com"
+      ]
+    },
+    {
+      "name": "Google Quantum AI",
+      "aliases": [
+        "Google"
+      ],
+      "domains": [
+        "quantumai.google",
+        "google.com"
+      ]
+    },
+    {
+      "name": "Quantinuum",
+      "domains": [
+        "quantinuum.com"
+      ]
+    },
+    {
+      "name": "Microsoft",
+      "aliases": [
+        "Azure Quantum"
+      ],
+      "domains": [
+        "microsoft.com",
+        "azure.com"
+      ]
+    },
+    {
+      "name": "IonQ",
+      "domains": [
+        "ionq.com"
+      ]
+    },
+    {
+      "name": "D-Wave",
+      "aliases": [
+        "DWave",
+        "D-Wave Systems"
+      ],
+      "domains": [
+        "dwavesys.com",
+        "dwavequantum.com"
+      ]
+    },
+    {
+      "name": "Rigetti",
+      "domains": [
+        "rigetti.com"
+      ]
+    },
+    {
+      "name": "Classiq",
+      "domains": [
+        "classiq.io"
+      ]
+    },
+    {
+      "name": "Algorithmiq",
+      "domains": [
+        "algorithmiq.fi"
+      ]
+    },
+    {
+      "name": "Q-CTRL",
+      "aliases": [
+        "QCTRL"
+      ],
+      "domains": [
+        "q-ctrl.com"
+      ]
+    }
+  ],
+  "branded_data": "data/phasecraft_branded.json",
+  "organic_data": "data/phasecraft_organic.json",
+  "exec_summary": null,
+  "recommendations": [],
+  "exclude_sources": [
+    "bingx.com"
+  ]
+}
