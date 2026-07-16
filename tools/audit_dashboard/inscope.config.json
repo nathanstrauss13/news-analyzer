@@ -1,0 +1,58 @@
+{
+  "brand": "Inscope",
+  "slug": "inscope",
+  "prepared_for": "Inscope",
+  "title": "Inscope: how AI sees you",
+  "category": "AI financial reporting automation",
+  "date": "July 2026",
+  "aliases": [
+    "Inscope",
+    "InScope"
+  ],
+  "owned_domains": [
+    "inscopehq.com"
+  ],
+  "competitors": [
+    {
+      "name": "Workiva",
+      "domains": [
+        "workiva.com"
+      ]
+    },
+    {
+      "name": "QuickBooks",
+      "aliases": [
+        "Intuit QuickBooks"
+      ],
+      "domains": [
+        "quickbooks.intuit.com",
+        "intuit.com"
+      ]
+    },
+    {
+      "name": "Xero",
+      "domains": [
+        "xero.com"
+      ]
+    },
+    {
+      "name": "Vena Solutions",
+      "aliases": [
+        "Vena"
+      ],
+      "domains": [
+        "venasolutions.com"
+      ]
+    },
+    {
+      "name": "OneStream",
+      "domains": [
+        "onestream.com"
+      ]
+    }
+  ],
+  "branded_data": "/Users/nathanstrauss/Desktop/Norwest/audits/inscope_resolved.json",
+  "exec_summary": null,
+  "recommendations": [],
+  "exclude_sources": []
+}

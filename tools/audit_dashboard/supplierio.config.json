@@ -1,0 +1,49 @@
+{
+  "brand": "Supplier.io",
+  "slug": "supplierio",
+  "prepared_for": "Supplier.io",
+  "title": "Supplier.io: how AI sees you",
+  "category": "Supplier diversity data and analytics",
+  "date": "July 2026",
+  "aliases": [
+    "Supplier.io",
+    "SupplierIO",
+    "Supplier io"
+  ],
+  "owned_domains": [
+    "supplier.io"
+  ],
+  "competitors": [
+    {
+      "name": "TealBook",
+      "domains": [
+        "tealbook.com"
+      ]
+    },
+    {
+      "name": "supplierGATEWAY",
+      "aliases": [
+        "SupplierGateway"
+      ],
+      "domains": [
+        "suppliergateway.com"
+      ]
+    },
+    {
+      "name": "HICX",
+      "domains": [
+        "hicx.com"
+      ]
+    },
+    {
+      "name": "Coupa",
+      "domains": [
+        "coupa.com"
+      ]
+    }
+  ],
+  "branded_data": "/Users/nathanstrauss/Desktop/Norwest/audits/supplierio_resolved.json",
+  "exec_summary": null,
+  "recommendations": [],
+  "exclude_sources": []
+}

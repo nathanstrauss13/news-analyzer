@@ -188,6 +188,8 @@ def load_rows(path):
                          "response": r.get("response") or "", "urls": [u for u in urls if u]})
     elif isinstance(d, dict) and "rows" in d:                    # raw audit kit JSON
         for r in d["rows"]:
+            if (r.get("full_response") or "").startswith("ERROR"):
+                continue                                          # failed platform call
             raw = r.get("citations_resolved") or r.get("citations") or ""
             if isinstance(raw, str):
                 urls = [norm_url(u) for u in raw.split("|")]

@@ -1,0 +1,48 @@
+{
+  "brand": "Babylist",
+  "slug": "babylist",
+  "prepared_for": "Babylist",
+  "title": "Babylist: how AI sees you",
+  "category": "Baby registry and commerce",
+  "date": "July 2026",
+  "aliases": [
+    "Babylist",
+    "BabyList"
+  ],
+  "owned_domains": [
+    "babylist.com"
+  ],
+  "competitors": [
+    {
+      "name": "Amazon",
+      "aliases": [
+        "Amazon Baby Registry"
+      ],
+      "domains": [
+        "amazon.com"
+      ]
+    },
+    {
+      "name": "Target",
+      "domains": [
+        "target.com"
+      ]
+    },
+    {
+      "name": "Walmart",
+      "domains": [
+        "walmart.com"
+      ]
+    },
+    {
+      "name": "MyRegistry",
+      "domains": [
+        "myregistry.com"
+      ]
+    }
+  ],
+  "branded_data": "/Users/nathanstrauss/Desktop/Norwest/audits/babylist_resolved.json",
+  "exec_summary": null,
+  "recommendations": [],
+  "exclude_sources": []
+}
