@@ -64,6 +64,13 @@ SOCIAL = {"linkedin.com", "x.com", "twitter.com", "youtube.com", "instagram.com"
 REFERENCE = {"wikipedia.org", "wikidata.org", "britannica.com", "crunchbase.com",
              "pitchbook.com", "wellfound.com", "zoominfo.com", "cbinsights.com",
              "tracxn.com", "dnb.com"}
+# Company/platform sites that are neither the brand nor configured competitors
+# (App Store links, payment/commerce platforms): companies, not media. Roots
+# only (apps.apple.com groups to apple.com). Extend per client via config
+# "corporate_sources". A configured competitor domain always wins over this.
+CORPORATE = {"apple.com", "google.com", "shopify.com", "stripe.com", "paypal.com",
+             "salesforce.com", "adobe.com", "oracle.com", "sap.com", "microsoft.com",
+             "amazon.com", "meta.com", "samsung.com", "intuit.com"}
 
 TYPE_LABELS = [
     ("owned",       "Owned",                  "cyan"),
@@ -74,6 +81,7 @@ TYPE_LABELS = [
     ("community",   "Community",              "comm"),
     ("social",      "Social",                 "soc"),
     ("reference",   "Reference data",         "ref"),
+    ("corporate",   "Company &amp; platform", "corp"),
 ]
 TYPE_INDEX = {k: (lbl, cls) for k, lbl, cls in TYPE_LABELS}
 
@@ -203,7 +211,7 @@ def load_rows(path):
 
 
 # ---------------------------------------------------------------- analysis
-def classify_root(root, owned_roots, competitor_roots):
+def classify_root(root, owned_roots, competitor_roots, corporate_roots=frozenset()):
     if root in ASSISTANT_DOMAINS:
         return None                       # self-reference, excluded entirely
     if root in owned_roots:
@@ -218,6 +226,8 @@ def classify_root(root, owned_roots, competitor_roots):
         return "social"
     if root in REFERENCE:
         return "reference"
+    if root in CORPORATE or root in corporate_roots:
+        return "corporate"
     if root.endswith((".edu", ".gov", ".ac.uk", ".gov.uk")) or root in {"nsf.gov", "nist.gov"}:
         return "institutional"
     return "editorial"
@@ -227,6 +237,7 @@ def analyze(rows, cfg):
     """Everything the template needs for ONE dataset (branded or organic)."""
     brand = cfg["brand"]
     exclude = {root_of(host_of(norm_url("https://" + d))) for d in cfg.get("exclude_sources", [])}
+    corporate_roots = {root_of(host_of(norm_url("https://" + d))) for d in cfg.get("corporate_sources", [])}
     owned_roots = {root_of(host_of(norm_url("https://" + d))) for d in cfg.get("owned_domains", [])}
     comp_cfg = cfg.get("competitors", [])
     competitor_roots = set()
@@ -274,7 +285,7 @@ def analyze(rows, cfg):
             root = root_of(host_of(u))
             if root in exclude:      # config escape hatch for junk sources
                 continue
-            typ = classify_root(root, owned_roots, competitor_roots)
+            typ = classify_root(root, owned_roots, competitor_roots, corporate_roots)
             if typ is None:
                 continue
             total_citations += 1
@@ -307,7 +318,7 @@ def analyze(rows, cfg):
     # opportunity: sources cited in answers where brand is absent but competitors present
     gap_sources = []
     for s in sources:
-        if s["type"] in ("owned",):
+        if s["type"] in ("owned", "corporate"):    # can't pitch an app store
             continue
         answers = root_agg[s["root"]]["answers"]
         brand_in = sum(1 for i in answers if rows[i]["brand_hit"])
@@ -414,6 +425,28 @@ tr:hover td{background:rgba(255,255,255,.015)}
 .typechip.comm{color:#a8e6c1;border-color:rgba(140,230,170,.25);background:rgba(140,230,170,.05)}
 .typechip.soc{color:#d8c6f5;border-color:rgba(200,170,245,.28);background:rgba(200,170,245,.05)}
 .typechip.ref{color:#9fd6d0;border-color:rgba(140,214,205,.28);background:rgba(140,214,205,.05)}
+.typechip.corp{color:#c9cfdb;border-color:rgba(180,190,210,.28);background:rgba(180,190,210,.05)}
+.donutwrap{display:grid;grid-template-columns:240px 1fr;gap:26px;align-items:center;
+ background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px 26px;margin:6px 0 16px}
+@media(max-width:640px){.donutwrap{grid-template-columns:1fr;justify-items:center}}
+.donut{width:220px;height:220px}
+.donut a path{transition:opacity .2s}
+.donut a:hover path{opacity:.75}
+.dlegend{list-style:none;width:100%}
+.dlegend li{display:grid;grid-template-columns:12px 1fr auto;gap:10px;align-items:center;padding:7px 0;
+ border-bottom:1px solid rgba(255,255,255,.05);font-size:13px}
+.dlegend li:last-child{border-bottom:none}
+.dlegend .sw{width:12px;height:12px;border-radius:3px}
+.dlegend a{color:var(--ink);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dlegend a:hover{color:var(--cyan);text-decoration:underline}
+.dlegend .dv{font-family:'Jost',sans-serif;font-weight:600;color:var(--ink);white-space:nowrap}
+.dlegend .dk{color:var(--muted);font-size:11px;margin-left:6px}
+.srcfilters{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 12px}
+.sfbtn{font-family:'Jost',sans-serif;font-size:11px;letter-spacing:.07em;text-transform:uppercase;
+ font-weight:600;color:var(--ink2);background:rgba(255,255,255,.03);border:1px solid var(--line);
+ border-radius:999px;padding:6px 13px;cursor:pointer}
+.sfbtn:hover{color:var(--ink);border-color:rgba(203,171,109,.4)}
+.sfbtn.on{color:#2a1008;background:var(--cta);border-color:transparent}
 .kindtag{display:inline-block;font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;
  color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:2.5px 9px;background:rgba(255,255,255,.03)}
 .kindtag.home{color:var(--gold);border-color:rgba(203,171,109,.35);background:rgba(203,171,109,.07)}
@@ -495,27 +528,97 @@ def platform_cards(a, branded):
         d = a["per_platform"][p]
         rate = d["brand"] / d["total"] if d["total"] else 0
         cls = " full" if rate >= 0.999 else ""
-        sub = f'{d["citations"]} citations' if branded else "of its answers name the brand"
+        if branded:
+            # Presence on branded prompts is a baseline, not an accomplishment:
+            # the informative per-assistant number is how much sourcing it does.
+            big, sub = str(d["citations"]), f'citations &middot; {d["brand"]}/{d["total"]} answers engaged'
+            cls = ""
+        else:
+            big, sub = f'{d["brand"]}/{d["total"]}', "of its answers name the brand"
         out.append(f'<div class="plat"><div class="pn">{esc(p)}</div>'
-                   f'<div class="pv{cls}">{d["brand"]}/{d["total"]}</div>'
+                   f'<div class="pv{cls}">{big}</div>'
                    f'<div class="pl">{sub}</div></div>')
     return f'<div class="plats">{"".join(out)}</div>'
 
 
-def sources_table(a, limit=18):
+_DONUT_COLORS = ["#74d0ff", "#cbab6d", "#f0876a", "#5cf08a", "#d8c6f5", "rgba(255,255,255,.22)"]
+
+
+def owned_donut(a, brand):
+    """Clickable SVG donut of the top 5 owned pages (+ aggregated remainder).
+    Slices and legend entries link to the live page."""
+    pages = a["owned_pages"]
+    if not pages:
+        return ""
+    top = pages[:5]
+    rest = pages[5:]
+    items = [{"label": p["url"], "count": p["count"], "kind": p["kind"],
+              "href": "https://" + p["url"]} for p in top]
+    if rest:
+        items.append({"label": f"{len(rest)} more pages", "count": sum(p["count"] for p in rest),
+                      "kind": "", "href": None})
+    total = sum(i["count"] for i in items) or 1
+    import math
+    cx = cy = 110
+    r_out, r_in = 104, 64
+    ang = -90.0
+    paths, legend = [], []
+    for idx, it in enumerate(items):
+        frac = it["count"] / total
+        sweep = frac * 360.0
+        a0, a1 = math.radians(ang), math.radians(ang + max(sweep - 0.8, 0.4))
+        large = 1 if sweep > 180 else 0
+        x0o, y0o = cx + r_out * math.cos(a0), cy + r_out * math.sin(a0)
+        x1o, y1o = cx + r_out * math.cos(a1), cy + r_out * math.sin(a1)
+        x0i, y0i = cx + r_in * math.cos(a1), cy + r_in * math.sin(a1)
+        x1i, y1i = cx + r_in * math.cos(a0), cy + r_in * math.sin(a0)
+        d = (f"M{x0o:.1f},{y0o:.1f} A{r_out},{r_out} 0 {large} 1 {x1o:.1f},{y1o:.1f} "
+             f"L{x0i:.1f},{y0i:.1f} A{r_in},{r_in} 0 {large} 0 {x1i:.1f},{y1i:.1f} Z")
+        color = _DONUT_COLORS[idx % len(_DONUT_COLORS)]
+        path = f'<path d="{d}" fill="{color}"><title>{esc(it["label"])}: {it["count"]} citations</title></path>'
+        if it["href"]:
+            path = f'<a href="{esc(it["href"])}" target="_blank" rel="noopener">{path}</a>'
+        paths.append(path)
+        short = it["label"] if len(it["label"]) <= 52 else it["label"][:49] + "..."
+        name = (f'<a href="{esc(it["href"])}" target="_blank" rel="noopener">{esc(short)}</a>'
+                if it["href"] else f'<span style="color:var(--muted)">{esc(short)}</span>')
+        kind = f'<span class="dk">{esc(it["kind"])}</span>' if it["kind"] else ""
+        legend.append(f'<li><span class="sw" style="background:{color}"></span>'
+                      f'<span style="min-width:0">{name}{kind}</span>'
+                      f'<span class="dv">{it["count"]}&times; &middot; {round(100*it["count"]/total)}%</span></li>')
+        ang += sweep
+    svg = (f'<svg class="donut" viewBox="0 0 220 220" role="img" '
+           f'aria-label="Top {esc(brand)} pages AI cites">{"".join(paths)}'
+           f'<text x="110" y="104" text-anchor="middle" fill="#fff" font-family="Jost,sans-serif" '
+           f'font-weight="700" font-size="30">{a["owned_citations"]}</text>'
+           f'<text x="110" y="126" text-anchor="middle" fill="#9aa1ad" font-family="Inter,sans-serif" '
+           f'font-size="10.5">owned citations</text></svg>')
+    return f'<div class="donutwrap">{svg}<ul class="dlegend">{"".join(legend)}</ul></div>'
+
+
+def sources_table(a, table_id, limit=18):
+    """Classified source table with per-type filter chips (client-side)."""
+    types_present = []
+    for k, lbl, cls in TYPE_LABELS:
+        if any(s["type"] == k for s in a["sources"]):
+            types_present.append((k, lbl))
+    chips = [f'<button class="sfbtn on" data-t="all" onclick="srcFilter(\'{table_id}\',this)">All</button>']
+    chips += [f'<button class="sfbtn" data-t="{k}" onclick="srcFilter(\'{table_id}\',this)">{lbl}</button>'
+              for k, lbl in types_present]
     rows = []
     for s in a["sources"][:limit]:
         lbl, cls = TYPE_INDEX[s["type"]]
         dots = "".join(f'<span class="pdot{" on" if p in s["platforms"] else ""}" title="{esc(p)}"></span>'
                        for p in PLATFORM_ORDER)
-        rows.append(f'<tr><td class="src">{esc(s["root"])}</td>'
+        rows.append(f'<tr data-t="{s["type"]}"><td class="src">{esc(s["root"])}</td>'
                     f'<td><span class="typechip {cls}">{lbl}</span></td>'
                     f'<td class="num">{s["count"]}</td>'
                     f'<td class="num">{s["answers"]}/{a["n"]}</td>'
                     f'<td class="pdots">{dots}</td></tr>')
-    return ('<table><thead><tr><th>Source</th><th>Type</th><th>Citations</th>'
+    return (f'<div id="{table_id}"><div class="srcfilters">{"".join(chips)}</div>'
+            '<table><thead><tr><th>Source</th><th>Type</th><th>Citations</th>'
             '<th>Answers citing</th><th>Assistants</th></tr></thead><tbody>'
-            + "".join(rows) + "</tbody></table>")
+            + "".join(rows) + "</tbody></table></div>")
 
 
 def owned_pages_block(a, brand):
@@ -590,14 +693,17 @@ def build(cfg, branded, organic, out_path):
     both = branded and organic
     primary = branded or organic
 
-    # ---- hero stat cards (mode-aware)
+    # ---- hero stat cards (mode-aware). Branded presence is a BASELINE, not an
+    # accomplishment (branded prompts trivially engage the brand), so branded
+    # cards lead with sourcing: owned citations + owned share of all citations.
     cards = []
     if branded:
         b = branded
-        cards.append(('cyan', f'{b["brand_rows"]}/{b["n"]}',
-                      'branded answers engage with the brand substantively'))
+        share = round(100 * b["owned_citations"] / b["total_citations"]) if b["total_citations"] else 0
         cards.append(('gold', str(b["owned_citations"]),
                       f'citations of {esc(brand)}\'s own site across branded answers'))
+        cards.append(('cyan', f'{share}%',
+                      'of all branded-answer citations come from the brand\'s own site'))
     if organic:
         o = organic
         pct = round(100 * o["brand_rows"] / o["n"]) if o["n"] else 0
@@ -609,6 +715,8 @@ def build(cfg, branded, organic, out_path):
                           f'the most-cited name ({esc(top["name"])}) appears in this share of category answers'))
     if len(cards) < 4 and primary:
         cards.append(('', str(primary["total_citations"]), 'total verified citations analyzed'))
+    if len(cards) < 4 and primary:
+        cards.append(('', str(len(primary["sources"])), 'distinct sources cited across the sample'))
     cards = cards[:4]
     cards_html = "".join(
         f'<div class="card"><div class="stat-n {c}">{v}</div><div class="stat-l">{l}</div></div>'
@@ -620,11 +728,14 @@ def build(cfg, branded, organic, out_path):
         exec_ps = []
         if branded:
             b = branded
+            share = round(100 * b["owned_citations"] / b["total_citations"]) if b["total_citations"] else 0
+            top_ext = next((s for s in b["sources"] if s["type"] != "owned"), None)
+            ext_note = (f', with {top_ext["root"]} the most-cited outside source' if top_ext else '')
             exec_ps.append(
-                f'When people ask AI assistants about {brand} directly, the answers are substantive: '
-                f'{b["brand_rows"]} of {b["n"]} branded answers in this sample engage with the brand, '
-                f'and {brand}\'s own site earns {b["owned_citations"]} citations, '
-                f'making it {"the top source AI leans on" if b["sources"] and b["sources"][0]["type"] == "owned" else "a primary source"} for the brand story.')
+                f'Asked about {brand} by name, all {b["brand_rows"]} of {b["n"]} answers engage with the brand, '
+                f'which is the expected baseline for branded questions. The informative read is the sourcing: '
+                f'{brand}\'s own site accounts for {b["owned_citations"]} of the citations behind those answers '
+                f'({share}%){ext_note}. Who AI trusts to tell the story matters more than whether it answers.')
         if organic:
             o = organic
             leader = o["competitors"][0]["name"] if o["competitors"] else "the category leader"
@@ -697,12 +808,14 @@ def build(cfg, branded, organic, out_path):
         add("branded", "Branded read", f'''
 <section id="branded">
   <div class="gh">Branded questions</div>
-  <h2>What happens when people ask about {esc(brand)} by name</h2>
+  <h2>Who AI trusts to tell the {esc(brand)} story</h2>
   <div class="gsub">Ten branded prompts (what is it, is it legit, how does it compare, who uses it,
-  what does it cost) run on all five assistants. Engagement per assistant, and the specific
+  what does it cost) run on all five assistants. Every assistant engages, which is the baseline
+  for branded questions; the read that matters is how much sourcing each does and which
   {esc(brand)} pages AI pulls from.</div>
   {platform_cards(b, branded=True)}
   <h2 style="font-size:19px;margin-top:34px">The {esc(brand)} pages AI actually cites</h2>
+  {owned_donut(b, brand)}
   {owned_pages_block(b, brand)}
 </section>''')
 
@@ -720,12 +833,13 @@ def build(cfg, branded, organic, out_path):
 
     # source intelligence (use primary dataset; both if present -> two tables)
     src_blocks = []
-    for label, ds in (("Branded questions", branded), ("Unbranded category questions", organic)):
+    for label, ds, tid in (("Branded questions", branded, "srcB"),
+                           ("Unbranded category questions", organic, "srcO")):
         if not ds:
             continue
         chip = '<span class="modechip br">by name</span>' if label.startswith("Branded") else '<span class="modechip org">by category</span>'
         src_blocks.append(f'<h2 style="font-size:19px;margin-top:{"34" if src_blocks else "0"}px">{label} {chip}</h2>'
-                          + sources_table(ds))
+                          + sources_table(ds, tid))
     add("sources", "Sources", f'''
 <section id="sources">
   <div class="gh">Source intelligence</div>
@@ -811,6 +925,14 @@ def build(cfg, branded, organic, out_path):
 function toggleAll(prefix, open){
   document.querySelectorAll('.qrow[id^="'+prefix.charAt(0).toLowerCase()+'q"]').forEach(function(r){
     r.classList.toggle('open', open);
+  });
+}
+function srcFilter(tableId, btn){
+  var box = document.getElementById(tableId);
+  var t = btn.getAttribute('data-t');
+  box.querySelectorAll('.sfbtn').forEach(function(b){ b.classList.toggle('on', b === btn); });
+  box.querySelectorAll('tbody tr').forEach(function(r){
+    r.style.display = (t === 'all' || r.getAttribute('data-t') === t) ? '' : 'none';
   });
 }
 """
