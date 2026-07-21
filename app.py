@@ -9874,11 +9874,10 @@ def _log_page_visit(kind, slug=None):
                 LinkClick.token.in_(tokens), LinkClick.is_bot.is_(False),
                 LinkClick.ip == ip,
                 LinkClick.clicked_at >= datetime.utcnow() - timedelta(minutes=3)).count())
-            # Same datacenter-IP filter the /r/ click path uses — LinkedIn/
-            # corporate URL scanners fetch with browser UAs from hosting IPs
-            # and would otherwise email as "new visitors". Checked here (not at
-            # log time) so the ip-api lookup only runs on would-notify events.
-            if not recent_click and not _ip_is_hosting(ip):
+            # UA bots are already excluded at log time; corporate-proxy IPs
+            # are REAL visitors (see the 2026-07-21 Verifone/GE evidence), so
+            # no datacenter-IP gate here.
+            if not recent_click:
                 from sqlalchemy import distinct as _distinct
                 visitor_no = (db.session.query(db.func.count(_distinct(PageVisit.ip)))
                               .filter(PageVisit.kind == 'report', PageVisit.slug == slug)
@@ -9980,6 +9979,39 @@ def healthz():
         "max_concurrent": MAX_CONCURRENT_AUDITS,
         "slots_free": max(0, MAX_CONCURRENT_AUDITS - _audit_inflight),
     }), 200
+
+
+@app.route('/admin/reclassify-clicks', methods=['POST'])
+def admin_reclassify_clicks():
+    """Operator, one-shot + idempotent: re-run the CURRENT bot classification
+    (UA-based + operator IPs) over LinkClick rows since the Cloudflare-IP fix
+    (2026-07-08, when real client IPs began being recorded). Heals the
+    corporate-proxy false positives (Verifone/GE opens) without touching the
+    conservative pre-fix history. Advances Outreach status for tokens that
+    gain their first human open. Sends NO retroactive emails."""
+    if not _operator_ok():
+        abort(404)
+    from datetime import datetime as _dt
+    cutoff = _dt(2026, 7, 8)
+    flipped, tokens_gaining = 0, set()
+    for c in LinkClick.query.filter(LinkClick.clicked_at >= cutoff).all():
+        should = _is_link_preview_bot(c.user_agent or '', 'GET') or ((c.ip or '') in _OPERATOR_CLICK_IPS)
+        if bool(c.is_bot) != should:
+            c.is_bot = should
+            flipped += 1
+            if not should:
+                tokens_gaining.add(c.token)
+    db.session.commit()
+    advanced = []
+    for tok in tokens_gaining:
+        o = Outreach.query.filter_by(link_token=tok).first()
+        if o and o.status in ('queued', 'sent'):
+            o.status = 'opened'
+            o.last_activity_at = datetime.utcnow()
+            advanced.append(o.prospect_name)
+    db.session.commit()
+    return jsonify({"flipped": flipped, "tokens_gaining_humans": sorted(tokens_gaining),
+                    "outreach_advanced": advanced})
 
 
 @app.route('/admin/clicks/<token>')
@@ -11413,6 +11445,13 @@ def _send_dashboard_visitor_email(slug, brand, ip, ua, when_et, visitor_no, repo
         print("dashboard-visitor email send failed:", e)
 
 
+# Nathan's own networks: clicks from these IPs are recorded as non-human so
+# self-checks never inflate opens or fire self-notifications. Extend without a
+# deploy via OPERATOR_CLICK_IPS (comma-separated) on Render.
+_OPERATOR_CLICK_IPS = {"74.101.199.69", "24.193.248.107"} | {
+    ip.strip() for ip in os.environ.get("OPERATOR_CLICK_IPS", "").split(",") if ip.strip()}
+
+
 @app.route('/r/<token>')
 def track_and_redirect(token):
     """Log a hit on a tracked pitch link, then 302 to the real target — a
@@ -11425,13 +11464,15 @@ def track_and_redirect(token):
     ua = request.headers.get('User-Agent', '') or ''
     ip = _client_ip()
     ref = (request.headers.get('Referer', '') or '')[:500]
-    # A hit is a preview/scan (not a human read) if it has a bot UA OR comes from
-    # a data-center IP. The IP check is what catches LinkedIn's own link-preview /
-    # safety fetchers and corporate URL scanners — they fetch with real browser
-    # UAs from hosting IPs, which is why near-instant "opens" fire in send order
-    # for every prospect. (_ip_is_hosting is cached + fails open, and relies on
-    # _client_ip having unwrapped the true visitor IP from Cloudflare.)
-    is_bot = _is_link_preview_bot(ua, request.method) or _ip_is_hosting(ip)
+    # A hit is a preview/scan (not a human read) if its UA says so (LinkedInBot,
+    # Slackbot, curl, HEAD preflights...), or if it comes from Nathan's own
+    # networks. The old datacenter-IP kill switch is GONE: live evidence
+    # (2026-07-21, Verifone/GE HealthCare) showed real prospects on corporate
+    # machines egress through cloud-hosted security proxies (hosting=true on
+    # ip-api), so the IP test was systematically hiding exactly the enterprise
+    # buyers we court, while actual LinkedIn machine fetches identify
+    # themselves honestly by UA.
+    is_bot = _is_link_preview_bot(ua, request.method) or (ip in _OPERATOR_CLICK_IPS)
 
     # Notify on every NEW unique visitor: a human open from an IP that hasn't
     # opened THIS link before (checked BEFORE inserting this row). The first
