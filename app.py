@@ -9982,6 +9982,41 @@ def healthz():
     }), 200
 
 
+@app.route('/admin/clicks/<token>')
+def admin_clicks(token):
+    """Operator: per-click detail for a tracked link, with live IP intelligence
+    (org / ISP / hosting / proxy flags) for each distinct IP. Built to diagnose
+    the corporate-proxy false-positive class: enterprise egress (Zscaler etc.)
+    shows proxy=true on ip-api, which the bot filter treated as automation,
+    hiding real prospect opens."""
+    if not _operator_ok():
+        abort(404)
+    clicks = (LinkClick.query.filter_by(token=token)
+              .order_by(LinkClick.clicked_at.asc()).all())
+    ip_info = {}
+    for c in clicks:
+        ip = c.ip or ''
+        if ip and ip not in ip_info:
+            try:
+                import urllib.request
+                url = (f"http://ip-api.com/json/{ip}?fields=status,country,city,"
+                       f"isp,org,asname,hosting,proxy,mobile")
+                with urllib.request.urlopen(url, timeout=3) as r:
+                    ip_info[ip] = json.loads(r.read().decode('utf-8', 'ignore'))
+            except Exception as e:
+                ip_info[ip] = {"error": str(e)[:80]}
+    return jsonify({
+        "token": token,
+        "clicks": [{
+            "at": c.clicked_at.isoformat() if c.clicked_at else None,
+            "ip": c.ip, "is_bot": c.is_bot,
+            "ua": (c.user_agent or '')[:160],
+            "referer": (c.referer or '')[:120],
+            "ip_intel": ip_info.get(c.ip or '', {}),
+        } for c in clicks],
+    })
+
+
 @app.route('/admin/usage')
 def admin_usage():
     """Operator: Anthropic token usage + estimated $ since process start (or the
