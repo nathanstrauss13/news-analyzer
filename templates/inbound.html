@@ -103,7 +103,9 @@
         </td>
         <td class="ref">{% if r.referrer %}<a href="{{ r.referrer }}" target="_blank" rel="noopener">{{ r.referrer|replace('https://','')|replace('http://','')|truncate(34, True, '…') }}</a>{% else %}<span class="meta">—</span>{% endif %}</td>
         <td class="geo">{{ r.geo or '—' }}</td>
-        <td class="rep">{% if r.slug %}<a href="/signal/{{ r.slug }}" target="_blank" rel="noopener">view ↗</a>{% else %}—{% endif %}</td>
+        <td class="rep">{% if r.slug %}<a href="/signal/{{ r.slug }}" target="_blank" rel="noopener">view ↗</a>{% else %}—{% endif %}
+          {% if r.est_cost_usd is not none and r.est_cost_usd %}<div class="meta" title="Estimated API cost across Anthropic + OpenAI + OpenRouter">${{ '%.2f'|format(r.est_cost_usd) }}</div>{% endif %}
+          {% if r.prompts_json %}<div class="meta" title="This run posted a custom prompt set; any restoration must reuse it (in inbound.csv custom_prompts)">custom prompts</div>{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>

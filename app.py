@@ -259,6 +259,13 @@ class InboundAudit(db.Model):
     # contact. is_operator flags biz-dev batch / operator runs so the default
     # /inbound view shows real DIY demand, not our own testing.
     status = db.Column(db.String(16), nullable=True, default='started', index=True)
+    # Custom prompt set posted with the run (JSON list). Persisted so a killed
+    # run can be RESTORED like-for-like: a request that posted custom prompts
+    # must never be relaunched with regenerated ones (Xsight lesson, 7/22).
+    prompts_json = db.Column(db.Text, nullable=True)
+    # Estimated cross-provider API cost for the run (anthropic+openai+openrouter),
+    # stamped at completion so /inbound shows cost-per-run without opening email.
+    est_cost_usd = db.Column(db.Float, nullable=True)
     email = db.Column(db.String(254), nullable=True, index=True)
     is_operator = db.Column(db.Boolean, nullable=True, default=False, index=True)
 
@@ -9984,7 +9991,8 @@ def _session_inbound_attr():
 
 
 def _capture_inbound_lead(status, problem_statement, ip, email, is_operator, attr,
-                          geo=None, slug=None, brand=None, category=None):
+                          geo=None, slug=None, brand=None, category=None,
+                          prompts_json=None, est_cost_usd=None):
     """Best-effort insert of one InboundAudit lead row. Returns the new row id (or
     None on failure). NEVER raises — a capture failure must not affect the audit.
     Used both at audit START (status='started', later flipped to completed/errored)
@@ -9996,6 +10004,7 @@ def _capture_inbound_lead(status, problem_statement, ip, email, is_operator, att
                 problem_statement=(problem_statement or "")[:2000],
                 ip=ip, geo=geo or None, email=email or None,
                 is_operator=bool(is_operator),
+                prompts_json=prompts_json, est_cost_usd=est_cost_usd,
                 utm_source=attr.get("utm_source"), utm_medium=attr.get("utm_medium"),
                 utm_campaign=attr.get("utm_campaign"), referrer=attr.get("referrer"),
             )
@@ -10364,7 +10373,8 @@ def citation_audit():
         # in the except below. Best-effort — never blocks or fails the audit.
         _inbound_id = _capture_inbound_lead(
             'started', problem_statement, ip, lead_email, _is_operator,
-            _inbound_attr, geo=_coarse_geo(ip))
+            _inbound_attr, geo=_coarse_geo(ip),
+            prompts_json=(json.dumps(prompts_override) if prompts_override else None))
         # Per-audit Anthropic usage sink — set BEFORE run_citation_audit so its
         # main-thread calls AND its panel pool (via copy_context) both attribute
         # here. Read after the run for the cost line in the debug email.
@@ -10412,6 +10422,12 @@ def citation_audit():
                         print("lead slug stamp failed (continuing):", str(_le)[:120])
                 db.session.commit()
             q.put(json.dumps({"type": "result", "data": result}))
+            # Per-run cost (all providers) — computed BEFORE the completion flip
+            # so the inbound row carries it; the email below reuses the same figures.
+            try:
+                _cost_total, _cost_rows = _usage_cost(_aggregate_usage_rows(_usage_sink))
+            except Exception:
+                _cost_total, _cost_rows = None, []
             # Flip the start-row to completed + backfill slug/brand/category IN
             # PLACE (no duplicate row). If the start-row failed to insert earlier,
             # fall back to a fresh completed row so a real completion is never lost.
@@ -10423,21 +10439,20 @@ def citation_audit():
                         _rec.slug = slug
                         _rec.brand = result.get('brand')
                         _rec.category = result.get('category')
+                        _rec.est_cost_usd = _cost_total
                         db.session.commit()
                     else:
                         _capture_inbound_lead(
                             'completed', problem_statement, ip, lead_email, _is_operator,
                             _inbound_attr, geo=_coarse_geo(ip), slug=slug,
-                            brand=result.get('brand'), category=result.get('category'))
+                            brand=result.get('brand'), category=result.get('category'),
+                            prompts_json=(json.dumps(prompts_override) if prompts_override else None),
+                            est_cost_usd=_cost_total)
             except Exception as _ib_e:
                 print("inbound-audit completion update failed (continuing):", str(_ib_e)[:120])
             # Fire the owner debug email AFTER the result is pushed to the
             # queue so the user-visible response never waits on email send.
             duration_seconds = (datetime.utcnow() - start_dt).total_seconds()
-            try:
-                _cost_total, _cost_rows = _usage_cost(_aggregate_usage_rows(_usage_sink))
-            except Exception:
-                _cost_total, _cost_rows = None, []
             try:
                 _send_audit_debug_email(
                     result,
@@ -11704,7 +11719,7 @@ def inbound_csv():
     w = csv.writer(buf)
     w.writerow(['created_utc', 'status', 'email', 'brand', 'category', 'problem_statement',
                 'utm_source', 'utm_medium', 'utm_campaign', 'referrer', 'geo', 'ip',
-                'is_operator', 'slug', 'report_url'])
+                'is_operator', 'slug', 'report_url', 'est_cost_usd', 'custom_prompts'])
     for r in rows:
         w.writerow([
             r.created_at.strftime('%Y-%m-%d %H:%M:%S') if r.created_at else '',
@@ -11714,6 +11729,8 @@ def inbound_csv():
             r.referrer or '', r.geo or '', r.ip or '',
             ('yes' if r.is_operator else 'no'), r.slug or '',
             f"{root}/signal/{r.slug}" if r.slug else '',
+            (f"{r.est_cost_usd:.2f}" if getattr(r, 'est_cost_usd', None) is not None else ''),
+            getattr(r, 'prompts_json', None) or '',
         ])
     return Response(buf.getvalue(), mimetype='text/csv',
                     headers={'Content-Disposition': 'attachment; filename=inbound_audits.csv'})
@@ -12589,6 +12606,8 @@ def _ensure_inbound_columns():
         "ALTER TABLE tracked_links ALTER COLUMN token TYPE VARCHAR(64)",
         "ALTER TABLE link_clicks ALTER COLUMN token TYPE VARCHAR(64)",
         "ALTER TABLE outreach ALTER COLUMN link_token TYPE VARCHAR(64)",
+        "ALTER TABLE inbound_audits ADD COLUMN IF NOT EXISTS prompts_json TEXT",
+        "ALTER TABLE inbound_audits ADD COLUMN IF NOT EXISTS est_cost_usd DOUBLE PRECISION",
     ]
     try:
         with app.app_context():
