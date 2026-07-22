@@ -1,0 +1,196 @@
+{
+  "brand": "Netflix",
+  "slug": "netflix",
+  "category": "Streaming entertainment",
+  "date": "July 2026",
+  "owned_domains": ["netflix.com", "netflix.net"],
+  "exclude_sources": [],
+  "prompts": [
+    "What is Netflix's annual revenue?",
+    "What was Netflix's revenue in its most recent fiscal year?",
+    "What was Netflix's revenue in its most recent quarter?",
+    "How much money does Netflix make per year?",
+    "How many subscribers does Netflix have?",
+    "How many paid memberships does Netflix have right now?",
+    "Is Netflix still growing its subscriber base? What are the latest numbers?",
+    "How many employees does Netflix have?",
+    "How big is Netflix's workforce?",
+    "When was Netflix founded and by whom?",
+    "Who is the CEO of Netflix?",
+    "Who runs Netflix today?",
+    "Where is Netflix headquartered?",
+    "What is Netflix's stock ticker and where is it listed?",
+    "Give me a quick factual profile of Netflix: revenue, employees, subscribers, headquarters, CEO.",
+    "What are Netflix's key financial metrics this year?",
+    "How did Netflix perform in its latest earnings report?",
+    "What is Netflix's position in streaming by revenue and subscribers in 2026?",
+    "How many people work at Netflix and how many subscribers does it serve?",
+    "Summarize Netflix's business by the numbers."
+  ],
+  "facts": [
+    {
+      "id": "annual_revenue",
+      "label": "Annual revenue",
+      "kind": "money",
+      "tolerance_pct": 1.5,
+      "hints": "full-year or annual total revenue figures, including trailing-twelve-month totals and forward guidance; ignore advertising-only revenue and regional or segment figures",
+      "reject_quote_patterns": ["advertis", "\\bads?\\b", "ad revenue"],
+      "truth": {"value": 45183036000, "display": "$45.18 billion", "as_of": "2025-12-31", "label": "FY2025"},
+      "alt_bases": [
+        {"value": 48371000000, "display": "$48.37 billion", "tolerance_pct": 1.5, "label": "trailing twelve months through June 30, 2026, derived from the FY2025 10-K and 2026 10-Qs"},
+        {"value": 46890000000, "display": "$46.89 billion", "tolerance_pct": 1.5, "label": "trailing twelve months through March 31, 2026, derived from filings"},
+        {"value": 51200000000, "display": "$51.0 to $51.4 billion", "tolerance_pct": 1.5, "label": "the company's FY2026 revenue forecast, per the Q2 2026 shareholder letter"}
+      ],
+      "history": [
+        {"value": 44000000000, "display": "$43.5 to $44.5 billion", "as_of": "2025-07-17", "label": "FY2025 guidance issued during 2025, superseded by the reported $45.18 billion"},
+        {"value": 39000966000, "display": "$39.00 billion", "as_of": "2024-12-31", "label": "FY2024"},
+        {"value": 33723297000, "display": "$33.72 billion", "as_of": "2023-12-31", "label": "FY2023"},
+        {"value": 31615550000, "display": "$31.62 billion", "as_of": "2022-12-31", "label": "FY2022"},
+        {"value": 29697844000, "display": "$29.70 billion", "as_of": "2021-12-31", "label": "FY2021"},
+        {"value": 24996056000, "display": "$25.00 billion", "as_of": "2020-12-31", "label": "FY2020"},
+        {"value": 20156447000, "display": "$20.16 billion", "as_of": "2019-12-31", "label": "FY2019"},
+        {"value": 15794341000, "display": "$15.79 billion", "as_of": "2018-12-31", "label": "FY2018"},
+        {"value": 11692713000, "display": "$11.69 billion", "as_of": "2017-12-31", "label": "FY2017"},
+        {"value": 8830669000, "display": "$8.83 billion", "as_of": "2016-12-31", "label": "FY2016"}
+      ],
+      "primary_source": {
+        "url": "https://www.sec.gov/Archives/edgar/data/1065280/000106528026000034/nflx-20251231.htm",
+        "label": "FY2025 Form 10-K, filed January 23, 2026"
+      }
+    },
+    {
+      "id": "quarterly_revenue",
+      "label": "Most recent quarterly revenue",
+      "kind": "money",
+      "tolerance_pct": 1.5,
+      "hints": "revenue for a single quarter (latest quarter, Q1/Q2/Q3/Q4 figures)",
+      "truth": {"value": 12559938000, "display": "$12.56 billion", "as_of": "2026-06-30", "label": "Q2 2026"},
+      "alt_bases": [
+        {"value": 48371000000, "display": "$48.37 billion", "tolerance_pct": 1.5, "label": "trailing twelve months through June 30, 2026, derived from the FY2025 10-K and 2026 10-Qs"},
+        {"value": 46890000000, "display": "$46.89 billion", "tolerance_pct": 1.5, "label": "trailing twelve months through March 31, 2026, derived from filings"},
+        {"value": 51200000000, "display": "$51.0 to $51.4 billion", "tolerance_pct": 1.5, "label": "the company's FY2026 revenue forecast, per the Q2 2026 shareholder letter"},
+        {"value": 12860000000, "display": "$12.86 billion", "tolerance_pct": 1.0, "label": "the company's Q3 2026 revenue forecast, per the Q2 2026 shareholder letter"}
+      ],
+      "history": [
+        {"value": 12249757000, "display": "$12.25 billion", "as_of": "2026-03-31", "label": "Q1 2026"},
+        {"value": 12050762000, "display": "$12.05 billion", "as_of": "2025-12-31", "label": "Q4 2025"},
+        {"value": 11510307000, "display": "$11.51 billion", "as_of": "2025-09-30", "label": "Q3 2025"},
+        {"value": 11079166000, "display": "$11.08 billion", "as_of": "2025-06-30", "label": "Q2 2025"},
+        {"value": 10542801000, "display": "$10.54 billion", "as_of": "2025-03-31", "label": "Q1 2025"},
+        {"value": 10246513000, "display": "$10.25 billion", "as_of": "2024-12-31", "label": "Q4 2024"},
+        {"value": 9824703000, "display": "$9.82 billion", "as_of": "2024-09-30", "label": "Q3 2024"},
+        {"value": 9559310000, "display": "$9.56 billion", "as_of": "2024-06-30", "label": "Q2 2024"},
+        {"value": 9370440000, "display": "$9.37 billion", "as_of": "2024-03-31", "label": "Q1 2024"},
+        {"value": 8832825000, "display": "$8.83 billion", "as_of": "2023-12-31", "label": "Q4 2023"},
+        {"value": 8541668000, "display": "$8.54 billion", "as_of": "2023-09-30", "label": "Q3 2023"},
+        {"value": 8187301000, "display": "$8.19 billion", "as_of": "2023-06-30", "label": "Q2 2023"},
+        {"value": 8161503000, "display": "$8.16 billion", "as_of": "2023-03-31", "label": "Q1 2023"}
+      ],
+      "primary_source": {
+        "url": "https://www.sec.gov/Archives/edgar/data/1065280/000106528026000212/nflx-20260630.htm",
+        "label": "Q2 2026 Form 10-Q, filed July 17, 2026"
+      }
+    },
+    {
+      "id": "employees",
+      "label": "Full-time employees",
+      "kind": "count",
+      "tolerance_pct": 5,
+      "hints": "global full-time employee headcount or total workforce size; ignore regional or country-level counts",
+      "basis_token": "full-time",
+      "reject_quote_patterns": ["U\\.?S\\.?\\b", "United States", "UCAN", "EMEA", "Asia", "Latin America", "Europe"],
+      "truth": {"value": 16000, "display": "approximately 16,000", "as_of": "2025-12-31", "label": "FY2025"},
+      "history": [
+        {"value": 14000, "display": "approximately 14,000", "as_of": "2024-12-31", "label": "FY2024 (December 31, 2024)"},
+        {"value": 13000, "display": "approximately 13,000", "as_of": "2023-12-31", "label": "FY2023"},
+        {"value": 12800, "display": "approximately 12,800", "as_of": "2022-12-31", "label": "FY2022"},
+        {"value": 11300, "display": "approximately 11,300", "as_of": "2021-12-31", "label": "FY2021"},
+        {"value": 9400, "display": "approximately 9,400", "as_of": "2020-12-31", "label": "FY2020"},
+        {"value": 8600, "display": "approximately 8,600", "as_of": "2019-12-31", "label": "FY2019"},
+        {"value": 7100, "display": "approximately 7,100", "as_of": "2018-12-31", "label": "FY2018"},
+        {"value": 5500, "display": "approximately 5,500 (total employees)", "as_of": "2017-12-31", "label": "FY2017"},
+        {"value": 4700, "display": "approximately 4,700 (total employees)", "as_of": "2016-12-31", "label": "FY2016"}
+      ],
+      "primary_source": {
+        "url": "https://www.sec.gov/Archives/edgar/data/1065280/000106528026000034/nflx-20251231.htm",
+        "label": "FY2025 Form 10-K, filed January 23, 2026"
+      }
+    },
+    {
+      "id": "memberships",
+      "label": "Global paid memberships",
+      "kind": "count",
+      "tolerance_pct": 1.5,
+      "discontinued": true,
+      "hints": "subscriber or paid membership counts",
+      "truth": {"value": 301626000, "display": "301.6 million", "as_of": "2024-12-31", "label": "Q4 2024, the last reported figure"},
+      "history": [
+        {"value": 282720000, "display": "282.7 million", "as_of": "2024-09-30", "label": "Q3 2024"},
+        {"value": 277650000, "display": "277.65 million", "as_of": "2024-06-30", "label": "Q2 2024"},
+        {"value": 269600000, "display": "269.6 million", "as_of": "2024-03-31", "label": "Q1 2024"},
+        {"value": 260276000, "display": "260.3 million", "as_of": "2023-12-31", "label": "year-end 2023"},
+        {"value": 230747000, "display": "230.7 million", "as_of": "2022-12-31", "label": "year-end 2022"}
+      ],
+      "primary_source": {
+        "url": "https://www.sec.gov/Archives/edgar/data/1065280/000106528025000044/nflx-20241231.htm",
+        "label": "FY2024 Form 10-K (Netflix stopped reporting quarterly membership counts in 2025)"
+      }
+    },
+    {
+      "id": "founded",
+      "label": "Founding year",
+      "kind": "year",
+      "tolerance_pct": 0,
+      "hints": "the year Netflix was founded",
+      "truth": {"value": 1997, "display": "1997", "as_of": null, "label": "1997"},
+      "history": [],
+      "primary_source": {
+        "url": "https://www.sec.gov/Archives/edgar/data/1065280/000106528026000034/nflx-20251231.htm",
+        "label": "FY2025 Form 10-K"
+      }
+    },
+    {
+      "id": "ceo",
+      "label": "Chief executive",
+      "kind": "text",
+      "hints": "who currently leads Netflix as CEO or co-CEO; ignore founder mentions unless presented as the current CEO",
+      "truth": {"display": "Ted Sarandos and Greg Peters, co-CEOs", "as_of": "2025-12-31", "label": "current"},
+      "accept_tokens": [["sarandos"], ["greg peters"], ["co-ceo"]],
+      "history": [
+        {"tokens": ["hastings"], "display": "Reed Hastings", "as_of": "2023-01-31", "label": "co-CEO until January 2023, since then Executive Chairman"}
+      ],
+      "primary_source": {
+        "url": "https://www.sec.gov/Archives/edgar/data/1065280/000106528026000034/nflx-20251231.htm",
+        "label": "FY2025 Form 10-K"
+      }
+    },
+    {
+      "id": "hq",
+      "label": "Headquarters",
+      "kind": "text",
+      "hints": "current headquarters city and state",
+      "truth": {"display": "Los Gatos, California", "as_of": null, "label": "current"},
+      "accept_tokens": [["los gatos"]],
+      "history": [
+        {"tokens": ["scotts valley"], "display": "Scotts Valley, California", "as_of": "1999-12-31", "label": "the company's original headquarters in the late 1990s"}
+      ],
+      "primary_source": {
+        "url": "https://www.sec.gov/Archives/edgar/data/1065280/000106528026000034/nflx-20251231.htm",
+        "label": "FY2025 Form 10-K"
+      }
+    },
+    {
+      "id": "ticker",
+      "label": "Stock ticker",
+      "kind": "text",
+      "hints": "stock ticker symbol and listing exchange",
+      "truth": {"display": "NFLX (Nasdaq)", "as_of": null, "label": "current"},
+      "accept_tokens": [["nflx"], ["nasdaq"]],
+      "history": [],
+      "primary_source": {
+        "url": "https://www.sec.gov/Archives/edgar/data/1065280/000106528026000034/nflx-20251231.htm",
+        "label": "FY2025 Form 10-K"
+      }
+    }
+  ]
+}
