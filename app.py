@@ -444,13 +444,48 @@ _USAGE = {}   # model -> {calls,in,out,cache_read,cache_write,searches}  (proces
 # ThreadPoolExecutor via contextvars.copy_context() so pool-thread calls attribute
 # to the right audit. None outside an audit (e.g. a standalone prompt-preview).
 _audit_usage_ctx = contextvars.ContextVar("audit_usage", default=None)
-# Per-1M token pricing (input, output) + web-search per-1k, for the estimate.
-_CLAUDE_PRICES = {
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-haiku-4-5-20251001": (1.0, 5.0),
-    "claude-haiku-4-5": (1.0, 5.0),
+# Per-1M token pricing (input, output) keyed "provider:model", + per-provider
+# web-search fees per 1k requests. List prices; override via env without a
+# deploy (OPENROUTER model pricing varies by routed model).
+_MODEL_PRICES = {
+    "anthropic:claude-sonnet-4-6": (3.0, 15.0),
+    "anthropic:claude-haiku-4-5-20251001": (1.0, 5.0),
+    "anthropic:claude-haiku-4-5": (1.0, 5.0),
+    "openai:gpt-4o-search-preview": (
+        float(os.environ.get("OPENAI_IN_PER_M", 2.5)),
+        float(os.environ.get("OPENAI_OUT_PER_M", 10.0))),
+    "openrouter:*": (
+        float(os.environ.get("OPENROUTER_IN_PER_M", 3.0)),
+        float(os.environ.get("OPENROUTER_OUT_PER_M", 15.0))),
 }
-_WEB_SEARCH_PER_1K = 10.0
+_PROVIDER_FALLBACK_PRICES = {"anthropic": (3.0, 15.0), "openai": (2.5, 10.0),
+                             "openrouter": (3.0, 15.0)}
+_SEARCH_PER_1K = {
+    "anthropic": 10.0,
+    "openai": float(os.environ.get("OPENAI_SEARCH_PER_1K", 30.0)),
+    "openrouter": float(os.environ.get("OPENROUTER_ONLINE_PER_1K", 4.0)),
+}
+
+
+def _record_usage(provider, model, in_tok, out_tok, searches=0, cache_read=0, cache_write=0):
+    """Shared usage recorder: process-global counter (/admin/usage) + the
+    current audit's sink (per-audit cost email). Never raises."""
+    try:
+        key = f"{provider}:{model}"
+        row = {"model": key, "in": in_tok or 0, "out": out_tok or 0,
+               "cache_read": cache_read or 0, "cache_write": cache_write or 0,
+               "searches": searches or 0}
+        with _USAGE_LOCK:
+            d = _USAGE.setdefault(key, {"calls": 0, "in": 0, "out": 0,
+                                        "cache_read": 0, "cache_write": 0, "searches": 0})
+            d["calls"] += 1
+            for k in ("in", "out", "cache_read", "cache_write", "searches"):
+                d[k] += row[k]
+        sink = _audit_usage_ctx.get()
+        if sink is not None:
+            sink.append(row)
+    except Exception:
+        pass
 
 
 def _usage_cost(agg):
@@ -458,15 +493,18 @@ def _usage_cost(agg):
     Single cost formula shared by /admin/usage and the per-audit email."""
     rows, total = [], 0.0
     for m, d in sorted(agg.items(), key=lambda kv: -(kv[1].get("in", 0) + kv[1].get("out", 0))):
-        pin, pout = _CLAUDE_PRICES.get(m, (3.0, 15.0))
+        provider = m.split(":", 1)[0] if ":" in m else "anthropic"
+        key = m if ":" in m else f"anthropic:{m}"
+        pin, pout = _MODEL_PRICES.get(key) or _MODEL_PRICES.get(f"{provider}:*") \
+            or _PROVIDER_FALLBACK_PRICES.get(provider, (3.0, 15.0))
         billable_in = max(0, d.get("in", 0) - d.get("cache_read", 0))
         cost = (billable_in / 1e6 * pin
                 + d.get("cache_read", 0) / 1e6 * pin * 0.1        # cache reads ~0.1x input
                 + d.get("cache_write", 0) / 1e6 * pin * 1.25      # cache writes ~1.25x input
                 + d.get("out", 0) / 1e6 * pout
-                + d.get("searches", 0) / 1000.0 * _WEB_SEARCH_PER_1K)
+                + d.get("searches", 0) / 1000.0 * _SEARCH_PER_1K.get(provider, 10.0))
         total += cost
-        rows.append({"model": m, **d, "est_cost_usd": round(cost, 4)})
+        rows.append({"model": m, "provider": provider, **d, "est_cost_usd": round(cost, 4)})
     return round(total, 4), rows
 
 
@@ -495,23 +533,11 @@ def _claude_msg(**kwargs):
         if u is not None:
             st = getattr(u, "server_tool_use", None)
             searches = (getattr(st, "web_search_requests", 0) or 0) if st else 0
-            row = {
-                "model": kwargs.get("model", "?"),
-                "in": getattr(u, "input_tokens", 0) or 0,
-                "out": getattr(u, "output_tokens", 0) or 0,
-                "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
-                "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
-                "searches": searches,
-            }
-            with _USAGE_LOCK:
-                d = _USAGE.setdefault(row["model"], {"calls": 0, "in": 0, "out": 0,
-                                                     "cache_read": 0, "cache_write": 0, "searches": 0})
-                d["calls"] += 1
-                for k in ("in", "out", "cache_read", "cache_write", "searches"):
-                    d[k] += row[k]
-            sink = _audit_usage_ctx.get()
-            if sink is not None:
-                sink.append(row)   # list.append is atomic under the GIL — pool-thread safe
+            _record_usage("anthropic", kwargs.get("model", "?"),
+                          getattr(u, "input_tokens", 0), getattr(u, "output_tokens", 0),
+                          searches=searches,
+                          cache_read=getattr(u, "cache_read_input_tokens", 0),
+                          cache_write=getattr(u, "cache_creation_input_tokens", 0))
     except Exception:
         pass
     return resp
@@ -7592,6 +7618,14 @@ def _chatgpt_grounded(prompt):
             {"role": "user", "content": prompt},
         ],
     )
+    try:
+        u = getattr(resp, "usage", None)
+        if u is not None:
+            _record_usage("openai", getattr(resp, "model", None) or "gpt-4o-search-preview",
+                          getattr(u, "prompt_tokens", 0), getattr(u, "completion_tokens", 0),
+                          searches=1)   # search-preview does one web-search pass per call
+    except Exception:
+        pass
     msg = resp.choices[0].message
     return _append_sources(msg.content or '', _annotation_urls(msg))
 
@@ -7609,6 +7643,14 @@ def _grok_grounded(prompt):
             {"role": "user", "content": prompt},
         ],
     )
+    try:
+        u = getattr(resp, "usage", None)
+        if u is not None:
+            _record_usage("openrouter", getattr(resp, "model", None) or model,
+                          getattr(u, "prompt_tokens", 0), getattr(u, "completion_tokens", 0),
+                          searches=1)   # :online web plugin bills per request
+    except Exception:
+        pass
     msg = resp.choices[0].message
     return _append_sources(msg.content or '', _annotation_urls(msg))
 
@@ -8195,12 +8237,12 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
 
         # Est. Anthropic cost for THIS audit (from the per-audit usage sink).
         if cost_total is not None:
-            _seg, _tot_search = [], 0
+            _by_provider, _tot_search = {}, 0
             for r in (cost_rows or []):
-                _m = r.get("model", "")
-                _short = "sonnet" if "sonnet" in _m else ("haiku" if "haiku" in _m else _m)
-                _seg.append(f"{_short} ${r.get('est_cost_usd', 0):.3f}")
+                prov = r.get("provider") or (r.get("model", "").split(":", 1)[0] if ":" in r.get("model", "") else "anthropic")
+                _by_provider[prov] = _by_provider.get(prov, 0.0) + (r.get("est_cost_usd") or 0)
                 _tot_search += r.get("searches", 0)
+            _seg = [f"{p} ${v:.2f}" for p, v in sorted(_by_provider.items(), key=lambda kv: -kv[1])]
             cost_label = f"~${cost_total:.2f}"
             cost_detail = (f" ({', '.join(_seg)}; {_tot_search} web searches)" if _seg else "")
         else:
@@ -10067,7 +10109,9 @@ def admin_usage():
         'total_calls': calls,
         'est_per_audit_usd': round(total / calls * 18, 4) if calls else 0,  # ~18 Claude calls/audit
         'by_model': rows,
-        'note': 'Estimate; input includes injected web-search page tokens. Reset with ?reset=1.',
+        'note': ('Estimate at list pricing (override via OPENAI_*/OPENROUTER_* env). Covers '
+                 'Anthropic + OpenAI + OpenRouter; Gemini and Perplexity are not yet metered. '
+                 'Anthropic input includes injected web-search page tokens. Reset with ?reset=1.'),
     }
     if request.args.get('reset') == '1':
         with _USAGE_LOCK:
