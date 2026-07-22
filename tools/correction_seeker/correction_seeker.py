@@ -1027,18 +1027,194 @@ subject; figures from public filings.</div>
     return path
 
 
+# ---------------------------------------------------------------- scan
+# Ground-truth-free spread scan over existing audit datasets (production
+# /signal/<slug>.json exports). Finds corporate-fact claims, clusters the
+# variants, and writes a per-company digest for operator triage. No verdicts:
+# verification against primary sources stays a human step.
+
+SCAN_MODEL = os.environ.get("CS_SCAN_MODEL", "claude-haiku-4-5")
+
+SCAN_FACT_TYPES = ("revenue, aum, employees, founded, ceo, hq, users "
+                   "(subscribers/customers/members), stores, valuation, "
+                   "funding, market_cap")
+
+SCAN_TEMPLATE = """COMPANY: {brand}
+
+Below are {n} AI assistant answers, each tagged [RESPONSE i]. Extract every
+claim any answer makes about {brand}'s corporate facts. Fact types (use these
+exact labels): {fact_types}.
+
+{responses_block}
+
+Return JSON only:
+{{"claims": [{{"response_idx": 0, "fact_type": "revenue", "quote": "...",
+"stated_value": "...", "stated_as_of": "..." or null,
+"presented_as_current": true/false}}]}}
+
+Rules:
+- Only claims about {brand} itself, never about other companies.
+- "quote": one sentence copied VERBATIM from that response.
+- "stated_value": the exact value phrase as written.
+- Skip vague phrases with no figure or name ("a large company").
+- If nothing qualifies, return {{"claims": []}}.
+"""
+
+
+def _scan_extract_batch(client, brand, batch, base_idx):
+    responses_block = "\n\n".join(
+        f"[RESPONSE {base_idx + i}]\n{(r.get('response') or '')[:6000]}"
+        for i, r in enumerate(batch))
+    prompt = SCAN_TEMPLATE.format(brand=brand, n=len(batch),
+                                  fact_types=SCAN_FACT_TYPES,
+                                  responses_block=responses_block)
+    for attempt in range(3):
+        try:
+            p = prompt if attempt == 0 else (
+                prompt + "\n\nIMPORTANT: Output STRICT valid JSON only.")
+            msg = client.messages.create(
+                model=SCAN_MODEL, max_tokens=4000, system=EXTRACT_SYSTEM,
+                messages=[{"role": "user", "content": p}])
+            text = "".join(b.text for b in msg.content
+                           if getattr(b, "type", "") == "text")
+            start, end = text.find("{"), text.rfind("}")
+            try:
+                return json.loads(text[start:end + 1],
+                                  strict=False).get("claims", [])
+            except Exception:
+                out = []
+                for frag in re.findall(r"\{[^{}]*\}", text[start + 1:]):
+                    try:
+                        o = json.loads(frag, strict=False)
+                        if o.get("fact_type") and o.get("quote"):
+                            out.append(o)
+                    except Exception:
+                        pass
+                if out:
+                    return out
+                raise
+        except Exception:
+            if attempt == 2:
+                return []
+            time.sleep(2)
+
+
+def scan_dataset(path, client):
+    d = json.load(open(path))
+    brand = d.get("brand") or d.get("brand_name") or "?"
+    rows = [r for r in d.get("all_responses", [])
+            if (r.get("response") or "").strip() and not r.get("error")]
+    claims = []
+    BATCH = 6
+    for b0 in range(0, len(rows), BATCH):
+        batch = rows[b0:b0 + BATCH]
+        for c in _scan_extract_batch(client, brand, batch, b0):
+            i = c.get("response_idx")
+            if not isinstance(i, int) or not (0 <= i < len(rows)):
+                continue
+            row = rows[i]
+            norm_resp = re.sub(r"[\s*_`#]+", " ",
+                               (row.get("response") or "").lower())
+            q = re.sub(r"[\s*_`#]+", " ", str(c.get("quote", "")).lower()).strip()
+            if not q or q[:160] not in norm_resp:
+                continue
+            c["platform"] = row.get("llm") or row.get("platform") or "?"
+            c["prompt"] = row.get("prompt") or row.get("query") or ""
+            c["citations"] = [x.get("url") for x in (row.get("citations") or [])
+                              if isinstance(x, dict) and x.get("url")][:12]
+            claims.append(c)
+        time.sleep(0.15)
+    # cluster per fact_type by value signature
+    clusters = {}
+    for c in claims:
+        ft = str(c.get("fact_type", "other")).lower().strip()
+        val = parse_number(c.get("stated_value"))
+        key = (ft, sig_key(val) if val is not None
+               else re.sub(r"\W+", " ", str(c.get("stated_value", ""))
+                           .lower()).strip()[:40])
+        cl = clusters.setdefault(key, {"fact_type": ft, "value": val,
+                                       "surfaces": {}, "platforms": {},
+                                       "quotes": [], "citations": {},
+                                       "as_ofs": {}, "n": 0})
+        cl["n"] += 1
+        s = str(c.get("stated_value", "")).strip()
+        cl["surfaces"][s] = cl["surfaces"].get(s, 0) + 1
+        cl["platforms"][c["platform"]] = cl["platforms"].get(c["platform"], 0) + 1
+        ao = c.get("stated_as_of")
+        if ao:
+            cl["as_ofs"][str(ao)] = cl["as_ofs"].get(str(ao), 0) + 1
+        if len(cl["quotes"]) < 3:
+            cl["quotes"].append(c.get("quote", "")[:220])
+        for u in c.get("citations", []):
+            cl["citations"][u] = cl["citations"].get(u, 0) + 1
+    out = []
+    for cl in clusters.values():
+        cl["surface"] = max(cl["surfaces"], key=cl["surfaces"].get)
+        cl["top_citations"] = sorted(cl["citations"],
+                                     key=cl["citations"].get, reverse=True)[:6]
+        del cl["citations"]
+        out.append(cl)
+    # facts with multiple distinct numeric values, then big consensus facts
+    from collections import Counter
+    per_fact = Counter(cl["fact_type"] for cl in out
+                       if cl.get("value") is not None)
+    for cl in out:
+        spread = per_fact.get(cl["fact_type"], 0)
+        cl["fact_variants"] = spread
+        cl["score"] = (spread - 1) * 10 + cl["n"]
+    out.sort(key=lambda c: (-c["fact_variants"], c["fact_type"], -c["n"]))
+    return {"brand": brand, "n_rows": len(rows), "n_claims": len(claims),
+            "clusters": out}
+
+
+def scan(data_dir, out_dir, limit=None):
+    import anthropic
+    client = anthropic.Anthropic()
+    os.makedirs(out_dir, exist_ok=True)
+    files = sorted(f for f in os.listdir(data_dir) if f.endswith(".json"))
+    if limit:
+        files = files[:limit]
+    print(f"[scan] {len(files)} datasets, model={SCAN_MODEL}", flush=True)
+    for f in files:
+        slug = f[:-5]
+        dst = os.path.join(out_dir, f"{slug}.scan.json")
+        if os.path.exists(dst):
+            print(f"  [scan] {slug}: cached, skipping", flush=True)
+            continue
+        try:
+            res = scan_dataset(os.path.join(data_dir, f), client)
+            res["slug"] = slug
+            json.dump(res, open(dst, "w"), indent=1)
+            multi = sum(1 for c in res["clusters"] if c["fact_variants"] >= 2)
+            print(f"  [scan] {slug}: {res['n_claims']} claims, "
+                  f"{len(res['clusters'])} clusters, "
+                  f"{multi} in multi-variant facts", flush=True)
+        except Exception as e:
+            print(f"  [scan] {slug} FAILED: {e}", flush=True)
+
+
 # ---------------------------------------------------------------- main
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["collect", "analyze", "report", "all"])
-    ap.add_argument("--config", required=True)
+    ap.add_argument("stage", choices=["collect", "analyze", "report", "all",
+                                      "scan"])
+    ap.add_argument("--config")
+    ap.add_argument("--data-dir", help="scan: directory of raw dataset JSONs")
+    ap.add_argument("--out", help="scan: output directory for digests")
+    ap.add_argument("--limit-datasets", type=int, default=None)
     ap.add_argument("--limit", type=int, default=None,
                     help="collect only the first N prompts (smoke test)")
     ap.add_argument("--reuse-claims", action="store_true",
                     help="skip re-extraction; reclassify prior claims "
                     "against the current config")
     args = ap.parse_args()
+    if args.stage == "scan":
+        scan(args.data_dir, args.out or "scan_results",
+             limit=args.limit_datasets)
+        return
+    if not args.config:
+        ap.error("--config is required for this stage")
     cfg = json.load(open(os.path.join(HERE, args.config)
                          if not os.path.isabs(args.config) else args.config))
     run_dir = os.path.join(HERE, "runs", cfg["slug"])
