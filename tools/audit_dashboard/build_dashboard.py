@@ -95,6 +95,11 @@ def esc(s):
     return html.escape(str(s if s is not None else ""))
 
 
+def poss(name):
+    """English possessive that survives s-ending brand names."""
+    return name + "'" if name.rstrip().endswith("s") else name + "'s"
+
+
 def norm_url(u):
     """Display-normalize a citation URL: strip scheme, www, query (utm noise),
     fragment, trailing slash. Preserves path case so links still resolve."""
@@ -938,7 +943,7 @@ def build(cfg, branded, organic, out_path):
         b = branded
         share = round(100 * b["owned_citations"] / b["total_citations"]) if b["total_citations"] else 0
         cards.append(('gold', str(b["owned_citations"]),
-                      f'citations of {esc(brand)}\'s own site across branded answers'))
+                      f'citations of {esc(poss(brand))} own site across branded answers'))
         cards.append(('cyan', f'{share}%',
                       'of all branded-answer citations come from the brand\'s own site'))
     if organic:
@@ -971,7 +976,7 @@ def build(cfg, branded, organic, out_path):
             exec_ps.append(
                 f'Asked about {brand} by name, all {b["brand_rows"]} of {b["n"]} answers engage with the brand, '
                 f'which is the expected baseline for branded questions. The informative read is the sourcing: '
-                f'{brand}\'s own site accounts for {b["owned_citations"]} of the citations behind those answers '
+                f'{poss(brand)} own site accounts for {b["owned_citations"]} of the citations behind those answers '
                 f'({share}%){ext_note}. Who AI trusts to tell the story matters more than whether it answers.')
             # sourcing contributors: assistant asymmetry + owned depth
             pp = b["per_platform"]
@@ -1055,7 +1060,7 @@ def build(cfg, branded, organic, out_path):
   <div class="contrast">
     <div class="cpanel hot"><div class="lbl">Branded questions <span class="modechip br">by name</span></div>
       <div class="big">{b["owned_citations"]}</div>
-      <div class="note">citations of {esc(brand)}\'s own site across {b["n"]} answers
+      <div class="note">citations of {esc(poss(brand))} own site across {b["n"]} answers
       ({b["owned_answers"]} answers cite it directly)</div></div>
     <div class="cpanel"><div class="lbl">Unbranded questions <span class="modechip org">by category</span></div>
       <div class="big">{o["owned_citations"]}</div>
@@ -1209,6 +1214,7 @@ def build(cfg, branded, organic, out_path):
     <p style="margin-top:10px"><b>Reading this honestly:</b> this is a small, directional sample
     designed to map the terrain, not a census. Answers vary run to run; the patterns worth acting on
     are the ones that persist across assistants and questions, which a fuller audit confirms.</p>
+    {"".join(f'<p style="margin-top:10px">{note}</p>' for note in cfg.get("method_notes") or [])}
   </div>
   {"".join(meth_prompts)}
 </section>''')

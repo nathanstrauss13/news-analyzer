@@ -1,0 +1,126 @@
+{
+  "brand": "the PUIG houses",
+  "slug": "puig",
+  "prepared_for": "PUIG",
+  "title": "Byredo, Carolina Herrera and Rabanne: how AI sees three PUIG houses",
+  "category": "Prestige and niche fragrance",
+  "date": "June 2026",
+  "aliases": [
+    "Byredo",
+    "Carolina Herrera",
+    "Paco Rabanne",
+    "Rabanne"
+  ],
+  "owned_domains": [
+    "byredo.com",
+    "carolinaherrera.com",
+    "pacorabanne.com",
+    "rabanne.com",
+    "puig.com"
+  ],
+  "competitors": [
+    {
+      "name": "Yves Saint Laurent",
+      "aliases": [
+        "YSL"
+      ],
+      "domains": [
+        "yslbeauty.com"
+      ]
+    },
+    {
+      "name": "Dior",
+      "domains": [
+        "dior.com"
+      ]
+    },
+    {
+      "name": "Chanel",
+      "domains": [
+        "chanel.com"
+      ]
+    },
+    {
+      "name": "Tom Ford",
+      "domains": [
+        "tomfordbeauty.com",
+        "tomford.com"
+      ]
+    },
+    {
+      "name": "Maison Francis Kurkdjian",
+      "aliases": [
+        "Francis Kurkdjian",
+        "MFK"
+      ],
+      "domains": [
+        "franciskurkdjian.com"
+      ]
+    },
+    {
+      "name": "Parfums de Marly",
+      "domains": [
+        "parfums-de-marly.com"
+      ]
+    },
+    {
+      "name": "Creed",
+      "domains": [
+        "creedfragrances.com",
+        "creedboutique.com"
+      ]
+    },
+    {
+      "name": "Le Labo",
+      "domains": [
+        "lelabofragrances.com"
+      ]
+    },
+    {
+      "name": "Maison Margiela",
+      "aliases": [
+        "Margiela"
+      ],
+      "domains": [
+        "maisonmargiela.com"
+      ]
+    },
+    {
+      "name": "Kayali",
+      "domains": [
+        "kayalifragrances.com"
+      ]
+    },
+    {
+      "name": "Jo Malone",
+      "domains": [
+        "jomalone.com",
+        "jomalone.co.uk"
+      ]
+    },
+    {
+      "name": "Giorgio Armani",
+      "aliases": [
+        "Armani"
+      ],
+      "domains": [
+        "armanibeauty.com"
+      ]
+    }
+  ],
+  "branded_data": "data/puig_branded.json",
+  "organic_data": "data/puig_organic.json",
+  "exec_summary": [
+    "This sample put 26 questions to five AI assistants in June 2026: nine branded questions about Byredo, Carolina Herrera and Rabanne, and seventeen unbranded category questions a fragrance shopper might actually ask. 130 answers came back; every number below is recomputed from the raw responses in the appendix.",
+    "Asked about the houses by name, 43 of 45 answers engage, which is the expected baseline for branded questions. The informative read is the sourcing: the houses' own sites account for 43 citations (11% of the branded total), with fragrantica.com the most-cited outside source, and 37 of those 43 owned citations pull pages deeper than the homepage, so the sites' own publishing is carrying the story. The assistants differ sharply in retrieval appetite: Gemini built its answers on 145 citations while Grok used 42 on the same questions, so the citable footprint matters most where retrieval is heaviest.",
+    "On unbranded category questions, at least one of the three houses appears in 34 of 85 answers, and is the first name mentioned among the tracked set in 7 of those 34. Across the 55 houses named anywhere in the sample, Byredo ranks 8th by presence, Carolina Herrera 15th and Rabanne 25th, while Yves Saint Laurent, Dior, Chanel and Tom Ford carry most of the category conversation.",
+    "One organizing note, stated plainly: the assistants named individual houses and products throughout; no prompt mentioned a holding company and no answer needed to. Grouping houses by parent is our analytical rollup, applied after collection. On that rollup, PUIG's eight houses together appear in 42 of 85 unbranded answers, while portfolios of houses owned by LVMH, L'Oreal and Estee Lauder each appear more often. The gap is a portfolio-level view of the same house-level facts, and it maps where discovery has room to grow rather than delivering a verdict.",
+    "This is a directional snapshot, not a census. The patterns worth acting on are the ones that persist across assistants and question types; a fuller audit at 100 prompts confirms and sizes them."
+  ],
+  "recommendations": [],
+  "exclude_sources": [],
+  "method_notes": [
+    "<b>Parent-company groupings are our analytical rollup</b>, applied after collection. The assistants named individual houses and products; none of the prompts mentioned a holding company, and no answer needed to. Where this report or its companion materials group houses under PUIG, LVMH, L'Or&eacute;al, Est&eacute;e Lauder or others, that organization is ours.",
+    "<b>Gemini citation detail is excluded from source tables.</b> Google's search-grounding links expire quickly, and this collection's links had lapsed before they could be resolved to their destinations. Gemini's answers still count toward presence and prominence throughout. Current audits resolve grounding links on the day of collection, which avoids this loss."
+  ]
+}
