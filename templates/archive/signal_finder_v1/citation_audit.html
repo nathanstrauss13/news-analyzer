@@ -1,0 +1,3345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if shared_data %}
+    {# Shared-report URLs (/signal/<slug>) embed a customer's brand + competitive intel.
+       Keep them out of search indexes so a casually-shared link doesn't get scraped. #}
+    <meta name="robots" content="noindex,nofollow">
+    {% endif %}
+    <title>AI Citation Audit | PR Signal Finder — INNATE C3</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Google Analytics 4 -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-K0ECCXPL90"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-K0ECCXPL90');
+    </script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'IBM Plex Sans', sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 60px 24px;
+        }
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            font-size: 15px;
+            color: #888;
+            margin-bottom: 48px;
+            line-height: 1.5;
+        }
+        .input-group {
+            position: relative;
+            margin-bottom: 16px;
+        }
+        textarea {
+            width: 100%;
+            padding: 16px 20px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 16px;
+            background: #141414;
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            color: #fff;
+            resize: none;
+            outline: none;
+            transition: border-color 0.2s;
+            min-height: 80px;
+        }
+        textarea:focus { border-color: #4a9eff; }
+        textarea::placeholder { color: #555; }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 15px;
+            font-weight: 600;
+            background: #fff;
+            color: #000;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        /* Loading state */
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 60px 0;
+        }
+        .loading.active { display: block; }
+        .countdown-ring {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 24px;
+        }
+        .countdown-ring svg {
+            transform: rotate(-90deg);
+            width: 120px;
+            height: 120px;
+        }
+        .countdown-ring .bg {
+            fill: none;
+            stroke: #1a1a1a;
+            stroke-width: 4;
+        }
+        .countdown-ring .progress {
+            fill: none;
+            stroke: #4a9eff;
+            stroke-width: 4;
+            stroke-linecap: round;
+            transition: stroke-dashoffset 1s linear;
+        }
+        .countdown-time {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            font-weight: 600;
+            color: #fff;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.5px;
+        }
+        .countdown-eta {
+            margin-top: 14px;
+            font-size: 12px;
+            color: #888;
+            font-variant-numeric: tabular-nums;
+            min-height: 16px;
+        }
+        .loading-text {
+            font-size: 14px;
+            color: #666;
+        }
+        .loading-step {
+            font-size: 13px;
+            color: #4a9eff;
+            margin-top: 8px;
+        }
+        .loading-note {
+            font-size: 13px;
+            color: #777;
+            margin: 24px auto 0;
+            max-width: 380px;
+            line-height: 1.55;
+            padding: 12px 16px;
+            background: #111;
+            border: 1px solid #1e1e1e;
+            border-radius: 8px;
+        }
+
+        /* Results */
+        .results { display: none; }
+        .results.active { display: block; }
+        .results-header {
+            margin-bottom: 32px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid #1a1a1a;
+        }
+        .results-header h2 {
+            font-size: 22px;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .brand-pill {
+            display: inline-block;
+            padding: 4px 12px;
+            background: #1a1a2e;
+            border: 1px solid #2a2a4e;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #7a8aff;
+            margin-right: 8px;
+        }
+        .mention-count {
+            font-size: 13px;
+            color: #888;
+            margin-top: 12px;
+        }
+        .mention-count strong {
+            color: #ff6b6b;
+        }
+        .mention-method {
+            font-size: 11.5px;
+            color: #6a6a78;
+            margin-top: 5px;
+            line-height: 1.45;
+            max-width: 620px;
+        }
+        .mention-method em { color: #8a8a98; font-style: italic; }
+        /* Where AI sees you — per-assistant visibility */
+        .ai-visibility {
+            margin: 0 0 36px;
+            padding: 18px 22px;
+            background: #0e0e18;
+            border: 1px solid #22223a;
+            border-radius: 12px;
+        }
+        .ai-visibility-label {
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            font-size: 11px;
+            font-weight: 700;
+            color: #7a8aff;
+            margin-bottom: 12px;
+        }
+        .ai-visibility-rows { display: flex; flex-direction: column; gap: 7px; }
+        .ai-vis-row {
+            display: grid;
+            grid-template-columns: 130px 1fr 44px;
+            align-items: center;
+            gap: 12px;
+            font-size: 13px;
+        }
+        .ai-vis-name { color: #e8e8f0; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+        .ai-vis-row.zero .ai-vis-name { color: #6a6a78; }
+        .ai-vis-tag {
+            font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px;
+            color: #7a8aff; background: #16162a; border: 1px solid #2a2a4a;
+            padding: 1px 5px; border-radius: 4px; font-weight: 600;
+        }
+        .ai-vis-track { height: 9px; background: #1a1a26; border-radius: 5px; overflow: hidden; }
+        .ai-vis-fill { height: 100%; background: #4a9eff; border-radius: 5px; }
+        .ai-vis-fill.zero { background: transparent; }
+        .ai-vis-row.zero .ai-vis-track { border: 1px dashed #33334a; height: 7px; }
+        .ai-vis-num { color: #cfd2ff; font-weight: 600; font-size: 12px; text-align: right; }
+        .ai-vis-row.zero .ai-vis-num { color: #6a6a78; }
+        .ai-visibility-read {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #b8b8c8;
+            line-height: 1.55;
+            border-top: 1px solid #1c1c2e;
+            padding-top: 11px;
+        }
+        /* Audit completion badge — reflects share of planned LLM calls that
+           actually returned a response before the wall-clock deadline. */
+        .completion-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12.5px;
+            margin-top: 10px;
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: 1px solid #1e1e1e;
+            background: #0d130d;
+            color: #aaa;
+            line-height: 1.4;
+        }
+        .completion-badge .dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .completion-badge.full {
+            border-color: #1f3a1f;
+            background: #0d150d;
+            color: #c9e8c9;
+        }
+        .completion-badge.full .dot { background: #5aff8a; }
+        .completion-badge.partial {
+            border-color: #4a3a10;
+            background: #1a1510;
+            color: #f0d49a;
+        }
+        .completion-badge.partial .dot { background: #ffae00; }
+        .completion-badge.thin {
+            border-color: #4a1a1a;
+            background: #1a0d0d;
+            color: #ffc4c4;
+        }
+        .completion-badge.thin .dot { background: #ff6b6b; }
+        .completion-badge .advice {
+            display: block;
+            font-size: 11.5px;
+            opacity: 0.85;
+            margin-top: 2px;
+        }
+        .executive-summary {
+            font-size: 15px;
+            line-height: 1.6;
+            color: #aaa;
+            margin: 20px 0 32px;
+            padding: 16px 20px;
+            background: #111;
+            border-radius: 10px;
+            border-left: 3px solid #4a9eff;
+        }
+        /* Insight-first repositioning */
+        .report-eyebrow {
+            text-transform: uppercase;
+            letter-spacing: 2.5px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #6a7aff;
+            margin-bottom: 8px;
+        }
+        .briefing-summary {
+            margin: 8px 0 36px;
+            padding: 22px 26px;
+            background: linear-gradient(135deg, #14142a 0%, #111120 100%);
+            border: 1px solid #2a2a4e;
+            border-radius: 12px;
+        }
+        .briefing-summary-label {
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            font-size: 11px;
+            font-weight: 700;
+            color: #7a8aff;
+            margin-bottom: 10px;
+        }
+        .briefing-summary-text {
+            font-size: 16px;
+            line-height: 1.65;
+            color: #e8e8f0;
+        }
+        /* Single highest-priority action */
+        .headline-move {
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+            margin: 0 0 36px;
+            padding: 18px 22px;
+            background: #0f1a12;
+            border: 1px solid #1f4a2a;
+            border-left: 4px solid #5aff8a;
+            border-radius: 12px;
+        }
+        .headline-move-verb {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: #0f1a12;
+            background: #5aff8a;
+            padding: 5px 11px;
+            border-radius: 6px;
+            margin-top: 1px;
+        }
+        .headline-move-body { flex: 1; }
+        .headline-move-label {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #5aff8a;
+            margin-bottom: 4px;
+        }
+        .headline-move-text {
+            font-size: 15px;
+            line-height: 1.55;
+            color: #e8f0e8;
+        }
+        /* 'What's working' — earned coverage AI is already pulling from */
+        .wins-panel {
+            margin: 0 0 36px;
+            padding: 20px 22px;
+            background: #0d160f;
+            border: 1px solid #1f4a2a;
+            border-left: 4px solid #5aff8a;
+            border-radius: 12px;
+        }
+        .wins-title { font-size: 16px; font-weight: 700; color: #eafff0; margin-bottom: 6px; }
+        .wins-sub { font-size: 13px; color: #9fc7ad; line-height: 1.5; margin-bottom: 14px; }
+        .wins-sub strong { color: #5aff8a; }
+        .win-row { padding: 12px 0; border-top: 1px solid #16331f; }
+        .win-row:first-of-type { border-top: none; padding-top: 2px; }
+        .win-outlet { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+        .win-domain { font-size: 14px; font-weight: 600; color: #fff; }
+        .win-badge {
+            font-size: 10px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
+            color: #7acc7a; background: #0d1a0d; border: 1px solid #1a3a1a;
+            padding: 2px 7px; border-radius: 5px;
+        }
+        .win-badge.lead { color: #0a140d; background: #5aff8a; border-color: #5aff8a; }
+        .win-stat { font-size: 12.5px; color: #b9c4bd; }
+        .win-stat strong { color: #eafff0; }
+        .win-arts { font-size: 12px; color: #8aa394; margin-top: 5px; line-height: 1.55; }
+        .win-llms { color: #6f8f7c; font-size: 10.5px; margin-left: 5px; }
+        .win-date { font-size: 10.5px; color: #9ab0a4; background: #11201a; border: 1px solid #1c3a2a; padding: 1px 6px; border-radius: 4px; margin-left: 6px; white-space: nowrap; }
+        .win-date.recent { color: #0a140d; background: #5aff8a; border-color: #5aff8a; font-weight: 700; }
+        .wins-foot { font-size: 12px; color: #7e8f83; margin-top: 14px; line-height: 1.5; font-style: italic; }
+        /* Strengths to defend — earned coverage AI pulls + the relationship to protect */
+        .defend-title { font-size: 18px; font-weight: 700; color: #fff; margin: 0 0 6px; }
+        .defend-sub { font-size: 13px; color: #9a9aa8; line-height: 1.55; margin: 0 0 18px; }
+        .defend-sub strong { color: #cfd2dd; font-weight: 500; }
+        .dcard { background: #0d160f; border: 1px solid #1f4a2a; border-left: 3px solid #5aff8a; border-radius: 12px; padding: 15px 18px; margin: 0 0 11px; }
+        .dc-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+        .dc-outlet { font-size: 15px; font-weight: 700; color: #fff; }
+        .dc-tags { display: flex; gap: 7px; flex-shrink: 0; }
+        .dtag { font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; padding: 3px 9px; border-radius: 5px; white-space: nowrap; }
+        .dtag.verified { color: #7acc7a; background: #0d1a0d; border: 1px solid #1a3a1a; }
+        .dtag.defend { color: #0a140d; background: #5aff8a; }
+        .dc-article { font-size: 14px; color: #dfeede; line-height: 1.5; margin-bottom: 7px; }
+        .dc-article .q { color: #fff; font-weight: 600; }
+        .dc-date { font-size: 11px; color: #0a140d; background: #5aff8a; padding: 1px 7px; border-radius: 4px; font-weight: 700; margin-left: 6px; white-space: nowrap; }
+        .dc-date.old { color: #9ab0a4; background: #11201a; border: 1px solid #1c3a2a; font-weight: 600; }
+        .dc-stat { font-size: 13px; color: #aab9af; line-height: 1.5; }
+        .dc-stat strong { color: #eafff0; font-weight: 600; }
+        .dc-llms { font-size: 11.5px; color: #6f8f7c; margin-top: 7px; }
+        .dc-foot { font-size: 12px; color: #7e8f83; margin-top: 16px; line-height: 1.55; font-style: italic; }
+        /* 'Did the launch land?' — Announcement-Anchored mode */
+        .launch-panel { margin: 4px 0 30px; padding: 22px 24px; background: #0c1622; border: 1px solid #1f3a5a; border-left: 4px solid #5ab0ff; border-radius: 14px; }
+        .launch-title { font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #7ac0ff; margin-bottom: 10px; }
+        .launch-lead { font-size: 16px; line-height: 1.5; color: #e8f0fa; margin-bottom: 16px; }
+        .launch-lead strong { color: #fff; }
+        .launch-empty { color: #c8b88a; }
+        .launch-grid { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+        .launch-metric { flex: 1; min-width: 130px; background: #0f1f31; border: 1px solid #1c3553; border-radius: 10px; padding: 12px 14px; }
+        .lm-num { font-size: 26px; font-weight: 800; color: #7ac0ff; line-height: 1; }
+        .lm-label { font-size: 12px; color: #9fb6cf; margin-top: 6px; line-height: 1.4; }
+        .lm-sub { display: block; font-size: 10.5px; color: #6f87a0; margin-top: 3px; }
+        .launch-leaders { font-size: 13px; color: #aab9c9; margin-bottom: 10px; }
+        .ll-label { text-transform: uppercase; font-size: 10.5px; letter-spacing: 1px; color: #6f87a0; margin-right: 6px; }
+        .ll-n { color: #7ac0ff; font-weight: 600; }
+        .launch-flag { font-size: 12.5px; color: #d8c08a; background: #1f1808; border: 1px solid #4a3a12; border-radius: 9px; padding: 10px 13px; line-height: 1.55; }
+        .lf-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #1f1808; background: #d8a93a; padding: 2px 7px; border-radius: 5px; margin-right: 8px; }
+        .lf-snip { color: #c9b48a; font-style: italic; }
+        /* Verdict-grouped sections */
+        .verdict-group { margin-bottom: 36px; }
+        .verdict-group-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 6px;
+        }
+        .verdict-group-icon {
+            width: 34px; height: 34px;
+            border-radius: 9px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 17px;
+            flex-shrink: 0;
+        }
+        .verdict-group-icon.strength { background: #0d1f0d; border: 1px solid #1f4a1f; }
+        .verdict-group-icon.opportunity { background: #1f1505; border: 1px solid #4a3210; }
+        .verdict-group-icon.neutral { background: #0d141f; border: 1px solid #1a2a4a; }
+        .verdict-group-icon.emerging { background: #15151f; border: 1px solid #2a2a4a; }
+        .verdict-group-icon.confirmed { background: #0d1f0d; border: 1px solid #1f4a1f; }
+        .verdict-group-icon.mention { background: #1a1505; border: 1px solid #3a3010; }
+        .verdict-group-icon.category { background: #1f1505; border: 1px solid #4a3210; }
+        .verdict-group-icon.unverified { background: #15151f; border: 1px solid #2a2a4a; }
+        .verdict-group-title {
+            font-size: 17px;
+            font-weight: 700;
+            color: #fff;
+        }
+        .verdict-group-count {
+            font-size: 12px;
+            font-weight: 700;
+            padding: 2px 9px;
+            border-radius: 11px;
+            color: #cfd2ff;
+            background: #1a1a2e;
+            border: 1px solid #2a2a4e;
+        }
+        .verdict-group-intro {
+            font-size: 13.5px;
+            color: #999;
+            line-height: 1.55;
+            margin: 0 0 18px 46px;
+        }
+        /* Competitors */
+        .section-title {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #555;
+            margin-bottom: 16px;
+        }
+        .competitors {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 40px;
+        }
+        .competitor-chip {
+            padding: 6px 14px;
+            background: #1a1210;
+            border: 1px solid #3a2a1a;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #e8a04c;
+        }
+        .competitor-chip .count {
+            color: #aa7030;
+            margin-left: 4px;
+        }
+
+        /* Media targets */
+        .media-card {
+            background: #111;
+            border: 1px solid #1e1e1e;
+            border-left: 4px solid #1e1e1e;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 16px;
+            transition: border-color 0.2s;
+            position: relative;
+        }
+        .media-card:hover { border-color: #333; }
+        .media-card.strength { border-left-color: #5a9a5a; }
+        .media-card.opportunity { border-left-color: #e8a04c; }
+        .media-card.neutral { border-left-color: #4a6a8a; }
+        .media-card.emerging { border-left-color: #5a5a8a; }
+        /* Verdict badge in top-right of card */
+        .card-badge {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            padding: 4px 10px;
+            border-radius: 5px;
+        }
+        .card-badge.strength { background: #0d1a0d; color: #7acc7a; border: 1px solid #1a3a1a; }
+        .card-badge.opportunity { background: #1a1510; color: #ffb860; border: 1px solid #3a2a1a; }
+        .card-badge.neutral { background: #0d141a; color: #7aa3cc; border: 1px solid #1a2a3a; }
+        .card-badge.emerging { background: #14141a; color: #9a9acc; border: 1px solid #2a2a3a; }
+        /* Coverage chip — does the cited page ACTUALLY mention the brand?
+           confirmed = verified on the page; category = cited for the topic but
+           brand not on the page (pitch target, not current coverage);
+           unverified = no fetchable article URL (e.g. parametric/hallucinated). */
+        .cov-chip {
+            display: inline-block; font-size: 11px; font-weight: 600;
+            padding: 3px 9px; border-radius: 5px; margin: 6px 0 2px;
+        }
+        .cov-chip.confirmed { background: #0d1a0d; color: #7acc7a; border: 1px solid #1f4a1f; }
+        .cov-chip.mention   { background: #1a1505; color: #d8c060; border: 1px solid #3a3010; }
+        .cov-chip.category  { background: #1a1510; color: #ffb860; border: 1px solid #3a2a1a; }
+        .cov-chip.unverified{ background: #15151a; color: #8a8a9a; border: 1px solid #2a2a3a; }
+        /* In-card SoV: stacked brand + top-competitor bars + context line */
+        .media-sov-row {
+            display: grid;
+            grid-template-columns: 140px 1fr 140px;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+        .media-sov-row + .media-sov-row { margin-top: 4px; }
+        .media-sov-row-label {
+            color: #cfd2ff;
+            font-weight: 500;
+            font-size: 12px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .media-sov-row-label.brand strong { color: #fff; }
+        .media-sov-row-bar {
+            height: 8px;
+            background: #1a1a22;
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+        }
+        .media-sov-row-bar .fill { height: 100%; }
+        .media-sov-row-bar .fill.brand { background: #4a9eff; }
+        .media-sov-row-bar .fill.comp { background: #e8a04c; }
+        .media-sov-row-num {
+            color: #cfd2ff;
+            font-weight: 600;
+            font-size: 11px;
+            text-align: right;
+            white-space: nowrap;
+        }
+        .media-sov-context {
+            margin-top: 10px;
+            font-size: 11px;
+            color: #888;
+            line-height: 1.5;
+        }
+        .media-sov-head {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            color: #8a8a9a;
+            margin-bottom: 9px;
+            font-weight: 600;
+        }
+        .media-sov-small {
+            text-transform: none;
+            letter-spacing: 0;
+            color: #6a6a7a;
+            font-weight: 400;
+            font-style: italic;
+        }
+        .media-sov-pages {
+            margin-top: 9px;
+            padding-top: 8px;
+            border-top: 1px dashed #22223a;
+            font-size: 11px;
+            color: #8a8a9a;
+            line-height: 1.55;
+        }
+        .media-sov-pages strong { color: #cfd2ff; font-weight: 600; }
+        .media-sov-pages .pe-flag { color: #ffb860; }
+        /* Media Landscape */
+        .ml-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+        .ml-tab { background: #15151f; border: 1px solid #2a2a3a; color: #cfd2ff;
+            padding: 8px 15px; border-radius: 8px; font-size: 13px; cursor: pointer;
+            font-family: inherit; transition: all .15s; }
+        .ml-tab:hover { border-color: #3a3a4a; }
+        .ml-tab.active { background: #16243f; border-color: #3a5a8a; color: #fff; }
+        .ml-tab-n { color: #8a8a9a; font-size: 11px; margin-left: 3px; }
+        .ml-panel { display: none; }
+        .ml-panel.active { display: block; }
+        .ml-row { display: flex; align-items: center; gap: 12px; padding: 11px 4px;
+            border-bottom: 1px solid #1a1a26; }
+        .ml-status { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+        .ml-status.driving { background: #7acc7a; }
+        .ml-status.openlane { background: #ffb860; }
+        .ml-status.offradar { background: #55556a; }
+        .ml-name { font-weight: 600; color: #e8e8f0; min-width: 140px; font-size: 14px; }
+        .ml-domain { color: #6a6a7a; font-size: 12px; font-family: ui-monospace, monospace; flex: 1; }
+        .ml-statlabel { font-size: 12px; white-space: nowrap; }
+        .ml-statlabel.driving { color: #7acc7a; }
+        .ml-statlabel.openlane { color: #ffb860; }
+        .ml-statlabel.offradar { color: #8a8a9a; }
+        @media (max-width: 640px) {
+            .ml-domain { display: none; }
+            .ml-name { min-width: 0; }
+        }
+        .media-sov-more {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #888;
+        }
+        .media-sov-emerging {
+            font-size: 12px;
+            color: #cfd2ff;
+            margin-top: 4px;
+        }
+        .media-sov-emerging strong { color: #fff; }
+        /* In-card SoV bar */
+        .media-sov {
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid #1a1a22;
+        }
+        .media-sov-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 12px;
+            color: #aaa;
+        }
+        .media-sov-label {
+            color: #cfd2ff;
+            font-weight: 500;
+            min-width: 110px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .media-sov-track {
+            flex: 1;
+            height: 8px;
+            background: #1a1a22;
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+        }
+        .media-sov-track .sov-bar-brand { background: #4a9eff; }
+        .media-sov-track .sov-bar-rest { background: #3a2a1a; }
+        .media-sov-num {
+            color: #cfd2ff;
+            font-weight: 600;
+            min-width: 220px;
+            text-align: right;
+            font-size: 11px;
+            line-height: 1.3;
+        }
+        .media-sov-caption {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #999;
+            line-height: 1.5;
+        }
+        .media-rank {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #4a9eff;
+            margin-bottom: 8px;
+        }
+        .media-outlet {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .media-reporter {
+            font-size: 14px;
+            color: #888;
+            margin-bottom: 12px;
+        }
+        .media-stat {
+            display: inline-block;
+            padding: 3px 10px;
+            background: #0d1a0d;
+            border: 1px solid #1a3a1a;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #5a9a5a;
+            margin-right: 6px;
+            margin-bottom: 8px;
+        }
+        .media-rationale {
+            font-size: 14px;
+            color: #aaa;
+            line-height: 1.5;
+            margin-top: 12px;
+        }
+        .media-example-url {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #777;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            line-height: 1.5;
+        }
+        .media-example-url a {
+            color: #8aa8ff;
+            text-decoration: none;
+            word-break: break-all;
+        }
+        .media-example-url a:hover { text-decoration: underline; }
+        /* Per-card outlet-authority bar — bar length = outlet citation volume
+           relative to the most-cited outlet in this audit; bar COLOR = verdict
+           (the action). One encoding, two dimensions. Length tells you "is
+           this outlet a big deal?"; color tells you "do I defend, pitch, or
+           watch?" Cleaner than the cap-on-gray version. */
+        .card-authority-bar {
+            position: relative;
+            height: 8px;
+            background: #14141c;
+            border-radius: 2px;
+            overflow: hidden;
+            margin: 12px 0 8px;
+        }
+        .card-authority-fill {
+            position: absolute;
+            left: 0;
+            top: 0;
+            height: 100%;
+            /* background set by .verdict-* class */
+        }
+        .verdict-strength    { background: #22c55e; }
+        .verdict-opportunity { background: #f59e0b; }
+        .verdict-neutral     { background: #94a3b8; }
+        .verdict-emerging    { background: #a855f7; }
+        .media-gap {
+            font-size: 13px;
+            color: #e8a04c;
+            margin-top: 8px;
+            padding: 10px 14px;
+            background: #1a1510;
+            border-radius: 8px;
+        }
+        .media-gap strong {
+            color: #ffb860;
+        }
+        .media-domain {
+            font-size: 12px;
+            color: #4a9eff;
+            margin-bottom: 10px;
+            font-family: monospace;
+        }
+        .media-urls {
+            margin-top: 10px;
+            padding: 10px 14px;
+            background: #0a0a14;
+            border-radius: 8px;
+            border: 1px solid #1a1a2e;
+        }
+        .media-urls a {
+            font-size: 12px;
+            color: #6a7aff;
+            text-decoration: none;
+            display: block;
+            padding: 3px 0;
+            word-break: break-all;
+        }
+        .media-urls a:hover { text-decoration: underline; }
+        .media-urls-label {
+            font-size: 11px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+        .citation-total {
+            font-size: 13px;
+            color: #888;
+            margin-top: 4px;
+        }
+        /* Shared SoV bar fill colors (used by the in-card .media-sov bar). */
+        .sov-bar-brand { background: #4a9eff; }
+        .sov-bar-rest { background: #3a2a1a; }
+        .action-bar {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 16px 0 4px;
+        }
+        .action-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 9px 16px;
+            border-radius: 8px;
+            border: 1px solid #2a2a4a;
+            background: #14142a;
+            color: #cfd2ff;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background .15s, border-color .15s, transform .1s;
+        }
+        .action-btn:hover { background: #1a1a3a; border-color: #5c6cff; }
+        .action-btn:active { transform: translateY(1px); }
+        .action-btn[disabled] { opacity: 0.6; cursor: not-allowed; }
+        .toast {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%) translateY(20px);
+            background: #14142a;
+            border: 1px solid #5c6cff;
+            color: #cfd2ff;
+            padding: 10px 18px;
+            border-radius: 8px;
+            font-size: 13px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s, transform .2s;
+            z-index: 2000;
+        }
+        .toast.active {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+        .share-banner {
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 10px;
+            padding: 14px 18px;
+            margin-bottom: 24px;
+            font-size: 13px;
+            color: #cfd2ff;
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .share-banner a {
+            color: #6a7aff;
+            text-decoration: none;
+        }
+        .share-banner a:hover { text-decoration: underline; }
+
+        .signal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+        .signal-header .auth-cluster {
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: #888;
+        }
+        .signal-header .auth-cluster a {
+            color: #cfd2ff;
+            text-decoration: none;
+            border: 1px solid #2a2a4a;
+            padding: 5px 12px;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+        .signal-header .auth-cluster a:hover {
+            border-color: #5c6cff;
+            background: #14142a;
+        }
+        .signal-header .auth-cluster .credit-badge {
+            background: #14142a;
+            border: 1px solid #5c6cff;
+            color: #cfd2ff;
+            padding: 4px 10px;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        .signal-header .auth-cluster .logout-btn {
+            background: transparent;
+            border: 1px solid #2a2a4a;
+            color: #aaa;
+            font: inherit;
+            padding: 5px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        .signal-header .auth-cluster .logout-btn:hover { border-color: #5c6cff; color: #cfd2ff; }
+        /* Tier picker (segmented two-button) on the main search page */
+        .tier-picker {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin: 14px 0 18px;
+        }
+        @media (max-width: 560px) { .tier-picker { grid-template-columns: 1fr; } }
+        .tier-card {
+            position: relative;
+            padding: 14px 16px;
+            border-radius: 10px;
+            border: 1px solid #2a2a4a;
+            background: #11132a;
+            cursor: pointer;
+            transition: border-color .15s, background .15s, transform .1s;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .tier-card:hover { border-color: #4a5aff; background: #14163a; }
+        .tier-card.selected {
+            border-color: #5c6cff;
+            background: linear-gradient(135deg, #1a1a3a 0%, #14163a 100%);
+            box-shadow: 0 0 0 2px rgba(92, 108, 255, 0.25);
+        }
+        .tier-card input { position: absolute; opacity: 0; pointer-events: none; }
+        .tier-card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .tier-card-title { font-size: 14px; font-weight: 600; color: #fff; }
+        .tier-card-price {
+            font-size: 13px;
+            font-weight: 700;
+            color: #cfd2ff;
+            background: #1a1a3a;
+            padding: 2px 8px;
+            border-radius: 12px;
+        }
+        .tier-card-price.free { color: #5aff8a; background: #0e1a14; }
+        .tier-card-detail {
+            font-size: 12px;
+            color: #888;
+            line-height: 1.45;
+        }
+        .tier-card-detail strong { color: #cfd2ff; font-weight: 600; }
+        /* Legacy tier-toggle styles retained as fallback if other templates depend on them */
+        .tier-toggle { display: none; }
+        .form-hint-link {
+            font-size: 13px;
+            color: #888;
+            margin-top: 12px;
+        }
+        .form-hint-link a {
+            color: #6a7aff;
+            text-decoration: none;
+        }
+        .form-hint-link a:hover { text-decoration: underline; }
+
+        .save-panel {
+            margin-top: 36px;
+            padding: 22px 24px;
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+        }
+        .save-panel-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #7a8aff;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 8px;
+        }
+        .save-panel h4 {
+            font-size: 17px;
+            color: #fff;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        .save-panel-desc {
+            font-size: 13px;
+            color: #888;
+            line-height: 1.55;
+            margin-bottom: 14px;
+        }
+        .save-panel-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .save-panel-actions .action-btn { padding: 11px 18px; font-size: 14px; }
+        .save-panel-actions .action-btn.primary-action {
+            background: linear-gradient(180deg, #5c6cff, #4751e8);
+            border-color: transparent;
+            color: #fff;
+            font-weight: 600;
+        }
+        .save-panel-actions .action-btn.primary-action:hover { opacity: 0.95; }
+        .share-url-display {
+            width: 100%;
+            padding: 9px 12px;
+            background: #0a0a0a;
+            border: 1px solid #1a1a2e;
+            border-radius: 8px;
+            color: #6a7aff;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+        }
+        .share-url-display:focus { outline: none; border-color: #5c6cff; }
+
+        /* Prompts used */
+        .prompts-toggle {
+            font-size: 13px;
+            color: #555;
+            cursor: pointer;
+            margin-top: 32px;
+            padding: 12px 0;
+            border-top: 1px solid #1a1a1a;
+        }
+        .prompts-toggle:hover { color: #888; }
+        .prompts-list {
+            display: none;
+            margin-top: 12px;
+        }
+        .prompts-list.open { display: block; }
+        .prompts-list li {
+            font-size: 13px;
+            color: #666;
+            padding: 6px 0;
+            list-style: none;
+            border-bottom: 1px solid #111;
+        }
+        .prompts-list li::before {
+            content: counter(prompt-counter) ".";
+            counter-increment: prompt-counter;
+            color: #444;
+            margin-right: 8px;
+            font-variant-numeric: tabular-nums;
+        }
+        .prompts-list ol {
+            counter-reset: prompt-counter;
+            padding: 0;
+        }
+
+        .error-msg {
+            display: none;
+            padding: 16px 20px;
+            background: #1a1010;
+            border: 1px solid #3a1a1a;
+            border-radius: 10px;
+            color: #ff6b6b;
+            font-size: 14px;
+        }
+        .error-msg.active { display: block; }
+
+        .form-section { }
+        .form-section.hidden { display: none; }
+
+        /* Prompt editor (paid-tier two-phase flow) */
+        .prompt-editor { display: none; margin-top: 6px; }
+        .prompt-editor.active { display: block; }
+        .prompt-editor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+        .prompt-editor-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+            margin: 0;
+        }
+        .prompt-editor-desc {
+            font-size: 13px;
+            color: #888;
+            line-height: 1.55;
+            margin: 4px 0 0;
+        }
+        .prompt-editor-desc strong { color: #cfd2ff; font-weight: 600; }
+        .prompt-editor-count {
+            font-size: 12px;
+            color: #7a8aff;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            white-space: nowrap;
+        }
+        .prompt-list {
+            max-height: 480px;
+            overflow-y: auto;
+            border: 1px solid #1c2230;
+            border-radius: 10px;
+            padding: 6px;
+            background: #0a0a18;
+            margin: 14px 0;
+        }
+        .prompt-row {
+            display: grid;
+            grid-template-columns: 28px 1fr auto auto;
+            gap: 8px;
+            align-items: center;
+            padding: 8px 10px;
+            border-bottom: 1px solid #11142a;
+            background: transparent;
+        }
+        .prompt-row:last-child { border-bottom: none; }
+        .prompt-row.editing { grid-template-columns: 28px 1fr auto; align-items: start; }
+        .prompt-row .pidx {
+            font-size: 12px;
+            color: #555;
+            font-variant-numeric: tabular-nums;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .prompt-row .ptext {
+            font-size: 13px;
+            color: #cfd2ff;
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        .prompt-row .ptext-input {
+            width: 100%;
+            min-height: 60px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 13px;
+            color: #cfd2ff;
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 6px;
+            padding: 8px 10px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+        .prompt-row .ptext-input:focus {
+            outline: none;
+            border-color: #5c6cff;
+        }
+        .prompt-row-btn {
+            background: transparent;
+            border: 1px solid #2a2a4a;
+            color: #888;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 12px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .prompt-row-btn:hover { color: #cfd2ff; border-color: #5c6cff; }
+        .prompt-row-btn.danger { color: #aaa; }
+        .prompt-row-btn.danger:hover { color: #ff6b6b; border-color: #5a2030; }
+        .prompt-editor-toolbar {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .prompt-editor-toolbar-left,
+        .prompt-editor-toolbar-right {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .prompt-editor-warning {
+            display: none;
+            margin: 6px 0 12px;
+            font-size: 12px;
+            color: #ffb86b;
+            background: #1a1408;
+            border: 1px solid #3a2818;
+            border-radius: 6px;
+            padding: 8px 12px;
+        }
+        .prompt-editor-warning.active { display: block; }
+        .prompt-editor-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+        .prompt-editor-loading {
+            display: none;
+            font-size: 13px;
+            color: #888;
+            padding: 14px 0;
+        }
+        .prompt-editor-loading.active { display: block; }
+
+        /* Bespoke CTA */
+        /* Institutional targets */
+        .institutional-card {
+            background: #0e1118;
+            border: 1px solid #1c2230;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 12px;
+        }
+        .institutional-rank {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #8a9aff;
+            margin-bottom: 6px;
+        }
+        .institutional-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .institutional-type {
+            display: inline-block;
+            font-size: 11px;
+            padding: 2px 8px;
+            background: #1a1f30;
+            border: 1px solid #2a3550;
+            border-radius: 5px;
+            color: #8a9aff;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .institutional-play {
+            font-size: 13px;
+            color: #a8b0c8;
+            line-height: 1.5;
+            margin-top: 10px;
+        }
+        .section-note {
+            font-size: 12px;
+            color: #777;
+            margin: -8px 0 16px;
+            font-style: italic;
+        }
+
+        /* Analyst targets */
+        .analyst-card {
+            background: #150e18;
+            border: 1px solid #2a1c30;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 12px;
+        }
+        .analyst-rank {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #d088ff;
+            margin-bottom: 6px;
+        }
+        .analyst-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .analyst-type {
+            display: inline-block;
+            font-size: 11px;
+            padding: 2px 8px;
+            background: #1f1228;
+            border: 1px solid #3a2050;
+            border-radius: 5px;
+            color: #d088ff;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .analyst-eval {
+            display: inline-block;
+            font-size: 11px;
+            padding: 2px 8px;
+            background: #18101f;
+            border: 1px solid #3a2050;
+            border-radius: 5px;
+            color: #c898e8;
+            margin-right: 4px;
+            margin-bottom: 4px;
+        }
+        .analyst-play {
+            font-size: 13px;
+            color: #c8b8d8;
+            line-height: 1.5;
+            margin-top: 10px;
+        }
+
+        .feedback-widget {
+            margin-top: 28px;
+            padding: 18px 20px;
+            background: #11132a;
+            border: 1px solid #2a2a4a;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .feedback-question {
+            font-size: 14px;
+            color: #cfd2ff;
+            font-weight: 500;
+            margin-bottom: 10px;
+        }
+        .feedback-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .feedback-btn {
+            padding: 8px 14px;
+            font-family: inherit;
+            font-size: 13px;
+            color: #cfd2ff;
+            background: #14142a;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: border-color .15s, background .15s;
+        }
+        .feedback-btn:hover { border-color: #5c6cff; background: #1a1a3a; }
+        .feedback-btn.selected { border-color: #5aff8a; background: #0e1a14; color: #5aff8a; }
+        .feedback-thanks {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #5aff8a;
+        }
+        .bespoke-cta {
+            margin-top: 40px;
+            padding: 28px;
+            background: linear-gradient(135deg, #0e1830 0%, #1a1530 100%);
+            border: 1px solid #2a3a5e;
+            border-radius: 14px;
+        }
+        .bespoke-cta-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #7a8aff;
+            margin-bottom: 10px;
+        }
+        .bespoke-cta h3 {
+            font-size: 20px;
+            color: #fff;
+            margin-bottom: 10px;
+            line-height: 1.3;
+        }
+        .bespoke-cta p {
+            font-size: 14px;
+            color: #aaa;
+            line-height: 1.55;
+            margin-bottom: 18px;
+        }
+        .bespoke-stats {
+            display: flex;
+            gap: 14px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .bespoke-stat {
+            flex: 1;
+            min-width: 130px;
+            padding: 12px 14px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid #1e2a4e;
+            border-radius: 8px;
+        }
+        .bespoke-stat-num {
+            font-size: 22px;
+            font-weight: 700;
+            color: #fff;
+        }
+        .bespoke-stat-label {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 2px;
+        }
+        .bespoke-btn {
+            padding: 12px 22px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            background: #4a9eff;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .bespoke-btn:hover { background: #6ab0ff; }
+        .cta-buy-btn {
+            width: 100%;
+            padding: 14px 22px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 15px;
+            font-weight: 600;
+            background: linear-gradient(180deg, #5c6cff, #4751e8);
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: opacity .2s, transform .1s;
+            box-shadow: 0 8px 22px rgba(92, 108, 255, 0.25);
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+        }
+        .cta-buy-btn:hover { opacity: 0.95; }
+        .cta-buy-btn:active { transform: translateY(1px); }
+        .cta-buy-btn[disabled] { opacity: 0.55; cursor: not-allowed; }
+        .cta-payment-note {
+            font-size: 12px;
+            color: #888;
+            margin-top: 10px;
+            text-align: center;
+            letter-spacing: 0.5px;
+        }
+        .cta-payment-note strong { color: #cfd2ff; }
+        .cta-secondary {
+            margin-top: 18px;
+            padding-top: 18px;
+            border-top: 1px solid #1e2a4e;
+            font-size: 13px;
+            color: #888;
+            text-align: center;
+            line-height: 1.55;
+        }
+        .cta-link-btn {
+            background: transparent;
+            border: none;
+            color: #6a7aff;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            padding: 0;
+            text-decoration: underline;
+            text-underline-offset: 3px;
+        }
+        .cta-link-btn:hover { color: #8a9aff; }
+        .cta-error {
+            margin-top: 10px;
+            padding: 8px 12px;
+            background: rgba(255, 107, 107, 0.1);
+            border: 1px solid rgba(255, 107, 107, 0.4);
+            border-radius: 6px;
+            color: #ff6b6b;
+            font-size: 13px;
+            text-align: center;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.75);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: #141414;
+            border: 1px solid #2a2a2a;
+            border-radius: 14px;
+            padding: 32px;
+            max-width: 460px;
+            width: 100%;
+            position: relative;
+        }
+        .modal-close {
+            position: absolute;
+            top: 14px;
+            right: 18px;
+            font-size: 22px;
+            color: #555;
+            cursor: pointer;
+            background: none;
+            border: none;
+            line-height: 1;
+        }
+        .modal-close:hover { color: #aaa; }
+        .modal h3 {
+            font-size: 20px;
+            color: #fff;
+            margin-bottom: 6px;
+        }
+        .modal p {
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 22px;
+            line-height: 1.5;
+        }
+        .modal-field {
+            margin-bottom: 12px;
+        }
+        .modal-field label {
+            display: block;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .modal-field input {
+            width: 100%;
+            padding: 10px 14px;
+            background: #0a0a0a;
+            border: 1px solid #2a2a2a;
+            border-radius: 8px;
+            color: #fff;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 14px;
+            outline: none;
+        }
+        .modal-field input:focus { border-color: #4a9eff; }
+        .modal-submit {
+            width: 100%;
+            margin-top: 8px;
+            padding: 12px;
+            background: #fff;
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .modal-submit:hover { opacity: 0.9; }
+        .modal-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+        .modal-error {
+            display: none;
+            margin-top: 10px;
+            font-size: 13px;
+            color: #ff6b6b;
+        }
+        .modal-error.active { display: block; }
+        .modal-success {
+            text-align: center;
+            padding: 16px 0;
+        }
+        .modal-success h3 {
+            color: #5aff8a;
+            margin-bottom: 8px;
+        }
+
+    /* =====================================================================
+       P3 — Elevated design system (Jost + Inter, dark premium palette).
+       Appended last so it re-skins every surface above via the later-wins
+       cascade, without touching the original rules' structure. All ids,
+       classes, JS hooks and endpoints are unchanged.
+       ===================================================================== */
+    :root{
+      --ink:#EDEEF1; --ink2:#9aa1ad; --muted:#6b7280; --line:rgba(255,255,255,.08);
+      --gold:#cbab6d; --gold-g:rgba(203,171,109,.42);
+      --coral:#f0876a; --coral-g:rgba(240,135,106,.36);
+      --cyan:#74d0ff; --cyan-g:rgba(116,208,255,.34);
+      --card:linear-gradient(180deg,#12141b,#0d0f14);
+      --cta:linear-gradient(180deg,#f0916f,#d76a4c);
+    }
+    body{
+      font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
+      background:
+        radial-gradient(1100px 520px at 78% -6%, rgba(203,171,109,.10), transparent 60%),
+        radial-gradient(1000px 560px at 10% 4%, rgba(116,208,255,.07), transparent 55%),
+        #07080b;
+      background-attachment:fixed;
+      color:var(--ink);
+      -webkit-font-smoothing:antialiased;
+    }
+    h1,h2,h3,h4,.eyebrow,.wm,.report-eyebrow,.brand,.stat,.pilltab,.movehd,.chip,.cardhd,
+    .headline-move-verb,.headline-move-label,.verdict-group-title,.wins-title,.defend-title,
+    .briefing-summary-label,.ai-visibility-label,.countdown-time,.pct,.step h3,
+    .bespoke-cta h3,.save-panel h4,.media-outlet,.dc-outlet,.loading-text,.shd h2,.bespoke h2,
+    .ct,.pmove .tag,.peek .pe,.step .n,.pbar .v{font-family:'Jost',sans-serif;}
+    .container{max-width:900px;position:relative;z-index:2;padding:0 24px 72px;}
+
+    /* ---- ambient (homepage only) ---- */
+    .amb,.pglow{display:none;}
+    body.home .amb,body.home .pglow{display:block;}
+    .amb{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;}
+    .amb span{position:absolute;border-radius:50%;filter:blur(64px);opacity:.5;}
+    .amb .a{width:600px;height:600px;left:60%;top:-16%;background:radial-gradient(circle,rgba(203,171,109,.20),transparent 60%);animation:drift1 22s ease-in-out infinite;}
+    .amb .b{width:540px;height:540px;left:-10%;top:8%;background:radial-gradient(circle,rgba(116,208,255,.16),transparent 60%);animation:drift2 26s ease-in-out infinite;}
+    .amb .c{width:520px;height:520px;left:24%;top:54%;background:radial-gradient(circle,rgba(240,135,106,.12),transparent 60%);animation:drift1 30s ease-in-out infinite reverse;}
+    @keyframes drift1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-40px,36px) scale(1.08)}}
+    @keyframes drift2{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(46px,-30px) scale(1.1)}}
+    .pglow{position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(360px 360px at var(--mx,50%) var(--my,22%),rgba(240,135,106,.08),transparent 62%);transition:background .1s linear;}
+
+    /* ---- top nav / header ---- */
+    .signal-header{margin-bottom:0;padding:26px 0;border:0;}
+    .signal-header .wm{font-family:'Inter',sans-serif;font-weight:500;font-size:22px;letter-spacing:-.012em;color:#f4f4f5;text-transform:none;text-decoration:none;}
+    .signal-header .wm sup{font-size:.56em;font-weight:500;margin-left:1px;}
+    .signal-header .auth-cluster{color:var(--ink2);}
+    .signal-header .auth-cluster a{color:#2a1008;background:var(--cta);border:0;padding:9px 16px;border-radius:999px;font-weight:600;box-shadow:0 0 22px -4px var(--coral-g);transition:transform .2s,box-shadow .2s;}
+    .signal-header .auth-cluster a:hover{transform:translateY(-1px);box-shadow:0 0 30px -2px var(--coral-g);background:var(--cta);border-color:transparent;}
+    .sig-tabs{display:flex;gap:8px;}
+    .pilltab{font-size:12px;letter-spacing:.12em;text-transform:uppercase;font-weight:600;padding:7px 14px;border-radius:999px;border:1px solid var(--line);color:var(--ink2);background:rgba(255,255,255,.02);text-decoration:none;}
+    .pilltab.on{color:#2a1008;background:var(--cta);border-color:transparent;box-shadow:0 0 22px -6px var(--coral-g);}
+    .pilltab:hover{color:var(--ink);}
+    .pilltab.on:hover{color:#2a1008;}
+
+    /* ---- hero ---- */
+    .hero{padding:52px 0 26px;text-align:center;}
+    .hero>*{opacity:0;animation:fadeUp .8s cubic-bezier(.2,.7,.2,1) forwards;}
+    .hero .eyebrow{animation-delay:.05s}.hero h1{animation-delay:.16s}.hero .sub{animation-delay:.28s}
+    .hero .form-section{animation-delay:.4s}.hero .microtag{animation-delay:.5s}.hero .assistants{animation-delay:.6s}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+    @media (prefers-reduced-motion:reduce){.hero>*{opacity:1;animation:none}}
+    .eyebrow{display:inline-block;color:var(--gold);letter-spacing:.24em;text-transform:uppercase;font-size:11.5px;font-weight:600;text-shadow:0 0 18px var(--gold-g);}
+    .hero .eyebrow{border:1px solid rgba(203,171,109,.25);border-radius:999px;padding:7px 15px;}
+    .hero h1{font-weight:600;font-size:52px;line-height:1.06;letter-spacing:-.015em;margin:22px 0 18px;color:#fff;}
+    .hero h1 .g{background:linear-gradient(120deg,var(--coral),var(--cyan) 55%,var(--gold));-webkit-background-clip:text;background-clip:text;color:transparent;}
+    .hero .sub,.subtitle.sub{max-width:640px;margin:0 auto 0;font-size:17px;color:var(--ink2);line-height:1.6;}
+    .hero .sub b{color:var(--ink);font-weight:500;}
+
+    /* ---- runner (two-field input) ---- */
+    .runner{margin:30px auto 0;max-width:640px;display:flex;flex-direction:column;gap:16px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px 28px;box-shadow:0 24px 70px -40px #000;transition:border-color .25s,box-shadow .25s;}
+    .runner:focus-within{border-color:rgba(240,135,106,.5);box-shadow:0 0 44px -14px var(--coral-g),0 24px 70px -40px #000;}
+    .sentence{font-family:'Jost',sans-serif;font-weight:500;font-size:21px;line-height:2.05;color:var(--ink2);text-align:center;}
+    .fin{font-family:'Inter',sans-serif;font-weight:500;font-size:18px;color:var(--ink);background:transparent;border:0;border-bottom:2px solid rgba(255,255,255,.16);outline:0;padding:2px 4px 4px;transition:border-color .2s,box-shadow .2s;}
+    .fin.brand{min-width:150px}.fin.topic{min-width:238px}
+    .fin::placeholder{color:#5c626d;font-weight:400}
+    .fin:focus{border-color:var(--coral);box-shadow:0 9px 22px -12px var(--coral-g)}
+    .runner-btns{display:flex;flex-direction:column;align-items:center;gap:10px;}
+
+    /* ---- buttons ---- */
+    .btn{width:100%;font-family:'Jost',sans-serif;font-weight:600;font-size:15px;letter-spacing:.01em;color:#2a1008;background:var(--cta);border:0;border-radius:11px;padding:14px 24px;box-shadow:0 0 26px -6px var(--coral-g);transition:transform .18s,box-shadow .25s,opacity .2s;position:relative;overflow:hidden;}
+    .btn:hover{transform:translateY(-1px);box-shadow:0 0 40px -4px var(--coral-g);opacity:1;}
+    .btn.ghost{background:transparent;color:var(--ink2);border:1px solid var(--line);box-shadow:none;font-family:'Inter',sans-serif;font-weight:500;font-size:13.5px;padding:9px 16px;}
+    .btn.ghost:hover{color:var(--ink);border-color:rgba(203,171,109,.4);box-shadow:0 0 18px -8px var(--gold-g);transform:none;}
+    .runner .btn{width:auto;align-self:center;}
+    .microtag{margin-top:2px;font-size:13.5px;color:var(--muted);text-align:center;}
+    .microtag b{color:var(--gold);font-weight:600;}
+    .form-hint{margin-top:10px;font-size:12.5px;color:var(--muted);text-align:center;line-height:1.5;}
+    .form-hint b{color:var(--ink2);font-weight:500;}
+
+    /* ---- assistant chips (hero) ---- */
+    .assistants{margin-top:30px;display:flex;align-items:center;justify-content:center;gap:11px;flex-wrap:wrap;}
+    .assistants .lab{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-right:4px;}
+    .chip{font-size:13px;color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:8px 15px;background:rgba(255,255,255,.02);transition:color .2s,border-color .2s,box-shadow .3s,transform .2s;}
+    .chip:hover{color:var(--ink);border-color:rgba(203,171,109,.5);box-shadow:0 0 22px -4px var(--gold-g);transform:translateY(-2px);}
+
+    /* ---- how it works / peek / bespoke / footer (homepage) ---- */
+    #homeMarketing{position:relative;z-index:2;}
+    section.blk{padding:60px 0;}
+    .shd{text-align:center;margin-bottom:12px;}
+    .shd h2{font-size:30px;font-weight:600;margin-top:12px;color:#fff;}
+    .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:32px;}
+    .step{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px 24px;transition:transform .28s cubic-bezier(.2,.7,.2,1),border-color .28s,box-shadow .28s;}
+    .step:hover{transform:translateY(-6px);border-color:rgba(240,135,106,.32);box-shadow:0 0 50px -22px var(--coral-g),0 30px 60px -44px #000;}
+    .step .n{font-weight:600;font-size:13px;color:var(--gold);letter-spacing:.1em;border:1px solid rgba(203,171,109,.3);width:34px;height:34px;display:grid;place-items:center;border-radius:9px;box-shadow:0 0 16px -6px var(--gold-g);}
+    .step h3{font-size:19px;font-weight:600;margin:16px 0 8px;color:var(--ink);}
+    .step p{font-size:14.5px;color:var(--ink2);line-height:1.6;}
+    .peek{max-width:660px;margin:32px auto 0;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px 28px;box-shadow:0 30px 80px -46px #000;}
+    .peek .pe{color:var(--gold);letter-spacing:.2em;text-transform:uppercase;font-size:11px;font-weight:600;}
+    .pbar{display:grid;grid-template-columns:96px 1fr 40px;align-items:center;gap:14px;margin:11px 0;}
+    .pbar .l{font-size:13.5px;color:var(--ink);}
+    .pbar .t{height:10px;border-radius:999px;background:rgba(255,255,255,.04);overflow:hidden;}
+    .pbar .f{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#57c4f2,#ecca85);box-shadow:0 0 12px rgba(87,196,242,.4);}
+    .pbar .v{font-weight:500;font-size:13.5px;text-align:right;color:var(--ink);}
+    .pmove{margin-top:18px;background:linear-gradient(180deg,rgba(240,135,106,.07),rgba(240,135,106,.02));border:1px solid rgba(240,135,106,.3);border-radius:12px;padding:15px 18px;box-shadow:inset 0 0 50px -34px var(--coral-g);}
+    .pmove .tag{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:#2a1008;background:var(--cta);border-radius:5px;padding:3px 9px;}
+    .pmove p{font-size:14px;color:#f6ece7;margin-top:9px;line-height:1.55;}
+    .bespoke{max-width:780px;margin:0 auto;text-align:center;background:linear-gradient(180deg,#14161e,#0c0e13);border:1px solid rgba(203,171,109,.26);border-radius:22px;padding:44px 40px;box-shadow:0 0 90px -44px var(--gold-g),0 40px 90px -52px #000;position:relative;overflow:hidden;}
+    .bespoke::before{content:"";position:absolute;inset:0;background:radial-gradient(520px 240px at 50% -12%,rgba(203,171,109,.14),transparent 62%);pointer-events:none;}
+    .bespoke h2{font-size:31px;font-weight:600;margin:14px 0 14px;line-height:1.14;color:#fff;}
+    .bsub{max-width:580px;margin:0 auto;font-size:16px;color:var(--ink2);line-height:1.62;}
+    .bsub b{color:var(--gold);}
+    .compare{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:30px 0 4px;text-align:left;}
+    .col{background:rgba(255,255,255,.02);border:1px solid var(--line);border-radius:14px;padding:20px 22px;}
+    .col.hot{border-color:rgba(240,135,106,.42);box-shadow:0 0 48px -22px var(--coral-g);background:linear-gradient(180deg,rgba(240,135,106,.05),transparent);}
+    .ct{font-weight:600;font-size:13.5px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:12px;}
+    .col.hot .ct{color:var(--coral);}.col:not(.hot) .ct{color:var(--ink2);}
+    .ci{font-size:14px;color:var(--ink);padding:6px 0 6px 22px;position:relative;}
+    .ci::before{content:"";position:absolute;left:0;top:12px;width:7px;height:7px;border-radius:50%;background:var(--gold);box-shadow:0 0 8px var(--gold-g);}
+    .col.hot .ci::before{background:var(--coral);box-shadow:0 0 9px var(--coral);}
+    .btn-lg{display:inline-block;margin-top:26px;color:#2a1008;background:var(--cta);padding:16px 34px;border-radius:13px;font-family:'Jost',sans-serif;font-weight:600;font-size:16px;text-decoration:none;box-shadow:0 0 44px -8px var(--coral-g);transition:transform .18s,box-shadow .25s;cursor:pointer;border:0;}
+    .btn-lg:hover{transform:translateY(-2px);box-shadow:0 0 60px -4px var(--coral-g);}
+    .home-footer{position:relative;z-index:2;text-align:center;padding:54px 0 10px;border-top:1px solid var(--line);margin-top:24px;}
+    .home-footer .big{font-weight:600;font-size:26px;color:var(--ink);margin-bottom:12px;font-family:'Jost',sans-serif;}
+    .home-footer a.big{display:inline-block;text-decoration:none;cursor:pointer;transition:color .2s;}
+    .home-footer a.big:hover{color:#fff;text-shadow:0 0 22px rgba(240,135,106,.4);}
+    .home-footer .fc{font-size:14px;color:var(--ink2);}
+
+    /* ---- loading / progress ---- */
+    .loading{padding:44px 0 36px;}
+    .countdown-ring{width:240px;height:240px;margin:0 auto 16px;}
+    .countdown-ring svg{width:240px;height:240px;transform:rotate(-90deg);}
+    .countdown-ring .bg{stroke:rgba(255,255,255,.08);stroke-width:12;}
+    .countdown-ring .progress{stroke:url(#ringGrad);stroke-width:12;stroke-linecap:round;filter:drop-shadow(0 0 7px rgba(240,135,106,.55));transition:stroke-dashoffset 1s cubic-bezier(.3,.7,.3,1);}
+    .ring-halo{position:absolute;inset:22px;border-radius:50%;box-shadow:0 0 46px -20px var(--coral-g);animation:ringpulse 2.6s ease-in-out infinite;pointer-events:none;}
+    @keyframes ringpulse{0%,100%{opacity:.55;transform:scale(.98)}50%{opacity:1;transform:scale(1.02)}}
+    .countdown-time{font-weight:600;font-size:52px;letter-spacing:-.02em;background:linear-gradient(120deg,var(--cyan),var(--gold) 60%,var(--coral));-webkit-background-clip:text;background-clip:text;color:transparent;}
+    .loading-text{font-weight:500;font-size:22px;color:var(--ink);margin-top:6px;}
+    .loading-step{font-size:14px;color:var(--muted);margin-top:14px;min-height:20px;}
+    .countdown-eta{margin-top:8px;font-size:14px;color:var(--ink2);}
+    .countdown-eta b,.loading-step b{color:var(--gold);}
+    .load-assistants{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:24px;}
+    .ac{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:9px 16px;background:rgba(255,255,255,.02);transition:all .3s;}
+    .ac .d{width:8px;height:8px;border-radius:50%;background:var(--muted);}
+    .ac.run{border-color:rgba(116,208,255,.32);color:var(--ink);}
+    .ac.run .d{background:var(--cyan);box-shadow:0 0 10px var(--cyan);animation:blink 1.1s ease-in-out infinite;}
+    .ac.done{border-color:rgba(240,135,106,.34);color:var(--ink);}
+    .ac.done .d{background:var(--coral);box-shadow:0 0 9px var(--coral-g);}
+    @keyframes blink{0%,100%{opacity:.35}50%{opacity:1}}
+
+    /* ---- report: header + hero stat ---- */
+    .results-header{border-bottom:1px solid var(--line);}
+    .report-eyebrow{color:var(--gold);letter-spacing:.24em;text-shadow:0 0 18px var(--gold-g);font-weight:600;font-size:11.5px;}
+    .results-header h2{font-weight:600;font-size:32px;color:#fff;margin:10px 0 14px;}
+    .brand-pill{background:rgba(116,208,255,.08);border:1px solid rgba(116,208,255,.18);color:#cdd6ea;border-radius:999px;padding:7px 16px;font-size:13.5px;}
+    .mention-count{font-size:15px;color:var(--ink2);}
+    .mention-count strong{font-weight:600;font-size:19px;color:var(--coral);text-shadow:0 0 22px var(--coral-g);}
+    .mention-method{color:var(--muted);}
+    .completion-badge{border:1px solid var(--line);background:rgba(255,255,255,.02);color:var(--ink2);}
+    .completion-badge.full{border-color:rgba(240,135,106,.28);background:rgba(240,135,106,.08);color:#f3d2c4;}
+    .completion-badge.full .dot{background:var(--coral);box-shadow:0 0 10px var(--coral);}
+
+    /* ---- report: where AI sees you ---- */
+    .ai-visibility{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 24px;}
+    .ai-visibility-label{color:var(--gold);letter-spacing:.16em;text-shadow:0 0 18px var(--gold-g);font-weight:600;}
+    .ai-vis-name{color:var(--ink);}
+    .ai-vis-tag{color:var(--gold);background:rgba(203,171,109,.06);border:1px solid rgba(203,171,109,.28);}
+    .ai-vis-track{height:11px;background:rgba(255,255,255,.04);border-radius:999px;}
+    .ai-vis-fill{background:linear-gradient(90deg,#57c4f2,#ecca85);box-shadow:0 0 12px rgba(87,196,242,.4);border-radius:999px;}
+    .ai-vis-num{color:var(--ink);font-weight:500;}
+    .ai-visibility-read{color:var(--ink2);border-top:1px solid var(--line);}
+
+    /* ---- report: what we found + #1 move ---- */
+    .briefing-summary{background:var(--card);border:1px solid var(--line);border-radius:16px;}
+    .briefing-summary-label{color:var(--gold);}
+    .briefing-summary-text{color:#dfe2e8;}
+    .executive-summary{background:var(--card);border-left:3px solid var(--coral);}
+    .headline-move{background:linear-gradient(180deg,rgba(240,135,106,.07),rgba(240,135,106,.02));border:1px solid rgba(240,135,106,.32);border-left:1px solid rgba(240,135,106,.32);border-radius:16px;box-shadow:0 0 60px -22px var(--coral-g),inset 0 0 60px -40px var(--coral-g);}
+    .headline-move-verb{color:#2a1008;background:var(--cta);box-shadow:0 0 20px var(--coral-g);font-weight:600;}
+    .headline-move-label{color:var(--coral);}
+    .headline-move-text{color:#f6ece7;}
+
+    /* ---- report: competitors ---- */
+    .section-title{color:var(--muted);letter-spacing:.16em;}
+    .competitor-chip{color:var(--gold);border:1px solid rgba(203,171,109,.34);background:rgba(203,171,109,.05);border-radius:999px;padding:8px 15px;box-shadow:0 0 16px -6px var(--gold-g);transition:transform .2s,box-shadow .2s,border-color .2s;}
+    .competitor-chip:hover{transform:translateY(-2px);border-color:rgba(203,171,109,.5);}
+    .competitor-chip .count{color:#e7d9b3;font-weight:600;margin-left:6px;}
+
+    /* ---- report: verdict groups + outlet cards ---- */
+    .verdict-group-title{color:#fff;font-weight:600;}
+    .verdict-group-count{color:var(--ink2);background:rgba(255,255,255,.02);border:1px solid var(--line);}
+    .verdict-group-icon.strength,.verdict-group-icon.confirmed{background:rgba(203,171,109,.08);border:1px solid rgba(203,171,109,.3);}
+    .verdict-group-icon.opportunity,.verdict-group-icon.category{background:rgba(240,135,106,.08);border:1px solid rgba(240,135,106,.32);}
+    .verdict-group-icon.neutral{background:rgba(255,255,255,.03);border:1px solid var(--line);}
+    .verdict-group-icon.emerging,.verdict-group-icon.unverified,.verdict-group-icon.mention{background:rgba(116,208,255,.06);border:1px solid rgba(116,208,255,.2);}
+    .verdict-group-intro{color:var(--ink2);}
+    .media-card{background:var(--card);border:1px solid var(--line);border-left:2px solid var(--line);border-radius:16px;box-shadow:0 24px 60px -46px #000;transition:transform .28s cubic-bezier(.2,.7,.2,1),box-shadow .3s,border-color .28s;}
+    .media-card:hover{transform:translateY(-3px);border-color:var(--line);}
+    .media-card.strength{border-left-color:var(--gold);}
+    .media-card.strength:hover{box-shadow:0 0 46px -26px var(--gold-g),0 24px 60px -44px #000;}
+    .media-card.opportunity{border-left-color:var(--coral);}
+    .media-card.opportunity:hover{box-shadow:0 0 46px -24px var(--coral-g),0 24px 60px -44px #000;}
+    .media-card.neutral{border-left-color:#4a4f58;}
+    .media-card.emerging{border-left-color:var(--cyan);}
+    .media-outlet{font-weight:600;color:#fff;}
+    .media-domain{color:var(--cyan);font-family:ui-monospace,monospace;}
+    .media-reporter{color:var(--ink2);}
+    .card-badge.strength{background:rgba(203,171,109,.06);color:#e7d2a4;border:1px solid rgba(203,171,109,.4);}
+    .card-badge.opportunity{background:rgba(240,135,106,.06);color:#f3d0c2;border:1px solid rgba(240,135,106,.42);}
+    .card-badge.neutral{background:rgba(255,255,255,.02);color:var(--ink2);border:1px solid var(--line);}
+    .card-badge.emerging{background:rgba(116,208,255,.05);color:#bfe4ff;border:1px solid rgba(116,208,255,.25);}
+    .media-stat{background:rgba(203,171,109,.05);border:1px solid rgba(203,171,109,.2);color:#d9c48f;border-radius:999px;padding:6px 12px;}
+    .media-example-url a{color:var(--cyan);}
+    .media-rationale{color:#dfe2e8;}
+    .card-authority-bar{background:rgba(255,255,255,.045);border-radius:999px;}
+    .verdict-strength{background:linear-gradient(90deg,#e6c583,#cbab6d);}
+    .verdict-opportunity{background:linear-gradient(90deg,#f0916f,#d76a4c);}
+    .verdict-neutral{background:linear-gradient(90deg,#9096a0,#6b7280);}
+    .verdict-emerging{background:linear-gradient(90deg,#5aa8f0,#74d0ff);}
+    .media-sov{border-top:1px solid var(--line);}
+    .media-sov-head{color:var(--muted);}
+    .media-sov-small{color:var(--muted);}
+    .media-sov-row-label{color:var(--ink2);}
+    .media-sov-row-label.brand strong{color:var(--ink);font-weight:600;}
+    .media-sov-row-bar{background:rgba(255,255,255,.05);border-radius:999px;}
+    .media-sov-row-bar .fill{border-radius:999px;}
+    .media-sov-row-bar .fill.brand{background:linear-gradient(90deg,#5aa8f0,#74d0ff);box-shadow:0 0 12px rgba(116,208,255,.4);}
+    .media-sov-row-bar .fill.comp{background:linear-gradient(90deg,#d9a24f,#ecca85);}
+    .media-sov-row-num{color:var(--ink);font-weight:500;}
+    .media-sov-context,.media-sov-more,.media-sov-emerging{color:var(--ink2);}
+    .media-sov-pages{color:var(--ink2);border-top:1px dashed var(--line);}
+    .media-sov-pages strong{color:var(--ink);}
+    .media-sov-pages .pe-flag{color:var(--coral);}
+    .cov-chip.confirmed{background:rgba(203,171,109,.06);color:#e7d2a4;border:1px solid rgba(203,171,109,.3);}
+    .cov-chip.mention{background:rgba(203,171,109,.05);color:#d9c48f;border:1px solid rgba(203,171,109,.24);}
+    .cov-chip.category{background:rgba(240,135,106,.06);color:#f3d0c2;border:1px solid rgba(240,135,106,.3);}
+    .dc-article{color:#dfe2e8;}
+    .dc-article .q{color:#fff;font-weight:600;}
+    .dc-date{color:#2a1008;background:var(--cta);}
+    .dc-date.old{color:var(--ink2);background:rgba(255,255,255,.03);border:1px solid var(--line);}
+    .dc-llms{color:var(--muted);}
+    .section-note{color:var(--muted);}
+
+    /* ---- report: actions / save / bespoke / feedback / misc ---- */
+    .action-btn{background:rgba(255,255,255,.03);border:1px solid var(--line);color:var(--ink);border-radius:10px;}
+    .action-btn:hover{background:rgba(255,255,255,.05);border-color:rgba(203,171,109,.34);box-shadow:0 0 22px -8px var(--gold-g);}
+    .action-btn.primary-action,.save-panel-actions .action-btn.primary-action{background:var(--cta);border-color:transparent;color:#2a1008;font-weight:600;}
+    .action-btn.primary-action:hover,.save-panel-actions .action-btn.primary-action:hover{opacity:.95;}
+    .save-panel{background:var(--card);border:1px solid var(--line);border-radius:16px;}
+    .save-panel-label{color:var(--gold);}
+    .save-panel h4{color:#fff;}
+    .save-panel-desc{color:var(--ink2);}
+    .share-url-display{background:#07080b;border:1px solid var(--line);color:var(--cyan);}
+    .share-url-display:focus{border-color:var(--coral);}
+    .share-banner{background:linear-gradient(180deg,rgba(116,208,255,.06),rgba(116,208,255,.02));border:1px solid rgba(116,208,255,.16);box-shadow:0 0 34px -18px var(--cyan-g);color:var(--ink2);border-radius:12px;}
+    .share-banner a{color:var(--cyan);}
+    .feedback-widget{background:var(--card);border:1px solid var(--line);border-radius:14px;}
+    .feedback-question{color:var(--ink);}
+    .feedback-btn{background:rgba(255,255,255,.02);border:1px solid var(--line);color:var(--ink2);}
+    .feedback-btn:hover{border-color:rgba(203,171,109,.4);background:rgba(255,255,255,.04);color:var(--ink);}
+    .feedback-btn.selected{border-color:var(--coral);background:rgba(240,135,106,.08);color:var(--coral);}
+    .feedback-thanks{color:var(--coral);}
+    .bespoke-cta{background:linear-gradient(180deg,#14161e,#0c0e13);border:1px solid rgba(203,171,109,.26);border-radius:20px;box-shadow:0 0 90px -44px var(--gold-g),0 40px 90px -52px #000;}
+    .bespoke-cta-label{color:var(--gold);}
+    .bespoke-cta h3{color:#fff;}
+    .bespoke-cta p{color:var(--ink2);}
+    .bespoke-stat{background:rgba(255,255,255,.02);border:1px solid var(--line);}
+    .bespoke-stat-num{color:#fff;}
+    .bespoke-stat-label{color:var(--muted);}
+    .cta-buy-btn{background:var(--cta);color:#2a1008;box-shadow:0 0 44px -8px var(--coral-g);font-family:'Jost',sans-serif;}
+    .cta-secondary{border-top:1px solid var(--line);color:var(--ink2);}
+    .cta-cal{color:var(--cyan);text-decoration:none;font-weight:500;border-bottom:1px solid rgba(116,208,255,.35);padding-bottom:1px;transition:border-color .2s;}
+    .cta-cal:hover{border-bottom-color:var(--cyan);}
+    .modal-alt{margin-top:14px;text-align:center;font-size:13px;color:var(--muted);}
+    .modal-alt a{color:var(--cyan);text-decoration:none;font-weight:500;}
+    .modal-alt a:hover{text-decoration:underline;}
+    .prompts-toggle{color:var(--muted);border-top:1px solid var(--line);}
+    .prompts-toggle:hover{color:var(--ink2);}
+    .error-msg{background:rgba(240,135,106,.06);border:1px solid rgba(240,135,106,.3);color:#f3d0c2;}
+    /* Operator-only QA banner — deliberately a harsh red, distinct from the report's
+       gold/terracotta/cyan palette, so a not-client-ready audit can't be mistaken
+       for a normal report state. */
+    .qa-banner{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:rgba(220,38,38,.12);border:1px solid rgba(220,38,38,.45);border-radius:10px;padding:12px 16px;margin-bottom:18px;font-size:13px;color:#fecaca;}
+    .qa-banner-tag{font-family:'Jost',sans-serif;font-weight:700;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#fff;background:#dc2626;border-radius:6px;padding:4px 10px;white-space:nowrap;}
+    .qa-banner-text{line-height:1.5;}
+    .toast{background:var(--card);border:1px solid rgba(203,171,109,.4);color:var(--ink);}
+
+    /* ---- prompt editor ---- */
+    .prompt-editor-title{color:#fff;}
+    .prompt-editor-desc strong{color:var(--ink);}
+    .prompt-editor-count{color:var(--gold);}
+    .prompt-list{background:#07080b;border:1px solid var(--line);}
+    .prompt-row .ptext-input{background:#0d0f16;border:1px solid var(--line);color:var(--ink);font-family:'Inter',sans-serif;}
+    .prompt-row .ptext-input:focus{border-color:var(--coral);}
+    .prompt-row-btn{border:1px solid var(--line);color:var(--ink2);}
+    .prompt-row-btn:hover{color:var(--ink);border-color:rgba(203,171,109,.4);}
+
+    /* ---- modal ---- */
+    .modal{background:var(--card);border:1px solid var(--line);border-radius:18px;}
+    .modal h3{color:#fff;}
+    .modal p{color:var(--ink2);}
+    .modal-field label{color:var(--muted);}
+    .modal-field input{background:#07080b;border:1px solid var(--line);color:var(--ink);font-family:'Inter',sans-serif;}
+    .modal-field input:focus{border-color:var(--coral);}
+    .modal-submit{background:var(--cta);color:#2a1008;font-family:'Jost',sans-serif;font-weight:600;}
+    .modal-success h3{color:var(--coral);}
+
+    @media(max-width:720px){
+      .container{padding:0 18px 60px;}
+      .hero{padding:34px 0 20px;}
+      .hero h1{font-size:37px;}
+      .sentence{font-size:19px;line-height:1.9;}
+      .fin.topic{min-width:180px;}
+      .steps{grid-template-columns:1fr;}
+      .compare{grid-template-columns:1fr;}
+      .bespoke{padding:32px 22px;}
+      .countdown-ring,.countdown-ring svg{width:210px;height:210px;}
+      .countdown-time{font-size:44px;}
+    }
+    /* Keep the in-card SoV bars + per-assistant bars readable on narrow
+       screens — the desktop fixed 140px columns crowd out the bar itself. */
+    @media(max-width:560px){
+      .media-sov-row{grid-template-columns:minmax(64px,84px) 1fr 92px;gap:8px;}
+      .media-sov-row-num{font-size:11px;}
+      .ai-vis-row{grid-template-columns:minmax(78px,104px) 1fr 44px;gap:8px;}
+      .load-assistants{gap:7px;}
+      .ac{padding:8px 12px;font-size:12px;}
+    }
+    </style>
+</head>
+<body class="home">
+    <div class="amb"><span class="a"></span><span class="b"></span><span class="c"></span></div>
+    <div class="pglow"></div>
+    <div class="container">
+        <div class="signal-header">
+            <a href="https://innatec3.com" target="_blank" rel="noopener" class="wm">innate c<sup>3</sup></a>
+            {% if shared_data and shared_data.slug %}
+            <div class="sig-tabs">
+                <a href="/signal/{{ shared_data.slug }}" class="pilltab on">Earned · PR</a>
+                <a href="/signal/{{ shared_data.slug }}/owned" class="pilltab">Owned</a>
+            </div>
+            {% endif %}
+            <div class="auth-cluster">
+                <a href="#" onclick="openDemoModal(); return false;">Talk to us</a>
+            </div>
+        </div>
+
+        <header class="hero" id="heroSection">
+            <span class="eyebrow">PR Signal Finder · Free AI Citation Audit</span>
+            <h1>See your PR through the<br>eyes of <span class="g">AI</span>.</h1>
+            <p class="subtitle sub" id="initialSubtitle">What do you want your brand to be known for? We query the 5 leading AI assistants — Claude, ChatGPT, Gemini, Perplexity, and Grok — then extract every citation and filter for earned media only to surface the outlets doing the heavy lifting for your brand, where competitors are quietly pulling ahead, and the PR moves that will shift your AI mindshare.</p>
+
+            <div class="form-section" id="formSection">
+                <form class="runner" id="runnerForm" onsubmit="startHomepageAudit();return false;">
+                    <div class="sentence">I want <input id="brandInput" class="fin brand" aria-label="Your brand" autocomplete="off"> to be known for <input id="topicInput" class="fin topic" aria-label="what you want to be known for" autocomplete="off">.</div>
+                    <input type="hidden" id="problemInput">
+                    <div class="emailrow" style="margin:16px 0 2px;text-align:center;">
+                        <input type="text" inputmode="email" id="emailInput" aria-label="Email (optional)" autocomplete="email" placeholder="you@company.com"
+                               style="width:min(340px,100%);padding:11px 15px;border-radius:11px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.04);color:#e6e6ee;font-size:14px;text-align:center;outline:none;">
+                        <div style="font-size:12px;color:#8a8a9a;margin-top:7px;">Optional — we'll email you the report so you don't lose the link.</div>
+                    </div>
+                    <div class="runner-btns">
+                        <button class="btn" id="submitBtn" type="submit">Run the audit &rarr;</button>
+                        <button class="btn ghost" id="reviewBtn" type="button" onclick="reviewPromptsHome()">Review &amp; revise the prompts first</button>
+                    </div>
+                </form>
+                <div class="microtag"><b>Free</b> · ~5 minutes · no login required</div>
+                <div class="assistants">
+                    <span class="lab">Queried live across</span>
+                    <span class="chip">ChatGPT</span><span class="chip">Claude</span><span class="chip">Gemini</span><span class="chip">Perplexity</span><span class="chip">Grok</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="error-msg" id="errorMsg"></div>
+
+        <!-- Prompt editor panel: hidden by default. Populated by openPromptEditor(). -->
+        <div class="prompt-editor" id="promptEditor">
+            <div class="prompt-editor-header">
+                <div>
+                    <div class="prompt-editor-title">Review &amp; revise your audit prompts</div>
+                    <div class="prompt-editor-desc">These are the prompts we'll run across all 5 AI assistants (Claude, ChatGPT, Gemini, Perplexity, and Grok). Edit any to match how your real audience actually asks. <strong>Don't name your brand or competitors — that biases organic discovery.</strong> Use brand-agnostic framing instead.</div>
+                </div>
+                <span class="prompt-editor-count" id="promptEditorCount">10 prompts</span>
+            </div>
+            <div class="prompt-list" id="promptList"></div>
+            <div class="prompt-editor-warning" id="promptEditorWarning" style="display:none"></div>
+            <div class="prompt-editor-toolbar">
+                <div class="prompt-editor-toolbar-left">
+                    <button class="prompt-row-btn" onclick="addPrompt()">+ Add prompt</button>
+                    <button class="prompt-row-btn" onclick="resetPrompts()">Reset to auto-generated</button>
+                </div>
+                <div class="prompt-editor-toolbar-right">
+                    <button class="prompt-row-btn" onclick="cancelPromptEditor()">Cancel</button>
+                    <button class="btn" style="padding:8px 16px; font-size:14px;" id="runFromEditorBtn" onclick="runFromEditor()">Run audit with these prompts</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="countdown-ring">
+                <div class="ring-halo"></div>
+                <svg viewBox="0 0 220 220">
+                    <defs>
+                        <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0" stop-color="#74d0ff"/>
+                            <stop offset=".55" stop-color="#cbab6d"/>
+                            <stop offset="1" stop-color="#f0876a"/>
+                        </linearGradient>
+                    </defs>
+                    <circle class="bg" cx="110" cy="110" r="96"/>
+                    <circle class="progress" id="countdownProgress" cx="110" cy="110" r="96"
+                        stroke-dasharray="603.19" stroke-dashoffset="603.19"/>
+                </svg>
+                <div class="countdown-time" id="countdownTime">0%</div>
+            </div>
+            <div class="loading-text">Reading how AI describes your brand</div>
+            <div class="loading-step" id="loadingStep">Generating search prompts…</div>
+            <div class="countdown-eta" id="countdownEta"></div>
+            <div class="load-assistants" id="loadAssistants">
+                <span class="ac"><span class="d"></span>ChatGPT</span>
+                <span class="ac"><span class="d"></span>Claude</span>
+                <span class="ac"><span class="d"></span>Gemini</span>
+                <span class="ac"><span class="d"></span>Perplexity</span>
+                <span class="ac"><span class="d"></span>Grok</span>
+            </div>
+        </div>
+
+        <div class="results" id="results"></div>
+
+        <div id="homeMarketing">
+            <section class="blk" id="how">
+                <div class="shd"><span class="eyebrow">How it works</span></div>
+                <div class="steps">
+                    <div class="step"><span class="n">1</span><h3>Tell it what you want to be known for</h3><p>Name your brand and what you want it known for — "Square, payments and point of sale for small business." That's the answer AI should be giving.</p></div>
+                    <div class="step"><span class="n">2</span><h3>We query 5 leading AIs</h3><p>Ten unbranded prompts across ChatGPT, Claude, Gemini, Perplexity and Grok — every citation extracted and classified.</p></div>
+                    <div class="step"><span class="n">3</span><h3>Get your PR read</h3><p>The outlets doing the heavy lifting, where rivals out-cite you, and your single highest-leverage move. No dashboards to decode.</p></div>
+                </div>
+            </section>
+
+            <section class="blk" id="peek">
+                <div class="shd"><span class="eyebrow">What you get</span><h2>A read, not a data dump</h2></div>
+                <div class="peek">
+                    <div class="pe">Where AI sees you</div>
+                    <div class="pbar"><span class="l">Gemini</span><span class="t"><span class="f" style="width:80%"></span></span><span class="v">8/10</span></div>
+                    <div class="pbar"><span class="l">Perplexity</span><span class="t"><span class="f" style="width:60%"></span></span><span class="v">6/10</span></div>
+                    <div class="pbar"><span class="l">ChatGPT</span><span class="t"><span class="f" style="width:50%"></span></span><span class="v">5/10</span></div>
+                    <div class="pmove"><span class="tag">Your #1 move</span><p>Pitch this lesser-known but prolific trade publication, where a rival out-cites you 2-to-1 — your highest-leverage earned-media move.</p></div>
+                </div>
+            </section>
+
+            <section class="blk" id="bespoke">
+                <div class="bespoke">
+                    <span class="eyebrow">The bespoke deep dive</span>
+                    <h2>The free read is a preview.<br>The real intelligence is built around you.</h2>
+                    <p class="bsub">A bespoke engagement goes deep: <b>100 prompts across up to 10 AI assistants</b>, every prompt modeling a specific stakeholder persona — all reviewed and approved.</p>
+                    <div class="compare">
+                        <div class="col"><div class="ct">Free preview</div><div class="ci">10 prompts</div><div class="ci">5 assistants</div><div class="ci">directional category read</div></div>
+                        <div class="col hot"><div class="ct">Bespoke deep dive</div><div class="ci">100 prompts</div><div class="ci">up to 10 assistants</div><div class="ci">personas and prompts you approve</div><div class="ci">earned + owned analysis and SOV</div><div class="ci">understand influences on corporate reputation</div></div>
+                    </div>
+                    <button class="btn-lg" type="button" onclick="openDemoModal()">Talk to us about a deep dive &rarr;</button>
+                </div>
+            </section>
+
+            <footer class="home-footer">
+                <a class="big" href="#top" onclick="goHomeTop();return false;">Start with the preview.</a>
+                <div class="fc">A communications-first take on AI visibility compliments of innate c³.</div>
+            </footer>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        window.SHARED_REPORT = {{ shared_data | tojson | safe if shared_data else 'null' }};
+        window.SIGNAL_SHARE_URL = {{ share_url | tojson | safe if share_url else 'null' }};
+        window.SIGNAL_PDF_URL   = {{ pdf_url   | tojson | safe if pdf_url   else 'null' }};
+        window.SIGNAL_CSV_URL   = {{ csv_url   | tojson | safe if csv_url   else 'null' }};
+        window.SIGNAL_JSON_URL  = {{ json_url  | tojson | safe if json_url  else 'null' }};
+        window.SIGNAL_USER      = {{ 'true' if signal_user else 'false' }};
+        window.SIGNAL_CREDITS   = {{ signal_credits or 0 }};
+        window.SIGNAL_OPERATOR_VIEW = {{ 'true' if operator_view else 'false' }};
+    </script>
+
+    <div class="modal-overlay" id="demoModal" onclick="if(event.target===this)closeDemoModal()">
+        <div class="modal">
+            <button class="modal-close" onclick="closeDemoModal()">&times;</button>
+            <div id="demoForm">
+                <h3 id="demoFormTitle">Request a call</h3>
+                <p id="demoFormDesc">This free audit runs 10 prompts &times; 5 leading AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
+                <p id="demoFormSubdesc" style="font-size:13px;color:#888;margin-bottom:14px">Drop your details and we'll reach out within 24 hours to scope the engagement.</p>
+                <div class="modal-field">
+                    <label>Name *</label>
+                    <input type="text" id="demoName" autocomplete="name">
+                </div>
+                <div class="modal-field">
+                    <label>Title</label>
+                    <input type="text" id="demoTitle" autocomplete="organization-title">
+                </div>
+                <div class="modal-field">
+                    <label>Organization</label>
+                    <input type="text" id="demoOrg" autocomplete="organization">
+                </div>
+                <div class="modal-field">
+                    <label>Email *</label>
+                    <input type="email" id="demoEmail" autocomplete="email">
+                </div>
+                <div class="modal-field" id="demoMessageField" style="display:none">
+                    <label id="demoMessageLabel">What would you like to know?</label>
+                    <textarea id="demoMessage" rows="4" style="width:100%;box-sizing:border-box;resize:vertical;font:inherit;padding:9px 11px;border-radius:8px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.05);color:#e6e6ee" placeholder="Tell us what you're hoping to learn, your goals, or a question about your results…"></textarea>
+                </div>
+                <button type="button" class="modal-submit" id="demoSubmit" onclick="submitDemoRequest()">Request a call</button>
+                <div class="modal-error" id="demoError"></div>
+                <div class="modal-alt">Prefer to pick a time now? <a href="https://calendly.com/nstrauss-innatec3/new-meeting" target="_blank" rel="noopener">Book a 30-min call &rarr;</a></div>
+            </div>
+            <div class="modal-success" id="demoSuccess" style="display:none">
+                <h3 id="demoSuccessTitle">Thanks — we'll be in touch.</h3>
+                <p id="demoSuccessBody">Your request is in. We'll reach out within 24 hours to scope your bespoke analysis.</p>
+                <p id="demoDevNote" style="display:none;margin-top:12px;font-size:12px;color:#5aff8a;border:1px solid #1c4d2e;background:#0e1a14;padding:8px 12px;border-radius:6px">
+                    Dev mode — your request is saved locally. In production this would email <strong>nstrauss@innatec3.com</strong> via SendGrid.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const CIRCUMFERENCE = 2 * Math.PI * 96; // 603.19 — matches the r=96 progress ring
+        // Soft "book a call" path on the result page (lower friction than the
+        // lead-capture modal). Update here if the Calendly link ever changes.
+        const CALENDLY_URL = 'https://calendly.com/nstrauss-innatec3/new-meeting';
+        // GA4 funnel: fire audit_started (once per user-initiated run) and
+        // audit_completed (on result). No-ops if gtag is blocked/absent.
+        function track(name, params) {
+            try { if (window.gtag) window.gtag('event', name, params || {}); } catch (e) {}
+        }
+
+        // Tuned to actual wall-clock split after LLM parallelization + URL validation:
+        // free audit ~60-90s, paid audit ~3-5min. The extract step is now ~25% of
+        // wall time (it does URL HEAD checks for every cited URL).
+        const STEP_WEIGHTS = {
+            prompts:  0.10,
+            llm:      0.45,
+            extract:  0.25,
+            analysis: 0.20,
+        };
+
+        const STEP_ORDER = ['prompts', 'llm', 'extract', 'analysis'];
+
+        // --- Learning ETA: store recent audit durations per tier in localStorage,
+        // blend the median historical duration with linear extrapolation so the
+        // ETA is sensible from the very first progress event. ---
+        function _getHistory(tier) {
+            try {
+                const arr = JSON.parse(localStorage.getItem('audit_dur_' + tier) || '[]');
+                if (arr.length < 1) return null;
+                const sorted = [...arr].sort((a, b) => a - b);
+                return sorted[Math.floor(sorted.length / 2)];
+            } catch (e) { return null; }
+        }
+        function _recordDuration(tier, seconds) {
+            try {
+                const key = 'audit_dur_' + tier;
+                const arr = JSON.parse(localStorage.getItem(key) || '[]');
+                arr.push(seconds);
+                while (arr.length > 10) arr.shift();
+                localStorage.setItem(key, JSON.stringify(arr));
+            } catch (e) {}
+        }
+        // Reasonable defaults until the user has run their first audit of each tier.
+        const _ETA_DEFAULTS = { free: 75, paid: 240 };
+
+        let auditStartTime = null;
+
+        function formatDuration(secs) {
+            if (!isFinite(secs) || secs < 0) return '';
+            if (secs < 60) return `${Math.round(secs)}s`;
+            const m = Math.floor(secs / 60);
+            const s = Math.round(secs % 60);
+            return s > 0 ? `${m}m ${s}s` : `${m}m`;
+        }
+
+        function updateProgress(step, detail, current, total) {
+            const stepEl = document.getElementById('loadingStep');
+            const progressEl = document.getElementById('countdownProgress');
+            const timeEl = document.getElementById('countdownTime');
+            const etaEl = document.getElementById('countdownEta');
+
+            stepEl.textContent = detail;
+            updateAssistants(step, current, total);
+
+            const stepIdx = STEP_ORDER.indexOf(step);
+            let filled = 0;
+            for (let i = 0; i < stepIdx; i++) filled += STEP_WEIGHTS[STEP_ORDER[i]];
+            if (total > 0) filled += STEP_WEIGHTS[step] * (current / total);
+
+            const clamped = Math.min(filled, 1);
+            const offset = CIRCUMFERENCE * (1 - clamped);
+            progressEl.style.strokeDashoffset = offset.toString();
+            timeEl.textContent = `${Math.round(clamped * 100)}%`;
+
+            // Learning ETA: blend the user's historical median for this tier with
+            // a linear extrapolation from current progress. At low progress we lean
+            // on the historical estimate; as progress fills, linear takes over.
+            if (etaEl && auditStartTime) {
+                if (clamped >= 0.99) {
+                    etaEl.textContent = 'almost done';
+                } else {
+                    const elapsed = (Date.now() - auditStartTime) / 1000;
+                    const tier = (lastAuditContext && lastAuditContext.tier) || 'free';
+                    const historical = _getHistory(tier) || _ETA_DEFAULTS[tier] || 75;
+                    const historicalRemaining = Math.max(2, historical - elapsed);
+                    const linearETA = clamped > 0 ? elapsed * (1 - clamped) / clamped : historicalRemaining;
+                    // Weight historical higher when we're early (less reliable linear).
+                    const w = Math.max(0, 1 - clamped);  // 1.0 → 0
+                    const remaining = w * historicalRemaining + (1 - w) * linearETA;
+                    etaEl.textContent = `~${formatDuration(remaining)} left  ·  ${formatDuration(elapsed)} elapsed`;
+                }
+            }
+        }
+
+        // MVP branch: tier picker, paid-tier checkout, and prompt-editor flow
+        // are intentionally disabled. Audits always run anonymously at the free
+        // tier. The full paid flow lives on `feat/pr-signal-finder`.
+        const selectedTier = 'free';
+
+        // MVP branch: prompt editor + paid-tier flow stripped. The full
+        // implementation lives on `feat/pr-signal-finder` and is preserved on
+        // the server side (see /signal/audit/prompts route) but is not
+        // reachable from this UI.
+
+        // ── Prompt editor state + handlers ────────────────────────────────
+        // Lives across openPromptEditor() / addPrompt() / runFromEditor() so
+        // edits accumulate without re-rendering blowing them away.
+        let editorPrompts = [];
+        let editorOriginalPrompts = [];  // for reset
+        let editorProblemStatement = '';
+
+        function openPromptEditor() {
+            const input = document.getElementById('problemInput').value.trim();
+            if (!input) {
+                document.getElementById('errorMsg').textContent = 'Add a brand statement first.';
+                document.getElementById('errorMsg').classList.add('active');
+                return;
+            }
+            editorProblemStatement = input;
+            retireSubtitle();
+            document.getElementById('formSection').classList.add('hidden');
+            setHomeChrome(false);
+            document.getElementById('errorMsg').classList.remove('active');
+            // Show editor in loading state while we generate prompts.
+            const ed = document.getElementById('promptEditor');
+            ed.classList.add('active');
+            document.getElementById('promptList').innerHTML = '<div style="padding:24px; text-align:center; color:#888;">Generating 10 prompts from your statement…</div>';
+
+            fetch('/signal/audit/prompts', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({problem_statement: input, tier: 'free'})
+            }).then(async r => {
+                if (!r.ok) {
+                    const data = await r.json().catch(() => ({}));
+                    if (data.code === 'rate_limited') {
+                        cancelPromptEditor();
+                        document.getElementById('errorMsg').textContent = data.error;
+                        document.getElementById('errorMsg').classList.add('active');
+                        setTimeout(() => openDemoModal(), 800);
+                        return;
+                    }
+                    cancelPromptEditor();
+                    document.getElementById('errorMsg').textContent = (data && data.error) || 'Could not generate prompts. Try again.';
+                    document.getElementById('errorMsg').classList.add('active');
+                    return;
+                }
+                const data = await r.json();
+                editorPrompts = (data.prompts || []).slice();
+                editorOriginalPrompts = editorPrompts.slice();
+                renderPromptList();
+            }).catch(() => {
+                cancelPromptEditor();
+                document.getElementById('errorMsg').textContent = 'Network error. Try again.';
+                document.getElementById('errorMsg').classList.add('active');
+            });
+        }
+
+        function renderPromptList() {
+            const el = document.getElementById('promptList');
+            document.getElementById('promptEditorCount').textContent = `${editorPrompts.length} prompts`;
+            const warnEl = document.getElementById('promptEditorWarning');
+            if (editorPrompts.length < 5) {
+                warnEl.style.display = '';
+                warnEl.textContent = `Need at least 5 prompts to run an audit (you have ${editorPrompts.length}).`;
+            } else if (editorPrompts.length > 20) {
+                warnEl.style.display = '';
+                warnEl.textContent = `Max 20 prompts (you have ${editorPrompts.length}).`;
+            } else {
+                warnEl.style.display = 'none';
+            }
+            el.innerHTML = '';
+            editorPrompts.forEach((p, i) => {
+                const row = document.createElement('div');
+                row.className = 'prompt-row';
+                row.innerHTML = `
+                    <span class="pidx">${i + 1}</span>
+                    <textarea class="ptext-input" rows="1" data-idx="${i}">${esc(p)}</textarea>
+                    <button class="prompt-row-btn danger" data-idx="${i}" title="Delete prompt">✕</button>
+                `;
+                const textarea = row.querySelector('textarea');
+                textarea.addEventListener('input', e => {
+                    editorPrompts[i] = e.target.value;
+                });
+                // Auto-grow textareas
+                textarea.style.height = 'auto';
+                textarea.style.height = textarea.scrollHeight + 'px';
+                textarea.addEventListener('input', e => {
+                    e.target.style.height = 'auto';
+                    e.target.style.height = e.target.scrollHeight + 'px';
+                });
+                row.querySelector('.prompt-row-btn.danger').addEventListener('click', () => {
+                    editorPrompts.splice(i, 1);
+                    renderPromptList();
+                });
+                el.appendChild(row);
+            });
+        }
+
+        function addPrompt() {
+            if (editorPrompts.length >= 20) return;
+            editorPrompts.push('');
+            renderPromptList();
+            // Focus the newly-added textarea
+            const inputs = document.querySelectorAll('.ptext-input');
+            if (inputs.length) inputs[inputs.length - 1].focus();
+        }
+
+        function resetPrompts() {
+            editorPrompts = editorOriginalPrompts.slice();
+            renderPromptList();
+        }
+
+        function cancelPromptEditor() {
+            document.getElementById('promptEditor').classList.remove('active');
+            document.getElementById('formSection').classList.remove('hidden');
+            setHomeChrome(true);
+            editorPrompts = [];
+            editorOriginalPrompts = [];
+            editorProblemStatement = '';
+        }
+
+        function runFromEditor() {
+            const cleaned = editorPrompts.map(p => (p || '').trim()).filter(p => p.length > 0);
+            if (cleaned.length < 5 || cleaned.length > 20) {
+                document.getElementById('promptEditorWarning').style.display = '';
+                document.getElementById('promptEditorWarning').textContent = `Need 5–20 prompts to run (you have ${cleaned.length}).`;
+                return;
+            }
+            // Hide editor; runAudit will show loading state.
+            document.getElementById('promptEditor').classList.remove('active');
+            runAudit({input: editorProblemStatement, prompts: cleaned});
+        }
+
+        function runAudit(opts) {
+            opts = opts || {};
+            const input = (opts.input != null ? opts.input : document.getElementById('problemInput').value).trim();
+            if (!input) return;
+            const tier = 'free';
+
+            // Email is optional — sent if an opt-in field is present, otherwise
+            // blank. The audit runs either way (server enforces the per-IP cap).
+            const emailEl = document.getElementById('emailInput');
+            const email = (emailEl ? emailEl.value : '').trim();
+
+            lastAuditContext = { slug: null, problem_statement: input, tier: tier, email: email };
+            // Funnel start — skip on the auto-retry after an at-capacity 503 so
+            // one user intent counts once.
+            if (!opts._retry) track('audit_started', { tier: tier });
+
+            const subtitleEl = document.getElementById('initialSubtitle');
+            // Once a search has run, the hero subtitle stays retired — never
+            // re-shown on error/back paths (homepage-only copy).
+            const setSubtitleVisible = (visible) => {
+                if (subtitleEl) subtitleEl.style.display = (visible && !subtitleRetired) ? '' : 'none';
+                // The hero, its two-field form, and the homepage marketing/footer
+                // all hide together when an audit starts and return together on error.
+                setHomeChrome(visible);
+            };
+            setSubtitleVisible(false);
+            retireSubtitle();
+            document.getElementById('formSection').classList.add('hidden');
+            document.getElementById('errorMsg').classList.remove('active');
+            document.getElementById('loading').classList.add('active');
+            document.getElementById('results').classList.remove('active');
+
+            const progressEl = document.getElementById('countdownProgress');
+            progressEl.style.strokeDashoffset = CIRCUMFERENCE.toString();
+            document.getElementById('countdownTime').textContent = '0%';
+            document.getElementById('countdownEta').textContent = 'estimating...';
+            auditStartTime = Date.now();
+            document.getElementById('loadingStep').textContent = 'Starting...';
+
+            const form = new FormData();
+            form.append('problem_statement', input);
+            form.append('email', email);
+            form.append('tier', tier);
+            if (opts.prompts && Array.isArray(opts.prompts) && opts.prompts.length) {
+                form.append('prompts', JSON.stringify(opts.prompts));
+            }
+
+            fetch('/citation-audit', { method: 'POST', body: form }).then(async response => {
+                if (!response.ok && response.headers.get('content-type')?.includes('application/json')) {
+                    const data = await response.json().catch(() => ({}));
+                    // At capacity — keep the "in line" state (loading stays up) and
+                    // auto-retry; never revert to the form or show a 500.
+                    if (data.code === 'at_capacity') {
+                        document.getElementById('loading').classList.add('active');
+                        document.getElementById('formSection').classList.add('hidden');
+                        document.getElementById('results').classList.remove('active');
+                        const _ls = document.getElementById('loadingStep');
+                        if (_ls) _ls.textContent = "You’re in line — a few audits are running. This starts automatically in a moment…";
+                        const _eta = document.getElementById('countdownEta');
+                        if (_eta) _eta.textContent = 'waiting for a free slot…';
+                        setTimeout(() => runAudit({ input: input, prompts: opts.prompts, _retry: true }), (data.retry_after || 45) * 1000);
+                        return;
+                    }
+                    document.getElementById('loading').classList.remove('active');
+                    document.getElementById('formSection').classList.remove('hidden');
+                    setSubtitleVisible(true);
+                    if (data.code === 'rate_limited' || data.code === 'email_rate_limited') {
+                        document.getElementById('errorMsg').textContent = data.error;
+                        document.getElementById('errorMsg').classList.add('active');
+                        // Auto-open the bespoke modal so they see the upsell.
+                        setTimeout(() => openDemoModal(), 800);
+                        return;
+                    }
+                    document.getElementById('errorMsg').textContent = data.error || 'Something went wrong.';
+                    document.getElementById('errorMsg').classList.add('active');
+                    return;
+                }
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                function read() {
+                    reader.read().then(({ done, value }) => {
+                        if (done) return;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop();
+                        for (const line of lines) {
+                            if (!line.startsWith('data: ')) continue;
+                            try {
+                                const msg = JSON.parse(line.slice(6));
+                                if (msg.type === 'progress') {
+                                    updateProgress(msg.step, msg.detail, msg.current, msg.total);
+                                } else if (msg.type === 'result') {
+                                    // Record audit duration so the learning ETA gets better.
+                                    if (auditStartTime) {
+                                        const dur = (Date.now() - auditStartTime) / 1000;
+                                        _recordDuration((lastAuditContext && lastAuditContext.tier) || 'free', dur);
+                                    }
+                                    document.getElementById('loading').classList.remove('active');
+                                    lastAuditContext.slug = msg.data.slug || null;
+                                    track('audit_completed', { brand: (msg.data && msg.data.brand) || '', slug: (msg.data && msg.data.slug) || '' });
+                                    renderResults(msg.data);
+                                    // Update the URL to the shareable slug so the browser's Back
+                                    // button (from a 404, sign-in page, or any subsequent nav)
+                                    // returns to THIS report instead of reloading the empty form.
+                                    // The /signal/<slug> route re-renders the saved report.
+                                    if (msg.data.slug) {
+                                        try {
+                                            const newPath = '/signal/' + msg.data.slug;
+                                            window.history.pushState({slug: msg.data.slug}, '', newPath);
+                                            if (msg.data.brand) {
+                                                document.title = msg.data.brand + ' signal report — AI Citation Audit';
+                                            }
+                                        } catch (e) {}
+                                    }
+                                    return;
+                                } else if (msg.type === 'error') {
+                                    document.getElementById('loading').classList.remove('active');
+                                    document.getElementById('formSection').classList.remove('hidden');
+                                    setSubtitleVisible(true);
+                                    document.getElementById('errorMsg').textContent = msg.error || 'Something went wrong.';
+                                    document.getElementById('errorMsg').classList.add('active');
+                                    return;
+                                }
+                            } catch (e) {}
+                        }
+                        read();
+                    });
+                }
+                read();
+            }).catch(() => {
+                document.getElementById('loading').classList.remove('active');
+                document.getElementById('formSection').classList.remove('hidden');
+                setSubtitleVisible(true);
+                document.getElementById('errorMsg').textContent = 'Network error. Please try again.';
+                document.getElementById('errorMsg').classList.add('active');
+            });
+        }
+
+        function renderResults(data) {
+            const el = document.getElementById('results');
+            const competitors = (data.competitors || [])
+                .sort((a, b) => b.mention_count - a.mention_count)
+                .slice(0, 8);
+
+            const targets = (data.media_targets || []).slice(0, 10);
+
+            const slug = data.slug || null;
+            const origin = window.location.origin;
+            const shareUrl = window.SIGNAL_SHARE_URL || (slug ? `${origin}/signal/${slug}` : null);
+            const pdfUrl   = window.SIGNAL_PDF_URL   || (slug ? `${origin}/signal/${slug}.pdf` : null);
+            const csvUrl   = window.SIGNAL_CSV_URL   || (slug ? `${origin}/signal/${slug}.csv` : null);
+            // Raw JSON download only exposed when the payload was saved with the full
+            // per-response data (newer audits). Older payloads silently omit the button.
+            const jsonUrl  = (data.full_responses_available && (window.SIGNAL_JSON_URL || (slug ? `${origin}/signal/${slug}.json` : null))) || null;
+
+            // Audit completion badge — shows how many of the planned LLM
+            // calls actually returned a response before the wall-clock
+            // deadline. Hidden when the audit ran before this field existed.
+            const completedN = Number(data.responses_completed);
+            const plannedN = Number(data.responses_planned);
+            const rateN = Number(data.completion_rate);
+            let completionBadge = '';
+            if (Number.isFinite(completedN) && Number.isFinite(plannedN) && plannedN > 0) {
+                const pct = Math.round((Number.isFinite(rateN) ? rateN : completedN / plannedN) * 100);
+                let cls = 'full';
+                let label = `Audit completed: ${completedN}/${plannedN} responses (${pct}%)`;
+                let advice = '';
+                if (rateN < 0.7) {
+                    cls = 'thin';
+                    label = `Audit partially completed: ${completedN}/${plannedN} responses (${pct}%). The slowest LLMs were cancelled by the wall-clock deadline.`;
+                    advice = '<span class="advice">Consider re-running for fuller coverage.</span>';
+                } else if (rateN < 0.95) {
+                    cls = 'partial';
+                    label = `Audit partially completed: ${completedN}/${plannedN} responses (${pct}%). The slowest LLMs may have been cancelled by the wall-clock deadline.`;
+                }
+                completionBadge = `<div class="completion-badge ${cls}"><span class="dot"></span><span>${esc(label)}${advice}</span></div>`;
+            }
+
+            // Operator-only QA banner — never shown to a public/prospect view.
+            // Surfaces the ground-truth QA pass's blocking failures right at the
+            // top so a not-client-ready report can't be missed before carding it.
+            let qaBanner = '';
+            if (window.SIGNAL_OPERATOR_VIEW && data.qa && data.qa.client_ready === false) {
+                const fails = (data.qa.blocking_failures || []).join(', ');
+                qaBanner = `
+                    <div class="qa-banner">
+                        <span class="qa-banner-tag">QA — NOT CLIENT READY</span>
+                        <span class="qa-banner-text">Blocking checks failed: ${esc(fails)}. Corrected brand count: ${data.qa.corrected ? data.qa.corrected.brand_mention_count : '?'}. See /admin/qa/${esc(slug || '')} for the full table.</span>
+                    </div>
+                `;
+            }
+            const mindsharePct = Math.round((data.brand_mention_count || 0) / (data.total_responses || 1) * 100);
+            let html = `
+                ${qaBanner}
+                <div class="results-header">
+                    <div class="report-eyebrow">AI Mindshare Briefing</div>
+                    <h2>${esc(data.brand)}</h2>
+                    <span class="brand-pill">${esc(data.category)}</span>
+                    <div class="mention-count">
+                        <strong>${mindsharePct}% AI mindshare</strong> — cited in ${data.brand_mention_count || 0} of ${data.total_responses || 30} responses across ${data.total_citations_extracted || 0} citations
+                    </div>
+                    <div class="mention-method">Organic visibility measured on unbranded category queries</div>
+                    ${completionBadge}
+                    ${(shareUrl || pdfUrl) ? `
+                        <div class="action-bar">
+                            ${shareUrl ? `<button class="action-btn" id="shareBtn" onclick="copyShareLink('${esc(shareUrl)}')">Share report</button>` : ''}
+                            ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
+                            <button class="action-btn" onclick="openDemoModal('csv')" title="Your CSV includes every prompt we ran, every full LLM response (Claude · ChatGPT · Gemini · Perplexity · Grok), and every citation URL extracted — for your own re-analysis, internal briefing, or competitive review. Share your details and we'll send it within 24 hours.">Request CSV &rarr;</button>
+                        </div>
+                    ` : ''}
+                </div>
+                ${data.launch_landing ? `
+                    <div class="launch-panel">
+                        <div class="launch-title">Did the launch land?</div>
+                        ${data.launch_landing.landed_answers > 0 ? `
+                            <div class="launch-lead">Yes — AI names <strong>${esc(data.brand || 'the brand')}</strong> in <strong>${data.launch_landing.landed_answers}</strong> of ${data.launch_landing.total} answers to unbranded ${esc(data.category || 'category')} questions${data.launch_landing.brand_rank ? `, placing it <strong>#${data.launch_landing.brand_rank}</strong> of ${data.launch_landing.field_size} in the category` : ''}.</div>
+                            <div class="launch-grid">
+                                <div class="launch-metric"><div class="lm-num">${data.launch_landing.product_answers}</div><div class="lm-label">answers name ${data.launch_landing.product_name ? `&ldquo;${esc(data.launch_landing.product_name)}&rdquo;` : 'the product'}${(data.launch_landing.product_llms && data.launch_landing.product_llms.length) ? `<span class="lm-sub">${data.launch_landing.product_llms.join(' · ')}</span>` : ''}</div></div>
+                                <div class="launch-metric"><div class="lm-num">${data.launch_landing.framed_as_new}</div><div class="lm-label">frame it as new / launching</div></div>
+                                ${data.launch_landing.as_exception ? `<div class="launch-metric"><div class="lm-num">${data.launch_landing.as_exception}</div><div class="lm-label">note it's not yet available</div></div>` : ''}
+                            </div>
+                            ${(data.launch_landing.leaders && data.launch_landing.leaders.length) ? `<div class="launch-leaders"><span class="ll-label">Category leaders</span>${data.launch_landing.leaders.map(l => ` ${esc(l.name)} <span class="ll-n">${l.mentions}</span>`).join(' · ')}</div>` : ''}
+                            ${data.launch_landing.negative_flag ? `<div class="launch-flag"><span class="lf-tag">Review</span>Negative framing detected near the brand in ${data.launch_landing.negative_answers} answer${data.launch_landing.negative_answers !== 1 ? 's' : ''}: ${data.launch_landing.negative_snippets.map(s => `<span class="lf-snip">${esc(s)}</span>`).join(' &nbsp; ')}</div>` : ''}
+                        ` : `
+                            <div class="launch-lead launch-empty"><strong>Not yet.</strong> AI doesn't surface <strong>${esc(data.brand || 'the brand')}</strong> in answers to ${esc(data.category || 'category')} questions — the launch hasn't propagated into AI yet (too recent, or its coverage isn't being retrieved). A clean re-run in a few weeks will show movement.</div>
+                        `}
+                    </div>
+                ` : ''}
+                ${data.executive_summary ? `
+                    <div class="briefing-summary">
+                        <div class="briefing-summary-label">What we found</div>
+                        <div class="briefing-summary-text">${esc(data.executive_summary)}</div>
+                    </div>
+                ` : ''}
+                ${(data.per_llm_visibility && data.per_llm_visibility.length) ? `
+                    <div class="ai-visibility">
+                        <div class="ai-visibility-label">Where AI sees you — ${esc(data.brand || 'your brand')} mention rate by assistant</div>
+                        <div class="ai-visibility-rows">
+                            ${data.per_llm_visibility.map(x => {
+                                const pct = Math.round((x.rate || 0) * 100);
+                                const zero = (x.mentions || 0) === 0;
+                                return `
+                                    <div class="ai-vis-row ${zero ? 'zero' : ''}">
+                                        <span class="ai-vis-name">${esc(x.llm)}${x.grounded ? '<span class="ai-vis-tag">search</span>' : ''}</span>
+                                        <div class="ai-vis-track"><div class="ai-vis-fill ${zero ? 'zero' : ''}" style="width:${pct}%"></div></div>
+                                        <span class="ai-vis-num">${x.mentions}/${x.total}</span>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                        ${data.per_llm_read ? `<div class="ai-visibility-read">${esc(data.per_llm_read)}</div>` : ''}
+                    </div>
+                ` : ''}
+                ${data.headline_move ? `
+                    <div class="headline-move">
+                        <span class="headline-move-verb">${esc(data.headline_move.verb || 'Do')}</span>
+                        <div class="headline-move-body">
+                            <div class="headline-move-label">Your #1 move</div>
+                            <div class="headline-move-text">${esc(data.headline_move.text || '')}</div>
+                        </div>
+                    </div>
+                ` : ''}
+            `;
+
+            if (competitors.length) {
+                // Split competitors by type — brand peers are the real
+                // competitive set; retailers/marketplaces are distribution
+                // channels (often partners, not rivals). Pre-classifier
+                // payloads have no 'type' — treat them all as peers.
+                const peers = competitors.filter(c => !c.type || c.type === 'brand_peer');
+                const channels = competitors.filter(c => c.type === 'retailer' || c.type === 'marketplace');
+                html += `<div class="section-title">The competitive landscape — who else AI names in your category</div>`;
+                if (peers.length) {
+                    html += `<div class="competitors">`;
+                    for (const c of peers) {
+                        html += `<span class="competitor-chip">${esc(c.name)}<span class="count">${c.mention_count}x</span></span>`;
+                    }
+                    html += `</div>`;
+                }
+                if (channels.length) {
+                    html += `<div style="font-size:12px;color:#8a8a9a;margin:14px 0 8px;letter-spacing:.03em;">Also surfaced — retail / distribution channels (not direct competitors):</div><div class="competitors">`;
+                    for (const c of channels) {
+                        html += `<span class="competitor-chip" style="opacity:.65;">${esc(c.name)}<span class="count">${c.mention_count}x</span></span>`;
+                    }
+                    html += `</div>`;
+                }
+            }
+
+            // Top 10 media targets with each card's share-of-voice merged
+            // inline. Per-card badge surfaces whether the outlet is a strength
+            // (defend / extend) or an opportunity (pitch to close the gap),
+            // computed from outlet_sov keyed by domain. The standalone SoV
+            // section, the institutional section, and the analyst section
+            // have been removed from the UI — institutional + analyst data
+            // is still computed and is available via the JSON + CSV exports.
+            const sovByDomain = {};
+            for (const row of (data.outlet_sov || [])) {
+                if (row && row.domain) sovByDomain[row.domain.toLowerCase()] = row;
+            }
+            // Heavy-lifting placements keyed by outlet, so any card whose outlet
+            // is a "win" can surface the specific named article (title, date,
+            // which assistants pulled it) instead of a generic example URL.
+            const winByDomain = {};
+            for (const w of (((data.earned_wins || {}).wins) || [])) {
+                if (w && w.outlet) winByDomain[w.outlet.toLowerCase()] = w;
+            }
+
+            const brandLabel = data.brand || 'Brand';
+            const overallPctTop = Math.round((data.brand_mention_count || 0) / (data.total_responses || 1) * 100);
+            // Pre-compute the max responses_citing across all targets in this
+            // audit so each card's authority bar scales consistently — the
+            // most-cited outlet's bar fills the full track; others shrink.
+            const maxOutletN = Math.max(1, ...(data.media_targets || []).map(t => {
+                const s = sovByDomain[(t.domain || '').toLowerCase()];
+                return (s && s.responses_citing) || 0;
+            }));
+
+            // Render one outlet card. Pulled out of the loop so we can call it
+            // inside each verdict-grouped section below.
+            function renderTargetCard(t) {
+                const llms = (t.cited_by_llms || []);
+                const sov = sovByDomain[(t.domain || '').toLowerCase()];
+                const verdict = sov ? sov.verdict : null;
+                const badgeText = {
+                    strength: 'Strength · defend',
+                    opportunity: 'Opportunity · pitch',
+                    neutral: 'Aligned · steady',
+                    emerging: 'Emerging mention',
+                }[verdict];
+                const badge = badgeText ? `<span class="card-badge ${verdict}">${badgeText}</span>` : '';
+
+                // SoV bars: brand + the most-present competitors at this outlet.
+                // Capped at top 3 (a wall of 6 identical bars at low citation
+                // counts is noise, not insight). Extra competitors collapse to
+                // a "+N more mentioned" text line. At n<=2 the percentages are
+                // too coarse to bar-chart meaningfully, so we show a single
+                // compact line instead. The repetitive per-card verdict
+                // sentence is dropped — the section header already states the
+                // action, so repeating it on every card is just noise.
+                let sovBlock = '';
+                if (sov) {
+                    const brandAt = sov.brand_mentions_at_outlet ?? 0;
+                    const n = sov.responses_citing ?? 0;
+                    const brandPct = n ? Math.round((sov.brand_sov_at_outlet || 0) * 100) : 0;
+                    const allComps = (sov.all_competitors_at_outlet || []);
+                    const contextLine = `<div class="media-sov-context">${esc(brandLabel)} overall: ${overallPctTop}% across ${data.total_responses || 0} responses</div>`;
+
+                    // Always render bars for visual consistency across cards.
+                    // At n<=2 the percentages collapse to 0/50/100 — flag with a
+                    // "(small sample)" caption so readers don't over-interpret.
+                    const comps = allComps.slice(0, 3);
+                    const extra = allComps.length - comps.length;
+                    const sampleCaption = n <= 2
+                        ? ` <span class="media-sov-small">(small sample — only ${n} response${n === 1 ? '' : 's'})</span>`
+                        : '';
+                    let rows = `
+                        <div class="media-sov-row">
+                            <span class="media-sov-row-label brand"><strong>${esc(brandLabel)}</strong></span>
+                            <div class="media-sov-row-bar"><div class="fill brand" style="width:${brandPct}%"></div></div>
+                            <span class="media-sov-row-num">${brandAt}/${n} (${brandPct}%)</span>
+                        </div>
+                    `;
+                    for (const c of comps) {
+                        const cAt = c.mentions_at_outlet || 0;
+                        const cPct = Math.round((c.sov_at_outlet || 0) * 100);
+                        rows += `
+                            <div class="media-sov-row">
+                                <span class="media-sov-row-label">${esc(c.name)}</span>
+                                <div class="media-sov-row-bar"><div class="fill comp" style="width:${cPct}%"></div></div>
+                                <span class="media-sov-row-num">${cAt}/${n} (${cPct}%)</span>
+                            </div>
+                        `;
+                    }
+                    const moreLine = extra > 0
+                        ? `<div class="media-sov-more">+${extra} more competitor${extra > 1 ? 's' : ''} mentioned at this outlet</div>`
+                        : '';
+                    // Page-evidence line: in-answer SoV vs ON-PAGE presence. The
+                    // divergence is the insight — a rival named by AI but absent
+                    // from the cited pages is free-riding; a brand on the pages
+                    // but unnamed in answers has coverage that isn't converting.
+                    let pagesLine = '';
+                    const pe = sov.page_evidence;
+                    if (pe && pe.pages_ok > 0) {
+                        const tcName = (sov.top_competitor_at_outlet || {}).name;
+                        const tcPages = tcName ? (pe.competitors || {})[tcName] : undefined;
+                        let bits = `<strong>${esc(brandLabel)}</strong> on ${pe.brand_pages} of ${pe.pages_ok}`;
+                        if (tcName && tcPages !== undefined) bits += ` &middot; ${esc(tcName)} on ${tcPages} of ${pe.pages_ok}`;
+                        const tcAt = tcName
+                            ? (((sov.all_competitors_at_outlet || []).find(c => c.name === tcName) || {}).mentions_at_outlet || 0)
+                            : 0;
+                        let flag = '';
+                        if (tcName && tcPages === 0 && tcAt >= 2 && pe.pages_ok >= 2) {
+                            flag = ` <span class="pe-flag">${esc(tcName)} is named by AI here without appearing on these pages — its position is borrowed.</span>`;
+                        } else if (pe.brand_pages > 0 && (sov.brand_mentions_at_outlet || 0) === 0) {
+                            flag = ` <span class="pe-flag">${esc(brandLabel)} is on the cited pages but AI isn't naming it — coverage isn't converting.</span>`;
+                        }
+                        pagesLine = `<div class="media-sov-pages">Source-page check (${pe.pages_ok} cited page${pe.pages_ok === 1 ? '' : 's'} read): ${bits}${flag}</div>`;
+                    }
+                    sovBlock = `
+                        <div class="media-sov">
+                            <div class="media-sov-head">Brands named when AI cites this outlet${sampleCaption}</div>
+                            ${rows}
+                            ${moreLine}
+                            ${pagesLine}
+                            ${contextLine}
+                        </div>
+                    `;
+                }
+
+                // One consistent denominator: how many AI responses cited this
+                // outlet (matches the SoV bars below). Avoids the old card that
+                // said "cited 8×" (raw citations) over bars reading "/6"
+                // (responses). Falls back to raw frequency only if SoV is absent.
+                const citedStat = sov
+                    ? `Cited in ${sov.responses_citing} of ${data.total_responses || 0} AI responses`
+                    : `Cited ${t.citation_frequency}× across responses`;
+                // Pick the best sample URL to surface as an "example cited
+                // page" so the user can see WHAT KIND of content AI is reading
+                // for this outlet (a topical article vs a homepage hub).
+                // Prefer URLs with a real path; fall back to the first sample.
+                const sampleUrls = (t.sample_urls || []).filter(u => u && /^https?:\/\//i.test(u));
+                const exUrl = sampleUrls.find(u => { try { return new URL(u).pathname.length > 4; } catch { return false; } }) || sampleUrls[0] || '';
+                let exUrlBlock = '';
+                if (exUrl) {
+                    let label = exUrl;
+                    try {
+                        const u = new URL(exUrl);
+                        label = u.hostname.replace(/^www\./, '') + u.pathname;
+                    } catch {}
+                    if (label.length > 70) label = label.slice(0, 67) + '…';
+                    exUrlBlock = `<div class="media-example-url">Example cited page: <a href="${esc(exUrl)}" target="_blank" rel="noopener">${esc(label)} ↗</a></div>`;
+                }
+                // If this outlet is a heavy-lifting placement, surface the
+                // specific named article (title, date, which assistants pulled
+                // it) in place of the generic example-cited-page line — keeps the
+                // placement recognition while the card matches the other groups.
+                const win = winByDomain[(t.domain || '').toLowerCase()];
+                const winArt = (win && win.articles && win.articles.length) ? win.articles[0] : null;
+                if (winArt && winArt.label) {
+                    let aLabel = winArt.url || '';
+                    try { const u = new URL(winArt.url); aLabel = u.hostname.replace(/^www\./, '') + u.pathname; } catch {}
+                    if (aLabel.length > 70) aLabel = aLabel.slice(0, 67) + '…';
+                    const datePill = winArt.date_label ? `<span class="dc-date${winArt.recent ? '' : ' old'}">${esc(winArt.date_label)}</span>` : '';
+                    const linkLine = winArt.url ? `<div class="media-example-url">Heavy-lifting placement: <a href="${esc(winArt.url)}" target="_blank" rel="noopener">${esc(aLabel)} ↗</a></div>` : '';
+                    const pulled = (winArt.llms && winArt.llms.length) ? `<div class="dc-llms">pulled by ${winArt.llms.map(esc).join(' · ')}</div>` : '';
+                    exUrlBlock = `<div class="dc-article" style="margin-top:8px">AI is pulling <span class="q">&ldquo;${esc(winArt.label)}&rdquo;</span>${datePill}</div>${linkLine}${pulled}`;
+                }
+                // Authority bar: a tiny gray track showing this outlet's citation
+                // volume vs. the most-cited outlet in this audit. Verdict color
+                // appears as a thin cap at the right edge of the fill — so
+                // verdict reads even when the outlet has low volume or zero
+                // brand presence. Replaces the old standalone "Outlet map"
+                // section above the cards (consolidated into the card itself).
+                const _authN = (sov && sov.responses_citing) || 0;
+                const _authPct = Math.min(100, (_authN / maxOutletN) * 100);
+                const authBlock = _authN > 0 ? `
+                    <div class="card-authority-bar" title="Outlet citation volume vs the most-cited outlet in this audit (bar length); verdict (bar color)">
+                        <div class="card-authority-fill verdict-${verdict || 'neutral'}" style="width:${_authPct.toFixed(1)}%"></div>
+                    </div>` : '';
+                return `
+                    <div class="media-card ${verdict || ''}">
+                        ${badge}
+                        <div class="media-outlet">${esc(t.outlet)}</div>
+                        ${t.domain ? `<div class="media-domain">${esc(t.domain)}</div>` : ''}
+                        ${t.reporter ? `<div class="media-reporter">${esc(t.reporter)}</div>` : ''}
+                        ${authBlock}
+                        <span class="media-stat">${citedStat}</span>
+                        ${llms.length ? llms.map(l => `<span class="media-stat">${esc(l)}</span>`).join('') : ''}
+                        ${exUrlBlock}
+                        <div class="media-rationale">${esc(t.rationale)}</div>
+                        ${sovBlock}
+                    </div>
+                `;
+            }
+
+            // (Outlet map consolidated INTO each card as a small authority bar
+            // with verdict cap — see renderTargetCard. The previous standalone
+            // "Outlet map" section was duplicating what cards already show.)
+
+            // Group every outlet by its share-of-voice VERDICT — Strengths to
+            // defend, Opportunities to pitch, Holding steady, Emerging signals.
+            // (Brand-on-page coverage is still computed backstage for the CSV,
+            // but it no longer drives the report: PR teams already know their
+            // own clips — the signal they want is which brands each outlet's AI
+            // answers name, and where competitors out-cite them.)
+            const buckets = {};
+            const groupDefs = [
+                { key: 'strength', icon: '🛡️', title: 'Strengths to defend',
+                  intro: `Outlets whose AI answers already name ${esc(brandLabel)} as much as — or more than — rivals when they're cited. This earned media is doing the heavy lifting for your AI visibility; protect these relationships before competitors close the gap.` },
+                { key: 'opportunity', icon: '🎯', title: 'Opportunities to pitch',
+                  intro: `Outlets where competitors out-cite ${esc(brandLabel)} — the AI names rivals, not you, when it cites them. This is where earned media will move your AI mindshare the most.` },
+                { key: 'neutral', icon: '⚖️', title: 'Holding steady',
+                  intro: `Outlets where ${esc(brandLabel)} performs in line with its overall mindshare. Maintain presence; no urgent action needed.` },
+                { key: 'emerging', icon: '⚡', title: 'Emerging signals to watch',
+                  intro: `Outlets cited only once or twice — too thin to score yet, but worth cultivating early before competitors lock them in.` },
+            ];
+            groupDefs.forEach(g => buckets[g.key] = []);
+            for (const t of targets) {
+                const sov = sovByDomain[(t.domain || '').toLowerCase()];
+                const v = (sov && buckets[sov.verdict]) ? sov.verdict : 'neutral';
+                buckets[v].push(t);
+            }
+
+            for (const g of groupDefs) {
+                const items = buckets[g.key];
+                if (!items.length) continue;
+                html += `
+                    <div class="verdict-group">
+                        <div class="verdict-group-header">
+                            <div class="verdict-group-icon ${g.key}">${g.icon}</div>
+                            <span class="verdict-group-title">${g.title}</span>
+                            <span class="verdict-group-count">${items.length}</span>
+                        </div>
+                        <div class="verdict-group-intro">${g.intro}</div>
+                        ${items.map(renderTargetCard).join('')}
+                    </div>
+                `;
+            }
+
+            // Supporting-evidence note: clarifies these outlets ARE the
+            // editorial map, reframed as proof behind the insights above.
+            html += `<div class="section-note" style="margin-top:-8px">All ${targets.length} outlets above are drawn from actual AI citations about ${esc(data.category || 'your category')} — the editorial publications shaping how AI describes your brand. Each card shows ${esc(brandLabel)}'s share of voice versus competitors at that outlet.</div>`;
+
+            // MEDIA LANDSCAPE — PARKED. Backend still computes + saves
+            // `media_landscape` in the payload (so the data is there for the
+            // CSV / future revivals), but the UI render is gated off because
+            // it wasn't adding enough strategic value above the SoV cards.
+            // Flip MEDIA_LANDSCAPE_ENABLED to true to bring it back.
+            const MEDIA_LANDSCAPE_ENABLED = false;
+            const ml = data.media_landscape || {};
+            const mlTypes = [
+                { key: 'consumer', label: 'Consumer' },
+                { key: 'trade', label: 'Trade' },
+                { key: 'business', label: 'Business' },
+                { key: 'advocacy', label: 'Advocacy' },
+            ].filter(t => (ml[t.key] || []).length);  // 4th+ tab only when populated
+            if (MEDIA_LANDSCAPE_ENABLED && mlTypes.length) {
+                const sMeta = {
+                    driving:   { cls: 'driving',  label: 'Driving your visibility' },
+                    open_lane: { cls: 'openlane', label: 'Open lane — pitch' },
+                    off_radar: { cls: 'offradar', label: "Off the AI's radar" },
+                };
+                let tabsHtml = '', panelsHtml = '';
+                mlTypes.forEach((t, ti) => {
+                    tabsHtml += `<button class="ml-tab${ti === 0 ? ' active' : ''}" data-ml="${t.key}" onclick="switchMlTab('${t.key}')">${t.label} <span class="ml-tab-n">${ml[t.key].length}</span></button>`;
+                    const rows = (ml[t.key] || []).map(o => {
+                        const sm = sMeta[o.status] || sMeta.off_radar;
+                        return `<div class="ml-row">
+                            <span class="ml-status ${sm.cls}"></span>
+                            <span class="ml-name">${esc(o.name)}</span>
+                            <span class="ml-domain">${esc(o.domain)}</span>
+                            <span class="ml-statlabel ${sm.cls}">${sm.label}</span>
+                        </div>`;
+                    }).join('');
+                    panelsHtml += `<div class="ml-panel${ti === 0 ? ' active' : ''}" data-ml-panel="${t.key}">${rows}</div>`;
+                });
+                html += `
+                    <div class="section-title" style="margin-top:44px">Media landscape — your outlet list, through the AI's eyes</div>
+                    <div class="section-note" style="margin-top:-6px;margin-bottom:18px">The publications a ${esc(data.category || 'category')} PR team lives by — and what each is doing for ${esc(brandLabel)} in AI answers right now. <strong style="color:#7acc7a">Driving</strong> = AI cites it and names you · <strong style="color:#ffb860">Open lane</strong> = AI cites it for your category but not you (pitch) · <strong style="color:#8a8a9a">Off the AI's radar</strong> = not cited for your category yet (brand-equity / early-mover play).</div>
+                    <div class="ml-tabs">${tabsHtml}</div>
+                    <div class="ml-panels">${panelsHtml}</div>
+                `;
+            }
+
+            if (shareUrl || pdfUrl) {
+                html += `
+                    <div class="save-panel">
+                        <div class="save-panel-label">Save & share</div>
+                        <h4>Hold onto this report</h4>
+                        <div class="save-panel-desc">Anyone with the link can view this report. The PDF captures everything on this page. Want the full raw data — every prompt, every LLM response, every citation URL? Request the CSV and we'll send it.</div>
+                        <div class="save-panel-actions">
+                            ${shareUrl ? `<button class="action-btn primary-action" onclick="copyShareLink('${esc(shareUrl)}')">Copy share link</button>` : ''}
+                            ${pdfUrl ? `<a class="action-btn" href="${esc(pdfUrl)}" target="_blank" rel="noopener">Download PDF</a>` : ''}
+                            <button class="action-btn" onclick="openDemoModal('csv')" title="Your CSV includes every prompt we ran, every full LLM response (Claude · ChatGPT · Gemini), and every citation URL extracted — for your own re-analysis, internal briefing, or competitive review. Share your details and we'll send it within 24 hours.">Request CSV &rarr;</button>
+                        </div>
+                        ${shareUrl ? `<input type="text" class="share-url-display" value="${esc(shareUrl)}" readonly onclick="this.select()">` : ''}
+                    </div>
+                `;
+            }
+
+            html += `
+                <div class="feedback-widget" id="feedbackWidget">
+                    <div class="feedback-question">Was this audit useful?</div>
+                    <div class="feedback-actions">
+                        <button class="feedback-btn" data-rating="up" onclick="submitFeedback('up', this)">&#128077; Yes</button>
+                        <button class="feedback-btn" data-rating="down" onclick="submitFeedback('down', this)">&#128078; Not really</button>
+                        <button class="feedback-btn" onclick="openDemoModal('tellmore')">&#9993;&#65039; Tell us more</button>
+                    </div>
+                    <div class="feedback-thanks" style="display:none">Thanks &mdash; your feedback was recorded.</div>
+                </div>
+                <div class="bespoke-cta">
+                    <div class="bespoke-cta-label">Want deeper insight?</div>
+                    <h3>Get a bespoke AI citation analysis</h3>
+                    <p>This free audit runs 10 prompts &times; 5 leading AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
+                    <button class="cta-buy-btn" onclick="openDemoModal()">
+                        Talk to us about a bespoke audit &rarr;
+                    </button>
+                    <div class="cta-secondary">
+                        Prefer to skip the form? <a class="cta-cal" href="${esc(CALENDLY_URL)}" target="_blank" rel="noopener">Book a 30-min call &rarr;</a>
+                    </div>
+                </div>
+            `;
+
+            if (data.prompts_used && data.prompts_used.length) {
+                html += `
+                    <div class="prompts-toggle" onclick="this.nextElementSibling.classList.toggle('open')">
+                        View ${data.prompts_used.length} prompts used &#9662;
+                    </div>
+                    <div class="prompts-list">
+                        <ol>${data.prompts_used.map(p => `<li>${esc(p)}</li>`).join('')}</ol>
+                    </div>
+                `;
+            }
+
+            el.innerHTML = html;
+            el.classList.add('active');
+        }
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s || '';
+            return d.innerHTML;
+        }
+
+        let lastAuditContext = { slug: null, problem_statement: '' };
+        // The descriptive hero subtitle is homepage-only — once the user has
+        // started a search (run an audit or opened the prompt editor) it's
+        // retired and never re-shown on subsequent/return views.
+        let subtitleRetired = false;
+        function retireSubtitle() {
+            subtitleRetired = true;
+            const se = document.getElementById('initialSubtitle');
+            if (se) se.style.display = 'none';
+        }
+
+        function submitFeedback(rating, btn) {
+            const slug = (lastAuditContext && lastAuditContext.slug) || null;
+            if (!slug) return;
+            btn.classList.add('selected');
+            // Disable the other rating button so we only record one rating per audit.
+            document.querySelectorAll('.feedback-btn[data-rating]').forEach(b => {
+                if (b !== btn) b.disabled = true;
+            });
+            fetch('/signal/feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ slug, rating })
+            }).catch(() => {});
+            const thanks = document.querySelector('.feedback-thanks');
+            if (thanks) thanks.style.display = 'block';
+        }
+
+        // Modal request_type controls the title / subtitle / submit-button
+        // copy AND is sent to the backend so the lead-capture email
+        // distinguishes "CSV request" from generic bespoke-audit interest.
+        let currentDemoContext = 'bespoke';
+        function openDemoModal(context) {
+            currentDemoContext = (context === 'csv') ? 'csv'
+                : (context === 'tellmore') ? 'tellmore' : 'bespoke';
+            const titleEl = document.getElementById('demoFormTitle');
+            const descEl = document.getElementById('demoFormDesc');
+            const subdescEl = document.getElementById('demoFormSubdesc');
+            const submitBtn = document.getElementById('demoSubmit');
+            const successTitle = document.getElementById('demoSuccessTitle');
+            const successBody = document.getElementById('demoSuccessBody');
+            if (currentDemoContext === 'csv') {
+                if (titleEl) titleEl.textContent = 'Request your CSV export';
+                if (descEl) descEl.innerHTML = 'Your CSV includes <strong>every prompt</strong> we ran, the <strong>full LLM response</strong> from all 5 AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok) for each one, and <strong>every citation URL</strong> extracted from those responses — formatted for re-analysis, internal briefing, or competitive review.';
+                if (subdescEl) subdescEl.textContent = "Share your details and we'll send the CSV (and a short note about how to read it) within 24 hours.";
+                if (submitBtn) submitBtn.textContent = 'Send my CSV request';
+                if (successTitle) successTitle.textContent = "Thanks — your CSV is on the way.";
+                if (successBody) successBody.textContent = "We'll email the CSV with a short read-me within 24 hours.";
+            } else if (currentDemoContext === 'tellmore') {
+                if (titleEl) titleEl.textContent = 'Tell us more';
+                if (descEl) descEl.innerHTML = "Send us a note and we'll get back to you — a question about your results, what you're hoping to achieve, or how a bespoke engagement (100+ prompts across up to 10 LLMs, plus a strategic roadmap and ongoing analysis) could work for your team.";
+                if (subdescEl) subdescEl.textContent = "Add your details and message below; we'll reply within 24 hours.";
+                if (submitBtn) submitBtn.textContent = 'Send message';
+                if (successTitle) successTitle.textContent = "Thanks — message received.";
+                if (successBody) successBody.textContent = "We've got your note and we'll reply within 24 hours.";
+            } else {
+                if (titleEl) titleEl.textContent = 'Request a call';
+                if (descEl) descEl.innerHTML = 'This free audit runs 10 prompts &times; 5 leading AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.';
+                if (subdescEl) subdescEl.textContent = "Drop your details and we'll reach out within 24 hours to scope the engagement.";
+                if (submitBtn) submitBtn.textContent = 'Request a call';
+                if (successTitle) successTitle.textContent = "Thanks — we'll be in touch.";
+                if (successBody) successBody.textContent = "Your request is in. We'll reach out within 24 hours to scope your bespoke analysis.";
+            }
+            // Message field: shown for the open-inquiry paths (tell-us-more +
+            // bespoke), hidden for the CSV export request. Required only for
+            // tell-us-more (that's the whole point of the button).
+            const msgField = document.getElementById('demoMessageField');
+            const msgLabel = document.getElementById('demoMessageLabel');
+            if (msgField) msgField.style.display = (currentDemoContext === 'csv') ? 'none' : 'block';
+            if (msgLabel) msgLabel.textContent = (currentDemoContext === 'tellmore')
+                ? 'What would you like to know? *'
+                : "Anything specific you'd like us to cover? (optional)";
+            document.getElementById('demoForm').style.display = 'block';
+            document.getElementById('demoSuccess').style.display = 'none';
+            document.getElementById('demoError').classList.remove('active');
+            document.getElementById('demoModal').classList.add('active');
+            setTimeout(() => document.getElementById('demoName').focus(), 50);
+        }
+        function closeDemoModal() {
+            document.getElementById('demoModal').classList.remove('active');
+        }
+
+        async function submitDemoRequest() {
+            const name = document.getElementById('demoName').value.trim();
+            const title = document.getElementById('demoTitle').value.trim();
+            const org = document.getElementById('demoOrg').value.trim();
+            const email = document.getElementById('demoEmail').value.trim();
+            const message = document.getElementById('demoMessage').value.trim();
+            const errEl = document.getElementById('demoError');
+            const btn = document.getElementById('demoSubmit');
+            const submitLabel = btn.textContent;   // restore the mode's own label on error
+
+            errEl.classList.remove('active');
+            if (!name || !email) {
+                errEl.textContent = 'Name and email are required.';
+                errEl.classList.add('active');
+                return;
+            }
+            if (currentDemoContext === 'tellmore' && !message) {
+                errEl.textContent = 'Please add a short message so we know how to help.';
+                errEl.classList.add('active');
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Submitting...';
+            try {
+                const resp = await fetch('/citation-audit/request-demo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name, title, org, email, message,
+                        slug: lastAuditContext.slug,
+                        problem_statement: lastAuditContext.problem_statement,
+                        request_type: currentDemoContext,
+                    }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    errEl.textContent = data.error || 'Something went wrong.';
+                    errEl.classList.add('active');
+                    btn.disabled = false;
+                    btn.textContent = submitLabel;
+                    return;
+                }
+                document.getElementById('demoForm').style.display = 'none';
+                document.getElementById('demoSuccess').style.display = 'block';
+                const devNote = document.getElementById('demoDevNote');
+                if (devNote) devNote.style.display = data.dev ? 'block' : 'none';
+            } catch (e) {
+                console.error('Demo request failed:', e);
+                errEl.textContent = 'Network error: ' + (e && e.message ? e.message : 'unknown');
+                errEl.classList.add('active');
+                btn.disabled = false;
+                btn.textContent = submitLabel;
+            }
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') closeDemoModal();
+        });
+
+        const problemInputEl = document.getElementById('problemInput');
+        if (problemInputEl) {
+            problemInputEl.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    runAudit();
+                }
+            });
+        }
+
+        function showToast(text) {
+            const t = document.getElementById('toast');
+            t.textContent = text;
+            t.classList.add('active');
+            clearTimeout(showToast._timer);
+            showToast._timer = setTimeout(() => t.classList.remove('active'), 2200);
+        }
+
+        function switchMlTab(key) {
+            document.querySelectorAll('.ml-tab').forEach(b => b.classList.toggle('active', b.dataset.ml === key));
+            document.querySelectorAll('.ml-panel').forEach(p => p.classList.toggle('active', p.dataset.mlPanel === key));
+        }
+
+        async function copyShareLink(url) {
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(url);
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.value = url;
+                    ta.style.position = 'fixed';
+                    ta.style.left = '-9999px';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                }
+                showToast('Share link copied');
+            } catch (e) {
+                showToast('Copy failed — link: ' + url);
+            }
+        }
+
+        // MVP branch: buyCheckout removed — no Stripe surfaces in the UI.
+
+        // When the user clicks Back from /signal/<slug> back to /citation-audit (which they
+        // got to via our pushState after audit completion), force a fresh reload so the
+        // form view is clean — otherwise the in-memory results would still be visible
+        // even though the URL has reset.
+        window.addEventListener('popstate', function() {
+            const path = window.location.pathname;
+            if (path === '/citation-audit') {
+                window.location.reload();
+            } else if (path.startsWith('/signal/') && !path.endsWith('.pdf')) {
+                // Back/forward to a /signal/<slug> URL — let the server render the saved report.
+                window.location.reload();
+            }
+        });
+
+        // Prefill from query string (kept for deep-linking the input field).
+        // MVP branch: run_paid / autostart query params removed — those paths
+        // came from the Stripe success flow and have no meaning here.
+        (function applyPrefill() {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                const prefill = params.get('prefill');
+                if (prefill) {
+                    const input = document.getElementById('problemInput');
+                    if (input) input.value = prefill;
+                }
+            } catch (e) {}
+        })();
+
+        // ── P3 homepage: two-field input + progress/ambient wiring ────────
+        // The hero, its two-field runner form, and the homepage marketing +
+        // footer show/hide together. Report + loading states live outside the
+        // hero so they stay visible while it's hidden.
+        function setHomeChrome(visible) {
+            const hero = document.getElementById('heroSection');
+            if (hero) hero.style.display = visible ? '' : 'none';
+            const mkt = document.getElementById('homeMarketing');
+            if (mkt) mkt.style.display = visible ? '' : 'none';
+            document.body.classList.toggle('home', !!visible);
+        }
+        // Footer "Start with the preview." → smooth-scroll to the top and land
+        // the cursor in the brand field so it's ready to type.
+        function goHomeTop() {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            const b = document.getElementById('brandInput');
+            if (b) setTimeout(() => b.focus(), 450);
+        }
+        // Two visible fields (brand + topic) compose the problem_statement the
+        // rest of the pipeline already expects — same shape as the batch runner.
+        function _composeStatement() {
+            const bEl = document.getElementById('brandInput');
+            const tEl = document.getElementById('topicInput');
+            const brand = (bEl ? bEl.value : '').trim();
+            const topic = (tEl ? tEl.value : '').trim();
+            if (brand && topic) return `${brand} wants to be the company AI assistants recommend when people ask about ${topic}.`;
+            if (brand) return `${brand} wants to be the company AI assistants recommend in its category.`;
+            return '';
+        }
+        function _syncProblemInput() {
+            const composed = _composeStatement();
+            const hidden = document.getElementById('problemInput');
+            if (composed && hidden) hidden.value = composed;
+            // Fall back to a prefilled hidden value (deep-link) if the fields are empty.
+            return composed || (hidden ? (hidden.value || '').trim() : '');
+        }
+        function _homeInputError() {
+            const e = document.getElementById('errorMsg');
+            if (e) { e.textContent = 'Tell us your brand and what you want it known for.'; e.classList.add('active'); }
+            const bEl = document.getElementById('brandInput'); if (bEl) bEl.focus();
+        }
+        function startHomepageAudit() {
+            const stmt = _syncProblemInput();
+            if (!stmt) { _homeInputError(); return; }
+            runAudit({ input: stmt });
+        }
+        function reviewPromptsHome() {
+            const stmt = _syncProblemInput();
+            if (!stmt) { _homeInputError(); return; }
+            openPromptEditor();
+        }
+        // Drive the five assistant chips from the progress stream: none during
+        // prompt generation, filling done→running through the LLM step, all
+        // done once we're extracting/analyzing. (No per-provider data on the
+        // wire, so this is a faithful visual derived from the existing step.)
+        function updateAssistants(step, current, total) {
+            const chips = document.querySelectorAll('#loadAssistants .ac');
+            if (!chips.length) return;
+            if (step === 'prompts') { chips.forEach(c => { c.className = 'ac'; }); return; }
+            if (step === 'llm') {
+                const frac = total > 0 ? Math.max(0, Math.min(1, current / total)) : 0;
+                const done = Math.floor(frac * chips.length);
+                chips.forEach((c, i) => { c.className = 'ac ' + (i < done ? 'done' : 'run'); });
+                return;
+            }
+            chips.forEach(c => { c.className = 'ac done'; });
+        }
+        // Cursor-reactive hero glow.
+        addEventListener('mousemove', e => {
+            const r = document.documentElement;
+            r.style.setProperty('--mx', e.clientX + 'px');
+            r.style.setProperty('--my', e.clientY + 'px');
+        });
+        // Rotate example brand + positioning pairs through the two placeholders.
+        (function rotateExamples() {
+            const pairs = [
+                ["Ramp", "the easiest way to automate bill payments, streamline approvals, and save time"],
+                ["Notion", "the all-in-one AI workspace for notes, docs, and projects"],
+                ["Square", "the point-of-sale and payments platform that runs your whole business"],
+                ["Oatly", "the oat milk that's better for you and the planet"],
+                ["Everlaw", "the cloud ediscovery platform for litigation and investigations"]
+            ];
+            const bEl = document.getElementById('brandInput'), tEl = document.getElementById('topicInput');
+            if (!bEl || !tEl) return;
+            let i = 0;
+            function rot() { const p = pairs[i]; bEl.placeholder = p[0]; tEl.placeholder = p[1]; i = (i + 1) % pairs.length; }
+            rot(); setInterval(rot, 3200);
+        })();
+
+        // Shared-view bootstrap: if the server injected a saved report, skip the input form.
+        if (window.SHARED_REPORT) {
+            const sharedSubtitle = document.getElementById('initialSubtitle');
+            if (sharedSubtitle) sharedSubtitle.style.display = 'none';
+            document.getElementById('formSection').classList.add('hidden');
+            setHomeChrome(false);
+            const loading = document.getElementById('loading');
+            if (loading) loading.classList.remove('active');
+            const data = window.SHARED_REPORT;
+            lastAuditContext = { slug: data.slug || null, problem_statement: '' };
+            renderResults(data);
+
+            if (window.SIGNAL_SHARE_URL) {
+                const banner = document.createElement('div');
+                banner.className = 'share-banner';
+                banner.innerHTML = `<span>Viewing a shared PR Signal Finder report.</span>`
+                    + `<span><a href="/citation-audit">Run your own &rarr;</a></span>`;
+                const results = document.getElementById('results');
+                results.insertBefore(banner, results.firstChild);
+            }
+        }
+
+        // ── Autostart contract for the innatec3.com embed widget ──────────
+        // The widget composes ?autostart=1&brand=<enc>&focus=<enc>&utm_...=…
+        // and opens it in a new tab; we populate the two-field hero and fire
+        // the SAME submit as clicking "Run the audit" — no email, no prompt
+        // review — so the visitor lands already in the collection/progress
+        // state. Runs cost real LLM spend, so this is gated hard:
+        //   • Client-side on load only — a crawler that doesn't execute JS
+        //     never triggers a run (the server GET renders the homepage inert).
+        //   • Skipped for known bot/preview UAs even if they run JS.
+        //   • Requires BOTH brand and focus; anything missing → normal homepage.
+        //   • Never fires on a shared-report view.
+        //   • The per-IP daily cap + hosting-IP bot filter still apply server-side.
+        // UTM capture is unaffected (the server reads it from the same URL).
+        (function autostartFromEmbed() {
+            try {
+                if (window.SHARED_REPORT) return;
+                const params = new URLSearchParams(window.location.search);
+                if (params.get('autostart') !== '1') return;
+                const brand = (params.get('brand') || '').trim();
+                const focus = (params.get('focus') || '').trim();
+                if (!brand || !focus) return;                 // incomplete → normal homepage
+                const ua = navigator.userAgent || '';
+                if (/bot|crawl|spider|slurp|preview|facebookexternalhit|bingpreview|embedly|headless/i.test(ua)) return;
+                const bEl = document.getElementById('brandInput');
+                const tEl = document.getElementById('topicInput');
+                if (!bEl || !tEl) return;
+                // Show the visitor exactly what's being audited, then submit.
+                bEl.value = brand;
+                tEl.value = focus;
+                const stmt = _syncProblemInput();
+                if (!stmt) return;
+                // Defer one tick so the loading/progress DOM is fully wired.
+                setTimeout(() => runAudit({ input: stmt }), 0);
+            } catch (e) {}
+        })();
+    </script>
+</body>
+</html>

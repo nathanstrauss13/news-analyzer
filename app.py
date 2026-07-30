@@ -13554,6 +13554,81 @@ def signal_report_json(slug):
     )
 
 
+def _render_kit_dashboard(data):
+    """Render a stored audit through the next-generation GEO dashboard
+    (tools/audit_dashboard kit). Read-only over the persisted payload:
+    frozen slugs are safe because nothing is written back. Rows are split
+    branded vs unbranded by whether the prompt names the brand."""
+    import tempfile
+    from tools.audit_dashboard import build_dashboard as kit
+
+    brand = (data.get('brand') or 'Brand').strip()
+    rows = [r for r in (data.get('all_responses') or [])
+            if (r.get('response') or '').strip() and not r.get('error')]
+    # split on the kit's own brand-form matching so the branded/unbranded
+    # partition agrees with how the dashboard counts mentions
+    forms = kit.match_forms(brand)
+    b_rows = [r for r in rows if kit.present(forms, r.get('prompt') or '')]
+    o_rows = [r for r in rows if not kit.present(forms, r.get('prompt') or '')]
+
+    comps = []
+    for c in (data.get('competitors') or [])[:12]:
+        name = (c.get('name') if isinstance(c, dict) else str(c)) or ''
+        if name.strip():
+            comps.append({"name": name.strip()})
+
+    cfg = {
+        "brand": brand,
+        "slug": "preview",
+        "category": data.get('category') or '',
+        "date": "",
+        "aliases": [brand],
+        "owned_domains": data.get('brand_domains') or [],
+        "competitors": comps,
+        "exclude_sources": [],
+        "exec_summary": None,
+        "method_notes": [
+            "<b>Preview render.</b> This dashboard is the next-generation view of "
+            "this audit, generated read-only from its stored raw responses; every "
+            "number recomputes from that data on each load. The classic report for "
+            "the same audit remains at its original address."],
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        def _dump(subset, name):
+            p = os.path.join(td, name)
+            with open(p, 'w') as f:
+                json.dump({"all_responses": subset}, f)
+            return p
+        branded = kit.analyze(kit.load_rows(_dump(b_rows, 'b.json')), cfg) if b_rows else None
+        organic = kit.analyze(kit.load_rows(_dump(o_rows, 'o.json')), cfg) if o_rows else None
+        if not branded and not organic:
+            raise ValueError("no usable responses in stored payload")
+        out = os.path.join(td, 'dash.html')
+        kit.build(cfg, branded, organic, out)
+        with open(out) as f:
+            return f.read()
+
+
+@app.route('/dashboard/<slug>')
+def dashboard_preview(slug):
+    """Operator-gated preview of the branded+unbranded GEO dashboard rendered
+    from an existing audit's stored data. Part of the Signal Finder evolution
+    (archive tag signal-finder-v1 in REVERT.md). Never public while in
+    preview; loads are read-only so frozen slugs are unaffected."""
+    if not _operator_ok():
+        abort(404)
+    data = _load_signal_report(slug)
+    if not data:
+        abort(404)
+    try:
+        html = _render_kit_dashboard(data)
+    except Exception as e:
+        return Response(f"dashboard preview failed: {type(e).__name__}: {e}",
+                        status=500, mimetype='text/plain')
+    return Response(html, mimetype='text/html')
+
+
 @app.route('/citation-audit/request-demo', methods=['POST'])
 def citation_audit_request_demo():
     data = request.get_json(silent=True) or {}

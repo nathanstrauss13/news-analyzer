@@ -72,6 +72,7 @@ from the branch (they survive in the tags / reflog but it's messy).
 
 | Tag | Commit | What it is |
 |-----|--------|------------|
+| `signal-finder-v1` | `0c007b62d` | PR Signal Finder as shipped through July 30, 2026 — the complete classic product (PR-framed report, two-field homepage) before the evolution to the branded+unbranded GEO dashboard. Template also snapshotted at `templates/archive/signal_finder_v1/`. Frozen report slugs are unaffected by any restore (they render from persisted JSON). |
 | `v0.2-pre-reposition` | `1c141bb1` | Last stable before the AI-mindshare reframe. 5-LLM, flat top-10 list. |
 | `v0.1-paid-tier-checkpoint` | (earlier) | Full paid-tier Stripe flow, before the MVP fork. |
 
