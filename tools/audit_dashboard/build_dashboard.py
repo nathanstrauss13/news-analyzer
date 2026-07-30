@@ -100,6 +100,19 @@ def poss(name):
     return name + "'" if name.rstrip().endswith("s") else name + "'s"
 
 
+def with_the(name, cap=False):
+    """Prefix an article unless the label already starts with one (portfolio
+    labels like 'the PUIG houses' would otherwise render 'the the ...')."""
+    if name.lower().startswith(("the ", "a ", "an ")):
+        return (name[0].upper() + name[1:]) if cap else (name[0].lower() + name[1:])
+    return ("The " if cap else "the ") + name
+
+
+def bare(name):
+    """Strip a leading article from a label ('the PUIG houses' -> 'PUIG houses')."""
+    return name[4:] if name.lower().startswith("the ") else name
+
+
 def norm_url(u):
     """Display-normalize a citation URL: strip scheme, www, query (utm noise),
     fragment, trailing slash. Preserves path case so links still resolve."""
@@ -800,7 +813,7 @@ def owned_donut(a, brand):
            f'font-weight="700" font-size="30">{a["owned_citations"]}</text>'
            f'<text x="110" y="126" text-anchor="middle" fill="#9aa1ad" font-family="Inter,sans-serif" '
            f'font-size="10.5">owned citations</text></svg>')
-    cap = (f'<li style="border-bottom:none;color:var(--muted);font-size:11px">Top 5 pages shown'
+    cap = (f'<li style="border-bottom:none;color:var(--muted);font-size:11px;grid-column:1/-1;display:block">Top 5 pages shown'
            + (f'; {len(rest)} more in the table below' if rest else '') + '</li>')
     return f'<div class="donutwrap">{svg}<ul class="dlegend">{"".join(legend)}{cap}</ul></div>'
 
@@ -1097,7 +1110,7 @@ def build(cfg, branded, organic, out_path):
         entry_card = ""
         if entry is not None:
             entry_card = (f'<div class="card"><div class="stat-n cyan">top {max(1, round(entry * 100))}%</div>'
-                          f'<div class="stat-l">average entry point of the first {esc(brand)} mention '
+                          f'<div class="stat-l">average entry point of the first {esc(bare(brand))} mention '
                           f'within the answer text, when it appears</div></div>')
         first_share = (f'{pr["brand_first"]} of {pr["brand_present"]}'
                        if pr.get("brand_present") else "0")
@@ -1111,7 +1124,7 @@ def build(cfg, branded, organic, out_path):
             'the answer text is counted as named first. Directional, like everything in this sample.</div>'
             '<div class="cards" style="grid-template-columns:repeat(2,1fr);max-width:640px">'
             f'<div class="card"><div class="stat-n gold">{first_share}</div>'
-            f'<div class="stat-l">answers naming {esc(brand)} put it ahead of every measured '
+            f'<div class="stat-l">answers naming {esc(brand)} put the name ahead of every measured '
             'competitor</div></div>'
             f'{entry_card}</div>'
             f'<h2 style="font-size:19px;margin-top:26px">Named first, across all {o["n"]} answers</h2>'
@@ -1125,13 +1138,13 @@ def build(cfg, branded, organic, out_path):
         add("branded", "Branded read", f'''
 <section id="branded">
   <div class="gh">Branded questions</div>
-  <h2>Who AI trusts to tell the {esc(brand)} story</h2>
+  <h2>Who AI trusts to tell {esc(with_the(brand))} story</h2>
   <div class="gsub">Ten branded prompts (what is it, is it legit, how does it compare, who uses it,
   what does it cost) run on all five assistants. Every assistant engages, which is the baseline
   for branded questions; the read that matters is how much sourcing each does and which
   {esc(brand)} pages AI pulls from.</div>
   {platform_cards(b, branded=True)}
-  <h2 style="font-size:19px;margin-top:34px">The {esc(brand)} pages AI actually cites</h2>
+  <h2 style="font-size:19px;margin-top:34px">{esc(with_the(brand, cap=True))} pages AI actually cites</h2>
   {owned_donut(b, brand)}
   {owned_pages_block(b, brand)}
 </section>''')
