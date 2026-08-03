@@ -11243,6 +11243,19 @@ def view_signal_report(slug):
         except Exception as _lle:
             print("launch landing compute failed (continuing):", str(_lle)[:120])
 
+    # ── Dashboard-evolution cutover: split audits (branded + unbranded halves,
+    # i.e. every new self-serve run since phase 2) render the GEO dashboard as
+    # their public report view. Legacy and frozen payloads (no prompt_sets)
+    # keep the classic template permanently. ?classic=1 renders the classic
+    # view of a split audit for comparison; render failures fall back to it.
+    if (data.get('prompt_sets') or {}).get('branded') and request.args.get('classic') != '1':
+        try:
+            return Response(_render_kit_dashboard(data, public_slug=slug),
+                            mimetype='text/html')
+        except Exception as _de:
+            print(f"[dashboard] render failed for slug={slug}, "
+                  f"falling back to classic view: {_de}")
+
     share_url = request.url_root.rstrip('/') + url_for('view_signal_report', slug=slug)
     pdf_url = request.url_root.rstrip('/') + url_for('signal_report_pdf', slug=slug)
     csv_url = request.url_root.rstrip('/') + url_for('signal_report_csv', slug=slug)
@@ -13629,11 +13642,14 @@ def signal_report_json(slug):
     )
 
 
-def _render_kit_dashboard(data):
+def _render_kit_dashboard(data, public_slug=None):
     """Render a stored audit through the next-generation GEO dashboard
     (tools/audit_dashboard kit). Read-only over the persisted payload:
     frozen slugs are safe because nothing is written back. Rows are split
-    branded vs unbranded by whether the prompt names the brand."""
+    branded vs unbranded by whether the prompt names the brand.
+
+    public_slug: set when this is the PUBLIC report view (dashboard cutover)
+    — appends the report CTA band (book time / JSON export / run another)."""
     import tempfile
     from tools.audit_dashboard import build_dashboard as kit
 
@@ -13670,10 +13686,9 @@ def _render_kit_dashboard(data):
         "exclude_sources": [],
         "exec_summary": None,
         "method_notes": [
-            "<b>Preview render.</b> This dashboard is the next-generation view of "
-            "this audit, generated read-only from its stored raw responses; every "
-            "number recomputes from that data on each load. The classic report for "
-            "the same audit remains at its original address."],
+            "This dashboard is generated read-only from the audit's stored raw "
+            "responses; every number recomputes from that data on each load. The "
+            "complete raw data is in the appendix above and downloadable as JSON."],
     }
 
     with tempfile.TemporaryDirectory() as td:
@@ -13689,7 +13704,28 @@ def _render_kit_dashboard(data):
         out = os.path.join(td, 'dash.html')
         kit.build(cfg, branded, organic, out)
         with open(out) as f:
-            return f.read()
+            html = f.read()
+    if public_slug:
+        cta = (
+            '<div style="max-width:1060px;margin:0 auto;padding:0 28px 70px">'
+            '<div style="background:#0e1016;border:1px solid #1e212b;border-left:3px solid #cbab6d;'
+            'border-radius:14px;padding:26px 28px;font-family:Inter,-apple-system,sans-serif">'
+            '<div style="font-family:Jost,sans-serif;font-size:19px;font-weight:600;color:#e8e9ee;margin-bottom:6px">'
+            'This free read maps the terrain. The full audit sizes it.</div>'
+            '<div style="font-size:13.5px;color:#9aa0b0;line-height:1.6;max-width:640px;margin-bottom:16px">'
+            'A bespoke engagement runs 100 prompts across up to 10 assistants, with personas and '
+            'prompts you approve, plus verified fact and source analysis.</div>'
+            f'<a href="https://calendly.com/nstrauss/new-meeting" target="_blank" rel="noopener" '
+            'style="display:inline-block;background:#cbab6d;color:#161206;font-weight:600;font-size:14px;'
+            'padding:10px 22px;border-radius:9px;text-decoration:none;margin-right:12px">Book 30 minutes</a>'
+            f'<a href="/signal/{public_slug}.json" '
+            'style="display:inline-block;color:#74d0ff;font-size:13.5px;text-decoration:none;margin-right:16px">'
+            'Download the data (JSON)</a>'
+            '<a href="/citation-audit" style="display:inline-block;color:#74d0ff;font-size:13.5px;'
+            'text-decoration:none">Run an audit for another brand</a>'
+            '</div></div>')
+        html = html.replace('</body>', cta + '</body>', 1)
+    return html
 
 
 @app.route('/dashboard/<slug>')
