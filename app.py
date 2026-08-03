@@ -8386,20 +8386,31 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
 
 
 def _generate_audit_prompts(problem_statement, tier="free"):
-    """Run ONLY the prompt-generation phase. Returns {brand, category, prompts}.
+    """Run ONLY the prompt-generation phase. Returns {brand, category, prompts,
+    branded_prompts, unbranded_prompts}.
+
+    Since the dashboard evolution (DASHBOARD_EVOLUTION.md), each audit carries
+    two labeled halves: BRANDED prompts (name the brand: how does AI describe
+    it when asked directly — sourcing, accuracy, owned-content pull-through)
+    and UNBRANDED prompts (category queries measuring unprompted mindshare).
+    `prompts` remains the flat branded+unbranded list for the collection loop.
+    Mindshare/SoV metrics compute over the unbranded half only, preserving
+    the original fairness doctrine; see run_citation_audit.
 
     Extracted from run_citation_audit so the paid-tier prompt editor can call
     this without the LLM batch / analysis steps. Tier governs prompt_count.
     """
     cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
     prompt_count = cfg["prompt_count"]
+    branded_count = prompt_count // 2
+    unbranded_count = prompt_count - branded_count
 
     prompt_gen_response = _claude_msg(
         model=CLAUDE_SONNET,
         max_tokens=4000 if prompt_count > 20 else 2000,
         messages=[{
             "role": "user",
-            "content": f"""You are an AI citation strategist. A communications professional wants their brand to be the answer when people ask AI assistants about a specific problem.
+            "content": f"""You are an AI citation strategist. A communications professional wants to understand how AI assistants treat their brand: whether it surfaces on category questions, and how it is described when asked about directly.
 
 Their goal: "{problem_statement}"
 
@@ -8408,20 +8419,27 @@ Today's date is {_today_label()}. Frame the prompts as if a real person is searc
 Your job:
 1. Identify the BRAND from their statement (the company/product they want to promote).
 2. Identify the CATEGORY or PROBLEM SPACE.
-3. Generate exactly {prompt_count} prompts that a real person would type into ChatGPT, Claude, or Gemini when researching this problem space. These should be natural, varied prompts — some broad ("best X for Y"), some question-based ("how do I solve Y?"), some recommendation-seeking ("what do experts recommend for Y?"). At higher prompt counts, cover adjacent angles: pricing, alternatives, troubleshooting, expert opinions, regulatory considerations, real-world reviews, integration questions, regional perspectives. Where appropriate, include time-current framing like "in {_today_label()}", "this year", or "the latest" — not year-specific shorthand.
+3. Generate exactly {branded_count} BRANDED prompts and exactly {unbranded_count} UNBRANDED prompts a real person would type into ChatGPT, Claude, or Gemini.
 
-CRITICAL — EVERY PROMPT MUST BE BRAND-AGNOSTIC (name NO brands at all):
-- Do NOT name the searched brand ("{{brand}}") in ANY prompt. Not once. Every prompt is a neutral category query a person would type WITHOUT knowing the brand exists.
+BRANDED prompts (name the brand, naturally):
+- Real questions people ask ABOUT a brand they've encountered: what it is and what it's known for, whether it's legit / worth it, reviews and reputation, how it compares to alternatives (say "alternatives" — do NOT name any competitor), what's new from it lately.
+- Vary intent: informational, evaluative, purchase/decision, current-events.
+- These measure how AI describes and sources the brand when asked directly.
+
+UNBRANDED prompts (name NO brands at all — this rule is absolute for this half):
+- Do NOT name the searched brand in ANY unbranded prompt. Not once. Each is a neutral category query a person would type WITHOUT knowing the brand exists.
 - Do NOT name any competitor brand either. NEVER write "BrandA vs BrandB" — that pre-anchors the responses.
-- WHY: naming the brand in a prompt guarantees the AI mentions it back, which inflates the brand's measured visibility and makes the competitive comparison unfair (the brand gets prompted mentions while competitors are only ever organic). By keeping EVERY prompt brand-agnostic, we measure the TRUE unprompted mindshare — does AI surface this brand on its own merits when nobody named it? — and every brand (the client's and all competitors) is measured on identical footing.
-- So instead of "{{brand}} reviews" or "{{brand}} alternatives", write the underlying category question: "best [category] for [audience]", "most trusted [category] brands this year", "what do experts recommend for [problem]", "[category] with [the attribute the brand wants to own]".
-- The brand name is captured separately in the "brand" field below for the analysis step — it just never appears inside a prompt.
+- WHY: naming the brand in a prompt guarantees the AI mentions it back, which inflates measured visibility and makes the competitive comparison unfair. The unbranded half measures TRUE unprompted mindshare — does AI surface this brand on its own merits when nobody named it? — with every brand measured on identical footing.
+- Write the underlying category question: "best [category] for [audience]", "most trusted [category] brands this year", "what do experts recommend for [problem]", "[category] with [the attribute the brand wants to own]".
+
+Neither half may name a competitor brand.
 
 Respond with ONLY valid JSON in this exact format:
 {{
   "brand": "the brand name",
   "category": "the problem/category",
-  "prompts": ["prompt 1", "prompt 2", ... "prompt {prompt_count}"]
+  "branded_prompts": ["branded prompt 1", ... "branded prompt {branded_count}"],
+  "unbranded_prompts": ["unbranded prompt 1", ... "unbranded prompt {unbranded_count}"]
 }}"""
         }]
     )
@@ -8430,10 +8448,16 @@ Respond with ONLY valid JSON in this exact format:
     if not json_match:
         raise ValueError("Failed to parse prompt generation response")
     prompt_data = json.loads(json_match.group())
+    branded = [p for p in (prompt_data.get("branded_prompts") or []) if isinstance(p, str) and p.strip()][:branded_count]
+    unbranded = [p for p in (prompt_data.get("unbranded_prompts") or []) if isinstance(p, str) and p.strip()][:unbranded_count]
+    if not unbranded:
+        raise ValueError("Prompt generation returned no unbranded prompts")
     return {
         "brand": prompt_data["brand"],
         "category": prompt_data["category"],
-        "prompts": prompt_data["prompts"][:prompt_count],
+        "prompts": branded + unbranded,
+        "branded_prompts": branded,
+        "unbranded_prompts": unbranded,
     }
 
 
@@ -8606,6 +8630,16 @@ def _qa_audit(payload):
     when the stored ones fail a check. Safe to call on any payload shape;
     missing fields degrade gracefully rather than raising."""
     ar = payload.get('all_responses') or []
+    # Split-audit payloads: stored metrics are unbranded-scoped, so the QA
+    # recount must run over the same subset or every check would "fail" by
+    # the branded half's near-guaranteed brand mentions (metrics_scope
+    # documents this contract on the payload).
+    _ps = payload.get('prompt_sets') or {}
+    if _ps.get('branded'):
+        _bset = set(_ps['branded'])
+        _unb = [r for r in ar if r.get('prompt') not in _bset]
+        if _unb:
+            ar = _unb
     brand = (payload.get('brand') or '').strip()
     aliases = payload.get('brand_aliases') or []
     domains = payload.get('brand_domains') or []
@@ -8881,6 +8915,7 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         prompts = [p for p in prompts_override if isinstance(p, str) and p.strip()]
         if not prompts:
             raise ValueError("No prompts supplied for the audit.")
+        prompt_sets = None      # curated prompts carry no branded/unbranded labels
         emit("prompts", f"Using your {len(prompts)} curated prompts for \"{brand}\"", 1, 1)
     else:
         emit("prompts", "Generating search prompts...", 0, 1)
@@ -8888,7 +8923,10 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         brand = gen["brand"]
         category = gen["category"]
         prompts = gen["prompts"]
-        emit("prompts", f"Generated {len(prompts)} prompts for \"{brand}\"", 1, 1)
+        prompt_sets = {"branded": gen["branded_prompts"],
+                       "unbranded": gen["unbranded_prompts"]}
+        emit("prompts", f"Generated {len(gen['branded_prompts'])} branded + "
+                        f"{len(gen['unbranded_prompts'])} unbranded prompts for \"{brand}\"", 1, 1)
 
     tasks = [(provider, pi, prompt_text)
              for pi, prompt_text in enumerate(prompts)
@@ -9021,6 +9059,19 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         emit("extract", f"Verified {url_total - dropped} of {url_total} URLs (dropped {dropped} dead/confabulated)", url_total, extract_total)
     else:
         emit("extract", "No URLs to verify", 0, extract_total)
+
+    # Branded prompts measure how AI describes the brand when asked directly;
+    # they are EXCLUDED from mindshare/SoV/media metrics so those remain
+    # unprompted and comparable with past audits (the fairness doctrine in
+    # _generate_audit_prompts). The full response set — both halves, URLs
+    # already verified above — persists on the payload for the dashboard.
+    _all_responses_full = all_responses
+    if prompt_sets and prompt_sets.get("branded"):
+        _branded_set = set(prompt_sets["branded"])
+        _unbranded_responses = [r for r in all_responses
+                                if r.get('prompt') not in _branded_set]
+        if _unbranded_responses:
+            all_responses = _unbranded_responses
 
     ranked_domains = aggregate_citations(all_responses)
     # Promote outlets that are NAMED in responses (or cited via bare domain)
@@ -9521,12 +9572,19 @@ Respond with ONLY valid JSON:
             _t['cited_by_llms'] = _dom_llms[_dom]
 
     analysis["prompts_used"] = prompts
+    # Branded/unbranded prompt labels (None for curated-prompt runs). When set,
+    # every mindshare/SoV/media metric above was computed over the UNBRANDED
+    # responses only (metrics_scope records this for QA recounts); the payload's
+    # all_responses below still carries BOTH halves for the dashboard.
+    analysis["prompt_sets"] = prompt_sets
+    analysis["metrics_scope"] = ("unbranded_only" if prompt_sets and prompt_sets.get("branded")
+                                 else "all_prompts")
     # Full ranked domains list (no cap). Each dict already carries:
     # {domain, count, llms, prompts, urls, specific_urls, diversity_score} — preserve all.
     analysis["raw_citation_domains"] = ranked_domains
     # Full raw per-response data: {llm, prompt, response, citations}. Lets users
     # re-analyze, audit, debug, or rerun analysis on a past report.
-    analysis["all_responses"] = all_responses
+    analysis["all_responses"] = _all_responses_full
     # Editorial-media share-of-voice analysis. For each top editorial outlet,
     # computes the brand's mention rate WITHIN responses citing that outlet
     # vs overall, and the same for each competitor. Labels each outlet as
@@ -9667,9 +9725,11 @@ Respond with ONLY valid JSON:
     # Audit completion tracking. Surfaces partial-delivery in the UI + saved
     # payload so users (and the debug email) can see when the wall-clock
     # deadline cancelled the slow tail. `completion_rate` is a 0.0-1.0 ratio.
-    analysis["responses_completed"] = len(all_responses)
+    # Delivery stats are over the FULL collection (both prompt halves), not the
+    # unbranded metrics subset — a clean 50/50 split run must read 100%, never 50%.
+    analysis["responses_completed"] = len(_all_responses_full)
     analysis["responses_planned"] = total_calls
-    completion_rate = round(len(all_responses) / max(1, total_calls), 3)
+    completion_rate = round(len(_all_responses_full) / max(1, total_calls), 3)
     analysis["completion_rate"] = completion_rate
 
     # Belt-and-suspenders: set tier here so it's guaranteed-set on the saved
@@ -9677,7 +9737,7 @@ Respond with ONLY valid JSON:
     # (Adobe paid audit saved with tier=None — this prevents recurrence.)
     analysis["tier"] = tier
 
-    print(f"[audit] tier={tier} completion={completion_rate:.1%} ({len(all_responses)}/{total_calls})")
+    print(f"[audit] tier={tier} completion={completion_rate:.1%} ({len(_all_responses_full)}/{total_calls})")
 
     # Ground-truth QA pass — runs on EVERY completed audit so a numbers bug never
     # silently reaches a prospect. Persisted on the payload; deterministic, no
@@ -10571,6 +10631,8 @@ def signal_generate_prompts():
         "brand": gen["brand"],
         "category": gen["category"],
         "prompts": gen["prompts"],
+        "branded_prompts": gen.get("branded_prompts") or [],
+        "unbranded_prompts": gen.get("unbranded_prompts") or [],
     })
 
 
@@ -10759,7 +10821,20 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
               f"now over {len(all_responses)} delivered responses")
 
     out = dict(data)
-    out['all_responses'] = all_responses  # persist the cleaned set
+    out['all_responses'] = all_responses  # persist the cleaned set (both halves)
+    # Split-audit reports (metrics_scope == "unbranded_only"): every stored
+    # metric was computed over the unbranded half. Rerender recounts MUST use
+    # the same scope — branded answers nearly always name the brand, so a
+    # full-set recount would inflate every count, flip the denominator, and
+    # fire a spurious summary regeneration.
+    _ps = data.get('prompt_sets') or {}
+    if _ps.get('branded'):
+        _bset = set(_ps['branded'])
+        _unb = [r for r in all_responses if r.get('prompt') not in _bset]
+        if _unb:
+            all_responses = _unb
+            print(f"[rerender] metrics scope: unbranded half only "
+                  f"({len(all_responses)} of {len(out['all_responses'])} responses)")
     ranked_domains = aggregate_citations(all_responses)
     ranked_domains = _augment_citations_with_named_outlets(ranked_domains, all_responses)
 
@@ -13565,11 +13640,18 @@ def _render_kit_dashboard(data):
     brand = (data.get('brand') or 'Brand').strip()
     rows = [r for r in (data.get('all_responses') or [])
             if (r.get('response') or '').strip() and not r.get('error')]
-    # split on the kit's own brand-form matching so the branded/unbranded
-    # partition agrees with how the dashboard counts mentions
-    forms = kit.match_forms(brand)
-    b_rows = [r for r in rows if kit.present(forms, r.get('prompt') or '')]
-    o_rows = [r for r in rows if not kit.present(forms, r.get('prompt') or '')]
+    # Prefer the audit's own stored prompt labels (split-audit runs persist
+    # them); fall back to inferring the split via the kit's brand-form
+    # matching for legacy payloads.
+    stored_sets = data.get('prompt_sets') or {}
+    if stored_sets.get('branded'):
+        b_set = set(stored_sets['branded'])
+        b_rows = [r for r in rows if (r.get('prompt') or '') in b_set]
+        o_rows = [r for r in rows if (r.get('prompt') or '') not in b_set]
+    else:
+        forms = kit.match_forms(brand)
+        b_rows = [r for r in rows if kit.present(forms, r.get('prompt') or '')]
+        o_rows = [r for r in rows if not kit.present(forms, r.get('prompt') or '')]
 
     comps = []
     for c in (data.get('competitors') or [])[:12]:
