@@ -11525,10 +11525,22 @@ def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats
         print("click-email send failed:", e)
 
 
+def _link_slug_base(slug):
+    """Base report slug behind a TrackedLink slug form ('classic:<slug>' →
+    '<slug>'; other forms pass through). Use for display + /signal URL
+    composition; never for the redirect itself (that's _tracked_link_target)."""
+    if (slug or '').startswith('classic:'):
+        return slug[8:]
+    return slug
+
+
 def _tracked_link_target(slug):
-    """Resolve a TrackedLink slug to its redirect path. Three forms:
-    a report slug (default), '__home__' → homepage, and 'file:<name>' → a
-    hosted PDF at static/reports/<name>.pdf (for tracked proposal links).
+    """Resolve a TrackedLink slug to its redirect path. Four forms:
+    a report slug (default), '__home__' → homepage, 'file:<name>' → a
+    hosted PDF at static/reports/<name>.pdf (for tracked proposal links),
+    and 'classic:<slug>' → the report with ?classic=1 forced (cold-prospect
+    links keep the simple-sample classic view of a split audit while still
+    tracking opens — biz-dev framing request, 2026-07-30).
     The file name is sanitized to [a-z0-9-] — anything else (traversal
     attempts, dots, slashes) falls back to the homepage, same as a dead
     token. Serving is confined to static/reports/ by construction."""
@@ -11539,6 +11551,8 @@ def _tracked_link_target(slug):
         if not re.fullmatch(r'[a-z0-9-]+', name or ''):
             return url_for('citation_audit')
         return url_for('static', filename=f'reports/{name}.pdf')
+    if (slug or '').startswith('classic:'):
+        return url_for('view_signal_report', slug=slug[8:]) + '?classic=1'
     return url_for('view_signal_report', slug=slug)
 
 
@@ -11661,7 +11675,7 @@ def track_and_redirect(token):
         when_et = _fmt_et(datetime.utcnow())
         threading.Thread(
             target=_send_click_email,
-            args=(link.recipient, link.slug, token, ip, ua, when_et, report_url, stats_url),
+            args=(link.recipient, _link_slug_base(link.slug), token, ip, ua, when_et, report_url, stats_url),
             kwargs={'visitor_no': visitor_no},
             daemon=True,
         ).start()
@@ -11829,8 +11843,10 @@ def mint_tracked_link_route():
     """Operator: mint a tracked link. /r-new?slug=swarovski&to=Jennifer+McGuire
     Also mints links to hosted PDFs: ?slug=file:citi-proposal points /r/<token>
     at static/reports/citi-proposal.pdf (file must exist on the deploy).
-    Optional &token= requests a stable vanity token (falls back to random if
-    taken — check the returned URL)."""
+    &classic=1 (or ?slug=classic:<slug>) forces the CLASSIC report view on a
+    split audit — cold-prospect links keep the simple-sample framing while
+    still tracking opens. Optional &token= requests a stable vanity token
+    (falls back to random if taken — check the returned URL)."""
     if not _operator_ok():
         abort(404)
     slug = (request.args.get('slug') or '').strip()
@@ -11838,6 +11854,10 @@ def mint_tracked_link_route():
         return Response("Provide ?slug=<report-slug>&to=<recipient>  "
                         "(or ?slug=file:<name> for a PDF at static/reports/<name>.pdf; "
                         "optional &token=<vanity-token>)\n", mimetype='text/plain')
+    # &classic=1 convenience: force the classic report view on a split audit
+    # (cold-prospect framing) — stored as the 'classic:<slug>' slug form.
+    if request.args.get('classic') == '1' and not slug.startswith(('file:', 'classic:', '__home__')):
+        slug = 'classic:' + slug
     if slug.startswith('file:'):
         name = slug[5:]
         if not re.fullmatch(r'[a-z0-9-]+', name or ''):
@@ -11849,6 +11869,12 @@ def mint_tracked_link_route():
         if not os.path.isfile(os.path.join(app.static_folder, 'reports', name + '.pdf')):
             return Response(f"No file at static/reports/{name}.pdf on this deploy.\n",
                             status=404, mimetype='text/plain')
+    elif slug.startswith('classic:'):
+        if len(slug) > 32:
+            return Response(f"slug '{slug}' is {len(slug)} chars — the column caps at 32.\n",
+                            status=400, mimetype='text/plain')
+        if not _load_signal_report(slug[8:]):
+            return Response(f"No report found for slug '{slug[8:]}'.\n", status=404, mimetype='text/plain')
     elif not _load_signal_report(slug):
         return Response(f"No report found for slug '{slug}'.\n", status=404, mimetype='text/plain')
     recipient = (request.args.get('to') or '').strip()[:160] or None
@@ -12394,7 +12420,7 @@ def _run_daily_traffic_digest():
             o = Outreach.query.filter_by(link_token=token).first()
             tl = TrackedLink.query.filter_by(token=token).first()
             who = (o.prospect_name if o else None) or (tl.recipient if tl else None) or f"link {token}"
-            slug = (o.slug if o else None) or (tl.slug if tl else '')
+            slug = _link_slug_base((o.slug if o else None) or (tl.slug if tl else ''))
             company = (o.company if o else None) or slug
             # A genuine human open before this window => "repeat", else a first-time opener.
             prior = (LinkClick.query
