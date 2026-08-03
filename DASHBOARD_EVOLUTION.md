@@ -31,33 +31,34 @@ recounts from the stored JSON: lumen 10, spotify 26, gap 0).
 of the dashboard stays empty until Phase 2 generates branded prompts. This is
 the single biggest reason to do Phase 2 before any public cutover.
 
-## Phase 2 — branded + unbranded prompt generation (NEXT, needs decisions)
+## Phase 2 — branded + unbranded prompt generation (DONE, July 30)
 
-The product currently generates ~10 category prompts per audit. The new
-dashboard wants both halves.
+Decisions (Nathan): 10x5 total (5 branded + 5 unbranded — cost unchanged),
+domain inferred (existing `_resolve_brand_domains` pipeline), competitors
+auto-derived (existing behavior).
 
-Proposed shape:
-- Generate two labeled sets per audit: **branded** (name the brand: what is X,
-  is X worth it, X vs competitor, reviews of X) and **unbranded** (category
-  questions where the brand may or may not appear).
-- Store the split on the report payload so the dashboard partition is
-  authoritative rather than inferred from prompt text.
-- Persist prompt sets exactly as run (already shipped for inbound rows).
+Shipped in `59ffdcd3e`:
+- `_generate_audit_prompts` emits labeled halves. Branded = how AI describes
+  the brand when asked directly; unbranded = unprompted category mindshare
+  (original fairness doctrine intact; no competitor names in either half).
+- **Scope contract** (`metrics_scope = "unbranded_only"` on the payload):
+  every mindshare/SoV/media metric computes over the unbranded half only,
+  keeping numbers unprompted and comparable with all past audits. Enforced
+  at all four recount surfaces: fresh pipeline, rerender recount, QA gate,
+  dashboard partition. Delivery stats (completion_rate) stay full-scope.
+- Payload carries both halves (`all_responses`) + labels (`prompt_sets`).
+- Curated-prompt (prompts_override) runs are unlabeled and unchanged.
 
-Open decisions for Nathan:
-1. **Free-tier size and cost.** Today: 10 prompts x 5 assistants = 50 answers.
-   A 10 branded + 10 unbranded split doubles runtime and API cost per free
-   audit. Options: keep 50 total (5+5 prompts, thinner each half), go to 100
-   (fuller picture, ~2x cost and ~2x runtime on the 2 GB instance, which also
-   raises the concurrency-guard question), or default 50 with an operator
-   flag for 100 on qualified leads.
-2. **Domain input.** Branded analysis needs the brand's domain to compute
-   owned share. Today the homepage asks brand + what they want to be
-   recommended for. Adding a domain field is a UX change but unlocks the
-   owned-media half of the dashboard (the PUIG donut, page-kind breakdown).
-3. **Competitor input.** The kit shows a competitor set. Options: auto-derive
-   from the answers (what the current product does), let the user name 3-5,
-   or both (auto-derive, user edits).
+Verified live July 30 on a real production run (slug `387c369bef`,
+Patagonia test): 5+5 generated with clean discipline, 50/50 delivered,
+completion 1.0, metrics denominator 25, brand recount 25/25 unbranded
+(independently reproduced), QA client_ready, classic report renders,
+`/dashboard/387c369bef` renders BOTH halves — the first audit born with a
+populated branded read.
+
+Note for operators: the audit runs inside the SSE request stream — a
+disconnecting client kills the run (janitor flips the row to errored).
+Keep the connection open for scripted runs.
 
 ## Phase 3 — search-page UX (after Phase 2 decisions)
 
