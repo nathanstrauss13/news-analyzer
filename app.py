@@ -13711,6 +13711,7 @@ def _render_kit_dashboard(data, public_slug=None):
         "competitors": comps,
         "exclude_sources": [],
         "exec_summary": None,
+        "automated_sample": True,   # numbers only: no advisory copy, no recommendations
         "method_notes": [
             "This dashboard is generated read-only from the audit's stored raw "
             "responses; every number recomputes from that data on each load. The "
@@ -13737,10 +13738,12 @@ def _render_kit_dashboard(data, public_slug=None):
             '<div style="background:#0e1016;border:1px solid #1e212b;border-left:3px solid #cbab6d;'
             'border-radius:14px;padding:26px 28px;font-family:Inter,-apple-system,sans-serif">'
             '<div style="font-family:Jost,sans-serif;font-size:19px;font-weight:600;color:#e8e9ee;margin-bottom:6px">'
-            'This free read maps the terrain. The full audit sizes it.</div>'
-            '<div style="font-size:13.5px;color:#9aa0b0;line-height:1.6;max-width:640px;margin-bottom:16px">'
-            'A bespoke engagement runs 100 prompts across up to 10 assistants, with personas and '
-            'prompts you approve, plus verified fact and source analysis.</div>'
+            'The numbers are automated. The analysis is not.</div>'
+            '<div style="font-size:13.5px;color:#9aa0b0;line-height:1.6;max-width:660px;margin-bottom:16px">'
+            'This is an automated sample analysis based on 50 outputs; it reports the counts and '
+            'stops there. A consultation is bespoke: prompts designed around your stakeholders, '
+            '500 to 1,000 outputs, and human filtering and analysis to identify the signal and '
+            'what is truly actionable.</div>'
             f'<a href="https://calendly.com/nstrauss/new-meeting" target="_blank" rel="noopener" '
             'style="display:inline-block;background:#cbab6d;color:#161206;font-weight:600;font-size:14px;'
             'padding:10px 22px;border-radius:9px;text-decoration:none;margin-right:12px">Book 30 minutes</a>'

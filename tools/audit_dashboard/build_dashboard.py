@@ -978,7 +978,55 @@ def build(cfg, branded, organic, out_path):
         for c, v, l in cards)
 
     # ---- exec read (config override wins; else sober auto-draft)
+    # automated_sample mode (the self-serve free audit): STRICTLY numbers —
+    # counts and shares only, no interpretation, no recommendations. The
+    # consultative reading of the data is a human deliverable, not the
+    # sample's job. Operator-built dashboards (no flag) keep the fuller draft.
     exec_ps = cfg.get("exec_summary")
+    if not exec_ps and cfg.get("automated_sample"):
+        exec_ps = [
+            f'This is an automated sample analysis: '
+            f'{(branded["n"] if branded else 0) + (organic["n"] if organic else 0)} answers '
+            f'collected from five AI assistants with live web search, counted without human '
+            f'review. It reports the numbers and makes no recommendations.']
+        if branded:
+            b = branded
+            share = round(100 * b["owned_citations"] / b["total_citations"]) if b["total_citations"] else 0
+            top_ext = next((s for s in b["sources"] if s["type"] != "owned"), None)
+            pp = b["per_platform"]
+            hi = max(b["platforms"], key=lambda p: pp[p]["citations"])
+            lo = min(b["platforms"], key=lambda p: pp[p]["citations"])
+            deep = b["owned_citations"] - b["owned_home_citations"]
+            p1 = (f'Branded questions: {brand} is mentioned in {b["brand_rows"]} of {b["n"]} answers. '
+                  f'Those answers carry {b["total_citations"]} citations, {b["owned_citations"]} of them '
+                  f'({share}%) from {poss(brand)} own site')
+            if top_ext:
+                p1 += f'; the most-cited outside source is {top_ext["root"]}'
+            p1 += (f'. {deep} of the {b["owned_citations"]} owned citations '
+                   f'{"points" if deep == 1 else "point"} deeper than the homepage. '
+                   f'Citation volume varies by assistant: {hi} {pp[hi]["citations"]}, {lo} {pp[lo]["citations"]}.')
+            exec_ps.append(p1)
+        if organic:
+            o = organic
+            top = o["competitors"][0] if o["competitors"] else None
+            p2 = f'Unbranded category questions: {brand} appears in {o["brand_rows"]} of {o["n"]} answers'
+            if top:
+                p2 += f'; the most-named tracked competitor is {top["name"]} at {top["count"]}'
+            p2 += '.'
+            pr = o.get("prominence") or {}
+            if pr.get("brand_present"):
+                p2 += (f' Where {brand} appears, it is the first tracked name mentioned in '
+                       f'{pr.get("brand_first", 0)} of those {pr["brand_present"]} answers.')
+            pd, ad = o.get("presence_drivers") or [], o.get("absence_drivers") or []
+            if pd:
+                p2 += (' The answers naming ' + brand + ' most often cite '
+                       + ' and '.join(r for r, _c in pd[:2]) + '.')
+            if ad:
+                p2 += (' The answers that omit it most often cite '
+                       + ' and '.join(r for r, _c in ad[:2]) + '.')
+            exec_ps.append(p2)
+        exec_ps.append('Every number above is recomputable from the full responses in the '
+                       'appendix. Answers vary run to run; treat this sample as directional.')
     if not exec_ps:
         exec_ps = []
         if branded:
@@ -1224,9 +1272,9 @@ def build(cfg, branded, organic, out_path):
     by design; some build answers on many citations, others on few. Citation volume is a property of
     each model\'s retrieval behavior, not a verdict on the brand\'s visibility, which is why presence
     and prominence are measured per answer rather than by citation count.</p>
-    <p style="margin-top:10px"><b>Reading this honestly:</b> this is a small, directional sample
-    designed to map the terrain, not a census. Answers vary run to run; the patterns worth acting on
-    are the ones that persist across assistants and questions, which a fuller audit confirms.</p>
+    {'<p style="margin-top:10px"><b>Automated sample:</b> this dashboard is produced by an automated analysis with no human filtering or interpretation applied. It reports counts; it does not make recommendations. Answers vary run to run; this is a small, directional sample, not a census.</p>'
+     if cfg.get("automated_sample") else
+     '<p style="margin-top:10px"><b>Reading this honestly:</b> this is a small, directional sample designed to map the terrain, not a census. Answers vary run to run; the patterns worth acting on are the ones that persist across assistants and questions, which a fuller audit confirms.</p>'}
     {"".join(f'<p style="margin-top:10px">{note}</p>' for note in cfg.get("method_notes") or [])}
   </div>
   {"".join(meth_prompts)}
