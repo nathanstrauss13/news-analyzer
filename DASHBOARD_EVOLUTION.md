@@ -60,19 +60,37 @@ Note for operators: the audit runs inside the SSE request stream — a
 disconnecting client kills the run (janitor flips the row to errored).
 Keep the connection open for scripted runs.
 
-## Phase 3 — search-page UX (after Phase 2 decisions)
+## Phase 3 + 4 — search-page UX and cutover (DONE, July 30, `92f152ac7`)
 
-Revise the homepage for the communicator-framed free audit: brand, domain,
-category/positioning, optional competitors, with the promise stated as the
-new dashboard delivers (presence, prominence, source mix, owned pages cited)
-rather than the PR-pitch framing. Keep the embed autostart contract
-(`/?autostart=1&brand=&focus=`) working or version it deliberately with the
-marketing lane, since innatec3.com drives that widget.
+Homepage reframed for the communicator-framed free audit: "Free AI Citation
+Audit / Built for communicators" eyebrow, two-question hero promise (does AI
+surface you unprompted; how does it describe you when asked), preview card
+reworded to the dashboard's read (sources, prominence, owned pages). Form
+unchanged (brand + focus; domain inferred, competitors auto-derived). The
+"PR Signal Finder" name is retired from the title and hero. Embed autostart
+contract (`/?autostart=1&brand=&focus=`) untouched and verified present.
 
-## Phase 4 — cutover
+Cutover shipped in the same commit:
+- `/signal/<slug>` renders the GEO dashboard (with a report CTA band:
+  book 30 min / JSON export / run another) for any payload carrying
+  `prompt_sets` — i.e. every new self-serve audit from phase 2 onward.
+- Legacy and frozen payloads (no prompt_sets) keep the classic template
+  permanently; `?classic=1` shows the classic view of a split audit;
+  dashboard render failures fall back to classic automatically.
+- Verified live (11-point matrix): new copy + autostart on the homepage;
+  `387c369bef` publicly renders the dashboard with CTA; `?classic=1`
+  serves the classic template; legacy (`lumen`) and frozen (`gap`) slugs
+  unchanged.
 
-Only after Phases 2-3 are proven on real runs:
-- `/signal/<slug>` keeps rendering existing reports in the classic view
-  (permanent, frozen-slug safe).
-- New audits render the new dashboard.
-- Roll back at any point with `signal-finder-v1` per REVERT.md.
+Rollback at any point: `signal-finder-v1` tag per REVERT.md.
+
+## Follow-ups (not yet done)
+
+- PDF export of the dashboard view (classic PDF route still renders the
+  classic template; fine during transition).
+- Completion-email copy still says "report"; consider describing the new
+  dashboard sections.
+- Marketing lane: embed works unchanged, but innatec3.com copy around the
+  widget may want the new two-question framing.
+- Consider caching the dashboard render per slug (currently recomputed per
+  view; acceptable at current traffic).
