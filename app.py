@@ -8115,6 +8115,50 @@ def _send_mail_object(msg):
     return SendGridAPIClient(sg_key).send(msg)
 
 
+def _send_requester_report_email(to_email, brand, slug):
+    """Fulfil the homepage promise ('we'll email you the report so you don't
+    lose the link'): a short, sober note to the person who ran the audit with
+    their report URL. Client-facing: no internal cost or diagnostic detail.
+    Best-effort; never raises into the audit flow."""
+    try:
+        root = os.environ.get("PUBLIC_BASE_URL", "https://signal.innatec3.com").rstrip('/')
+        url = f"{root}/signal/{slug}"
+        subject = f"Your AI citation audit for {brand} is ready"
+        text = (
+            f"Your free AI citation audit for {brand} is ready:\n\n{url}\n\n"
+            "It reports how five AI assistants answer branded and unbranded "
+            "questions in your category: where the brand appears, which sources "
+            "carry the answers, and which of your own pages AI cites. The "
+            "numbers are automated; every figure is recomputable from the full "
+            "responses in the report's appendix.\n\n"
+            "If you'd like a human read of what it means, reply to this email "
+            "or book 30 minutes: https://calendly.com/nstrauss/new-meeting\n\n"
+            "Nathan Strauss\nInnate C3\n")
+        html_body = (
+            f'<p>Your free AI citation audit for <b>{html.escape(brand)}</b> is ready:</p>'
+            f'<p><a href="{url}">{url}</a></p>'
+            '<p>It reports how five AI assistants answer branded and unbranded '
+            'questions in your category: where the brand appears, which sources '
+            'carry the answers, and which of your own pages AI cites. The numbers '
+            'are automated; every figure is recomputable from the full responses '
+            'in the report\'s appendix.</p>'
+            '<p>If you\'d like a human read of what it means, reply to this email '
+            'or <a href="https://calendly.com/nstrauss/new-meeting">book 30 minutes</a>.</p>'
+            '<p>Nathan Strauss<br>Innate C3</p>')
+        from sendgrid.helpers.mail import Mail
+        msg = Mail(
+            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+            to_emails=to_email,
+            subject=subject,
+            plain_text_content=text,
+            html_content=html_body,
+        )
+        _send_mail_object(msg)
+        print(f"[requester-email] sent report link to {to_email} for slug={slug}")
+    except Exception as e:
+        print("requester-email send failed (continuing):", str(e)[:120])
+
+
 def _send_audit_failure_email(error, problem_statement, tier):
     """Fire-and-forget diagnostic email when an audit fails (AuditAnalysisError
     or any other exception during run_citation_audit).
@@ -8152,7 +8196,7 @@ def _send_audit_failure_email(error, problem_statement, tier):
             strategy_lines.append(line)
         strategies_text = "\n".join(strategy_lines) or "  (no attempts recorded)"
 
-        subject = f"[Signal Finder · {tier} · FAILED] {err_type}: {err_msg[:80]}"
+        subject = f"[Citation Audit · {tier} · FAILED] {err_type}: {err_msg[:80]}"
 
         text_lines = [
             "PR Signal Finder audit FAILED",
@@ -8188,7 +8232,7 @@ def _send_audit_failure_email(error, problem_statement, tier):
         )
 
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
             to_emails=[recipient],
             subject=subject,
             plain_text_content=text_body,
@@ -8268,11 +8312,11 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
         top_competitors = sorted(competitors, key=lambda c: c.get("mention_count", 0), reverse=True)[:3]
         top_comp_lines = [f"{c.get('name', '?')} ({c.get('mention_count', 0)})" for c in top_competitors] or ["(none)"]
 
-        subject = f"[Signal Finder · {tier}] {brand} — {flags_label} · {cost_label}"
+        subject = f"[Citation Audit · {tier}] {brand} — {flags_label} · {cost_label}"
 
         # Plain text body
         text_lines = [
-            f"PR Signal Finder audit completed",
+            f"Citation audit completed",
             f"",
             f"Brand: {brand}",
             f"Category: {category}",
@@ -8374,7 +8418,7 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
         )
 
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
             to_emails=[recipient],
             subject=subject,
             plain_text_content=text_body,
@@ -10242,9 +10286,9 @@ def admin_test_email():
     try:
         from sendgrid.helpers.mail import Mail
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
             to_emails=[to],
-            subject="✅ Signal Finder alert-email test",
+            subject="✅ Citation audit alert-email test",
             plain_text_content="Test send from /admin/test-email — if you're reading "
                                "this, alert emails are working end to end.",
         )
@@ -10553,6 +10597,14 @@ def citation_audit():
                             est_cost_usd=_cost_total)
             except Exception as _ib_e:
                 print("inbound-audit completion update failed (continuing):", str(_ib_e)[:120])
+            # Requester copy (homepage promise): the report link, no internal
+            # cost/diagnostic detail. Skipped for operator runs.
+            try:
+                if lead_email and not _is_operator and result.get('slug'):
+                    _send_requester_report_email(lead_email, result.get('brand') or 'your brand',
+                                                 result['slug'])
+            except Exception as _re_err:
+                print("requester-email dispatch error:", _re_err)
             # Fire the owner debug email AFTER the result is pushed to the
             # queue so the user-visible response never waits on email send.
             duration_seconds = (datetime.utcnow() - start_dt).total_seconds()
@@ -11522,7 +11574,7 @@ def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats
 
         who = recipient or f"Someone (link {token})"
         if visitor_no <= 1:
-            subject = f"📬 {who} opened your Signal Finder report"
+            subject = f"📬 {who} opened your citation audit report"
             lead = f"{who} just opened the report you shared."
             tail = f"This is their first open. Re-opens and the full list live at {stats_url}"
         else:
@@ -11557,7 +11609,7 @@ def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats
             f'Full history: <a href="{html.escape(stats_url)}">{html.escape(stats_url)}</a></p>'
         )
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
             to_emails=[to],
             subject=subject,
             plain_text_content=text_body,
@@ -11638,7 +11690,7 @@ def _send_dashboard_visitor_email(slug, brand, ip, ua, when_et, visitor_no, repo
             f'</table>'
         )
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
             to_emails=[to],
             subject=subject,
             plain_text_content=text_body,
@@ -12409,7 +12461,7 @@ def _send_outreach_digest_email(due):
         from sendgrid.helpers.mail import Mail
         root = os.environ.get("PUBLIC_BASE_URL", "https://signal.innatec3.com").rstrip('/')
         n = len(due)
-        subject = f"⏰ {n} Signal Finder follow-up{'s' if n != 1 else ''} due"
+        subject = f"⏰ {n} citation audit follow-up{'s' if n != 1 else ''} due"
         txt, htm = [], []
         for o in due:
             days = (datetime.utcnow() - o.sent_at).days if o.sent_at else '?'
@@ -12435,7 +12487,7 @@ def _send_outreach_digest_email(due):
             + f'<p style="font-size:12px"><a href="{board}">Open the outreach board →</a></p>'
         )
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
             to_emails=[to], subject=subject,
             plain_text_content=text_body, html_content=html_body,
         )
@@ -12524,7 +12576,7 @@ def _send_daily_traffic_email(rows, total_opens):
             + "".join(htm) + '</table>'
             f'<p style="font-size:12px;margin-top:14px"><a href="{board}">Open the outreach board →</a></p>')
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
             to_emails=[to], subject=subject,
             plain_text_content=text_body, html_content=html_body,
         )
@@ -12597,7 +12649,7 @@ def _send_daily_inbound_email(items):
             + "".join(htm) + '</table>'
             f'<p style="font-size:12px;margin-top:14px"><a href="{board}">Open the inbound view →</a></p>')
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
             to_emails=[to], subject=subject,
             plain_text_content=text_body, html_content=html_body,
         )
@@ -14013,7 +14065,7 @@ def citation_audit_request_demo():
 
             subject_suffix = f" from {name}" + (f" ({org})" if org else "")
             msg = Mail(
-                from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+                from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
                 to_emails=["nstrauss@innatec3.com"],
                 subject=f"{subject_prefix} {lead_label}{subject_suffix}",
                 plain_text_content=text_body,
@@ -14049,7 +14101,7 @@ def signal_feedback():
             emoji = '\U0001F44D' if rating == 'up' else '\U0001F44E'
             link = (SIGNAL_BASE_URL or 'https://signal.innatec3.com') + url_for('view_signal_report', slug=slug)
             msg = Mail(
-                from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+                from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
                 to_emails=["nstrauss@innatec3.com"],
                 subject=f"[Signal Finder feedback] {emoji} — {slug}",
                 plain_text_content=f"User rated audit {slug} as {rating}.\n\nReport: {link}",
@@ -14116,7 +14168,7 @@ def _send_magic_link_email(email, raw_token):
         from sendgrid import SendGridAPIClient
         from sendgrid.helpers.mail import Mail
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "PR Signal Finder"),
+            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
             to_emails=[email],
             subject="Your PR Signal Finder sign-in link",
             plain_text_content=(
