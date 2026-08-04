@@ -13879,12 +13879,17 @@ def _render_kit_dashboard(data, public_slug=None):
         if name.strip():
             comps.append({"name": name.strip()})
 
+    # Verified sub-brand aliases from the pipeline (BlackRock->iShares class):
+    # without them the dashboard's own counter regresses to the pre-alias
+    # undercount the QA history documents.
+    _aliases = [brand] + [a for a in (data.get('brand_aliases') or [])
+                          if isinstance(a, str) and a.strip() and len(a.strip()) >= 3]
     cfg = {
         "brand": brand,
         "slug": "preview",
         "category": data.get('category') or '',
         "date": "",
-        "aliases": [brand],
+        "aliases": _aliases,
         "owned_domains": data.get('brand_domains') or [],
         "competitors": comps,
         "exclude_sources": [],
@@ -13915,6 +13920,14 @@ def _render_kit_dashboard(data, public_slug=None):
         with open(out) as f:
             html = f.read()
     if public_slug:
+        # GA parity with the classic report view (report-page analytics would
+        # otherwise silently stop at the dashboard cutover).
+        _ga = os.environ.get('GA_MEASUREMENT_ID') or 'G-K0ECCXPL90'
+        ga_snippet = (
+            f'<script async src="https://www.googletagmanager.com/gtag/js?id={_ga}"></script>'
+            '<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}'
+            f'gtag("js",new Date());gtag("config","{_ga}");</script>')
+        html = html.replace('</head>', ga_snippet + '</head>', 1)
         cta = (
             '<div style="max-width:1060px;margin:0 auto;padding:0 28px 70px">'
             '<div style="background:#0e1016;border:1px solid #1e212b;border-left:3px solid #cbab6d;'
@@ -13932,6 +13945,9 @@ def _render_kit_dashboard(data, public_slug=None):
             f'<a href="/signal/{public_slug}.json" '
             'style="display:inline-block;color:#74d0ff;font-size:13.5px;text-decoration:none;margin-right:16px">'
             'Download the data (JSON)</a>'
+            f'<a href="/signal/{public_slug}.csv" '
+            'style="display:inline-block;color:#74d0ff;font-size:13.5px;text-decoration:none;margin-right:16px">'
+            'CSV</a>'
             '<a href="/citation-audit" style="display:inline-block;color:#74d0ff;font-size:13.5px;'
             'text-decoration:none">Run an audit for another brand</a>'
             '</div></div>')
