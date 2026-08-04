@@ -14380,12 +14380,15 @@ def _ensure_homepage_link():
 
 
 # Apply post-creation column migrations, then ensure the seed prospects exist.
-_ensure_outreach_columns()
-_ensure_inbound_columns()
-_backfill_inbound_operator_flags()
-_expire_orphaned_inbound()   # flip worker-death orphans (started, no slug) to errored
-_ensure_outreach_seed()
-_ensure_homepage_link()
+# Explicit app context: required for local dev (newer Flask-SQLAlchemy enforces
+# it at import time), harmless under gunicorn where these already worked.
+with app.app_context():
+    _ensure_outreach_columns()
+    _ensure_inbound_columns()
+    _backfill_inbound_operator_flags()
+    _expire_orphaned_inbound()   # flip worker-death orphans (started, no slug) to errored
+    _ensure_outreach_seed()
+    _ensure_homepage_link()
 
 
 if __name__ == "__main__":
