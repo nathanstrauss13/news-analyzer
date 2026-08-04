@@ -380,17 +380,45 @@ def analyze(rows, cfg):
             total_citations += 1
             url_counts[(u, typ)] += 1
             a = root_agg.setdefault(root, {"count": 0, "answers": set(),
-                                           "platforms": defaultdict(int), "type": typ})
+                                           "platforms": defaultdict(int), "type": typ,
+                                           "urls": set()})
             a["count"] += 1
             a["answers"].add(i)
+            a["urls"].add(u)
             a["platforms"][r["platform"]] += 1
             pp = per_platform[r["platform"]]
             pp["types"][typ] += 1
             pp["top_sources"][root] += 1
 
-    sources = [{"root": k, "count": v["count"], "answers": len(v["answers"]),
-                "platforms": dict(v["platforms"]), "type": v["type"]}
-               for k, v in root_agg.items()]
+    # Page grounding (optional): cfg["citation_checks"] maps raw cited URLs to
+    # {status, brand_count} from actually fetching each page. Aggregate per
+    # source root so the table can show which sources REALLY mention the brand
+    # on-page versus co-citations, bot walls, and dead links.
+    checks = {}
+    for k, v in (cfg.get("citation_checks") or {}).items():
+        nk = norm_url(k)
+        if nk:
+            checks[nk] = v
+    sources = []
+    for k, v in root_agg.items():
+        entry = {"root": k, "count": v["count"], "answers": len(v["answers"]),
+                 "platforms": dict(v["platforms"]), "type": v["type"]}
+        if checks:
+            f = c = b = e = 0
+            for u in v["urls"]:
+                ch = checks.get(u)
+                if not ch:
+                    continue
+                if ch.get("status") == "ok":
+                    f += 1
+                    if ch.get("brand_count"):
+                        c += 1
+                elif ch.get("status") == "blocked":
+                    b += 1
+                else:
+                    e += 1
+            entry["pages"] = {"fetched": f, "confirm": c, "blocked": b, "error": e}
+        sources.append(entry)
     sources.sort(key=lambda s: (-s["count"], s["root"]))
 
     type_totals = defaultdict(lambda: {"count": 0, "sources": 0})
@@ -819,6 +847,7 @@ def owned_donut(a, brand):
 
 
 def sources_table(a, table_id, limit=18):
+    has_checks = any(s.get("pages") is not None for s in a["sources"])
     """Classified source table: per-type filter chips, sortable numeric
     columns, source link-outs, per-assistant citation counts on the dots, and
     a show-all toggle past the fold. Client-side only, print-safe."""
@@ -837,21 +866,42 @@ def sources_table(a, table_id, limit=18):
             f'title="{esc(p)}: {s["platforms"].get(p, 0)} citations"></span>'
             for p in PLATFORM_ORDER)
         hidden = ' class="xrow"' if idx >= limit else ""
+        pcell = ""
+        if has_checks:
+            pg = s.get("pages") or {}
+            f_, c_, b_, e_ = pg.get("fetched", 0), pg.get("confirm", 0), pg.get("blocked", 0), pg.get("error", 0)
+            if f_:
+                col = "#7ddba3" if c_ == f_ else ("#f0876a" if c_ == 0 else "#cbab6d")
+                pcell = (f'<td class="num" data-v="{c_}" style="color:{col}" '
+                         f'title="Of {f_} cited pages fetched from this source, {c_} mention the brand on the page'
+                         + (f'; {b_} more could not be checked (bot wall)' if b_ else '')
+                         + (f'; {e_} did not resolve' if e_ else '') + f'">{c_}/{f_}</td>')
+            elif b_ or e_:
+                why = "bot-walled" if b_ >= e_ else "unreachable"
+                pcell = (f'<td class="num" data-v="-1" style="color:#8b8fa3" '
+                         f'title="No page from this source could be fetched ({b_} bot-walled, {e_} unreachable or dead)">{why}</td>')
+            else:
+                pcell = '<td class="num" data-v="-1" style="color:#8b8fa3" title="Not checked (deadline)">&mdash;</td>'
         rows.append(f'<tr data-t="{s["type"]}"{hidden}>'
                     f'<td class="src"><a class="upath" href="https://{esc(s["root"])}" target="_blank" '
                     f'rel="noopener">{esc(s["root"])}</a></td>'
                     f'<td><span class="typechip {cls}">{lbl}</span></td>'
                     f'<td class="num" data-v="{s["count"]}">{s["count"]}</td>'
                     f'<td class="num" data-v="{s["answers"]}">{s["answers"]}/{a["n"]}</td>'
+                    + pcell +
                     f'<td class="pdots">{dots}</td></tr>')
     more = ""
     if len(a["sources"]) > limit:
         more = (f'<button class="sfbtn showall" onclick="showAllRows(\'{table_id}\',this)">'
                 f'Show all {len(a["sources"])} sources</button>')
+    pchead = ('<th class="sortable" onclick="sortRows(\'' + table_id + '\',4)" '
+              'title="Pages fetched from this source that mention the brand on the page">Pages confirming</th>'
+              if has_checks else '')
     return (f'<div id="{table_id}"><div class="srcfilters">{"".join(chips)}</div>'
             f'<table><thead><tr><th>Source</th><th>Type</th>'
             f'<th class="sortable" onclick="sortRows(\'{table_id}\',2)">Citations</th>'
             f'<th class="sortable" onclick="sortRows(\'{table_id}\',3)">Answers citing</th>'
+            + pchead +
             f'<th>Assistants</th></tr></thead><tbody>'
             + "".join(rows) + f"</tbody></table>{more}</div>")
 
@@ -1025,6 +1075,19 @@ def build(cfg, branded, organic, out_path):
                 p2 += (' The answers that omit it most often cite '
                        + ' and '.join(r for r, _c in ad[:2]) + '.')
             exec_ps.append(p2)
+        _cc = cfg.get("citation_checks") or {}
+        if _cc:
+            _n_ok = sum(1 for v in _cc.values() if v.get("status") == "ok")
+            _n_conf = sum(1 for v in _cc.values() if v.get("status") == "ok" and v.get("brand_count"))
+            _n_blk = sum(1 for v in _cc.values() if v.get("status") == "blocked")
+            _n_err = sum(1 for v in _cc.values() if v.get("status") not in ("ok", "blocked"))
+            exec_ps.append(
+                f'Page check: every distinct cited URL was fetched. Of {len(_cc)} pages, '
+                f'{_n_ok} loaded and {_n_conf} mention {brand} on the page; '
+                f'{_n_blk} sit behind bot walls and could not be checked; '
+                f'{_n_err} did not resolve. A citation whose page never mentions the brand '
+                f'is context for the answer, not coverage of the brand; the source tables '
+                f'show the split per source.')
         exec_ps.append('Every number above is recomputable from the full responses in the '
                        'appendix. Answers vary run to run; treat this sample as directional.')
     if not exec_ps:
@@ -1275,6 +1338,7 @@ def build(cfg, branded, organic, out_path):
     {'<p style="margin-top:10px"><b>Automated sample:</b> this dashboard is produced by an automated analysis with no human filtering or interpretation applied. It reports counts; it does not make recommendations. Answers vary run to run; this is a small, directional sample, not a census.</p>'
      if cfg.get("automated_sample") else
      '<p style="margin-top:10px"><b>Reading this honestly:</b> this is a small, directional sample designed to map the terrain, not a census. Answers vary run to run; the patterns worth acting on are the ones that persist across assistants and questions, which a fuller audit confirms.</p>'}
+    {(lambda cc: f'<p style="margin-top:10px"><b>Page check:</b> each distinct cited URL was fetched and scanned for on-page brand mentions ({sum(1 for v in cc.values() if v.get("status") == "ok")} of {len(cc)} pages loaded; bot-walled pages are marked unverifiable rather than guessed; unreachable URLs, including model-fabricated links, are flagged). The "pages confirming" column in the source tables reports it per source.</p>' if cc else '')(cfg.get("citation_checks") or {})}
     {"".join(f'<p style="margin-top:10px">{note}</p>' for note in cfg.get("method_notes") or [])}
   </div>
   {"".join(meth_prompts)}

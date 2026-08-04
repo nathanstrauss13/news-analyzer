@@ -8857,7 +8857,8 @@ def _qa_audit(payload):
             'blocking_failures': blocking_fail, 'corrected': corrected}
 
 
-def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts_override=None):
+def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts_override=None,
+                       prompt_sets_override=None):
     """Full agent pipeline: one prompt in, ranked media/partnership/analyst lists out.
 
     If `prompts_override` is provided (paid-tier prompt-editor flow), the
@@ -8915,8 +8916,16 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         prompts = [p for p in prompts_override if isinstance(p, str) and p.strip()]
         if not prompts:
             raise ValueError("No prompts supplied for the audit.")
-        prompt_sets = None      # curated prompts carry no branded/unbranded labels
-        emit("prompts", f"Using your {len(prompts)} curated prompts for \"{brand}\"", 1, 1)
+        if prompt_sets_override and prompt_sets_override.get('branded') and prompt_sets_override.get('unbranded'):
+            # Split-aware editor: labels survive the edit, so the run keeps
+            # the unbranded-only metrics scope and the dashboard view.
+            prompt_sets = {"branded": list(prompt_sets_override['branded']),
+                           "unbranded": list(prompt_sets_override['unbranded'])}
+            emit("prompts", f"Using your {len(prompt_sets['branded'])} branded + "
+                            f"{len(prompt_sets['unbranded'])} unbranded prompts for \"{brand}\"", 1, 1)
+        else:
+            prompt_sets = None      # unlabeled curated prompts (operator/legacy flow)
+            emit("prompts", f"Using your {len(prompts)} curated prompts for \"{brand}\"", 1, 1)
     else:
         emit("prompts", "Generating search prompts...", 0, 1)
         gen = _generate_audit_prompts(problem_statement, tier=tier)
@@ -9585,6 +9594,22 @@ Respond with ONLY valid JSON:
     # Full raw per-response data: {llm, prompt, response, citations}. Lets users
     # re-analyze, audit, debug, or rerun analysis on a past report.
     analysis["all_responses"] = _all_responses_full
+    # Page-ground every distinct cited URL (cache-backed, deadline-capped):
+    # separates pages that actually mention the brand from co-citations,
+    # bot-walled pages, and dead or fabricated URLs. Stored on the payload so
+    # the dashboard renders instantly with verification baked in.
+    try:
+        emit("analysis", "Checking cited pages for on-page brand mentions...", 0, 1)
+        analysis["citation_checks"] = _citation_checks_for_report(
+            {"brand": brand, "brand_aliases": analysis.get("brand_aliases"),
+             "all_responses": analysis.get("all_responses")},
+            deadline_seconds=45)
+        _cc = analysis["citation_checks"]
+        emit("analysis",
+             f"Page check: {sum(1 for v in _cc.values() if v['status'] == 'ok')} pages fetched, "
+             f"{sum(1 for v in _cc.values() if v.get('brand_count'))} confirm a brand mention", 1, 1)
+    except Exception as _cke:
+        print("citation-check at run time failed (continuing):", str(_cke)[:120])
     # Editorial-media share-of-voice analysis. For each top editorial outlet,
     # computes the brand's mention rate WITHIN responses citing that outlet
     # vs overall, and the same for each competitor. Labels each outlet as
@@ -10306,18 +10331,35 @@ def citation_audit():
     # input falls back to auto-generation so a buggy client never breaks the
     # audit, only loses the editor benefit.
     prompts_override = None
+    prompt_sets_override = None
+    # Labeled halves from the split-aware editor (preferred): keeps the
+    # branded/unbranded labels so the run retains metrics_scope=unbranded_only
+    # and the dashboard view. Falls back to the flat 'prompts' list (legacy
+    # editor, restoration runners). A prompts_json restoration can also post
+    # the labeled dict straight into 'prompts'.
+    raw_sets = (request.form.get('prompt_sets') or '').strip()
     raw_prompts = (request.form.get('prompts') or '').strip()
-    if raw_prompts:
+    for raw in (raw_sets, raw_prompts):
+        if not raw or prompts_override:
+            continue
         try:
-            parsed = json.loads(raw_prompts)
-            if isinstance(parsed, list):
-                cleaned = [p.strip() for p in parsed if isinstance(p, str) and p.strip()]
-                if 5 <= len(cleaned) <= 20:
-                    # Trim per-prompt length to a sane ceiling so a malicious
-                    # client can't blow Claude's input budget.
-                    prompts_override = [p[:500] for p in cleaned]
+            parsed = json.loads(raw)
         except Exception:
-            prompts_override = None
+            continue
+        if isinstance(parsed, dict) and (parsed.get('branded') or parsed.get('unbranded')):
+            b = [p.strip()[:500] for p in (parsed.get('branded') or [])
+                 if isinstance(p, str) and p.strip()]
+            u = [p.strip()[:500] for p in (parsed.get('unbranded') or [])
+                 if isinstance(p, str) and p.strip()]
+            if 3 <= len(b) <= 10 and 3 <= len(u) <= 10 and 5 <= len(b) + len(u) <= 20:
+                prompt_sets_override = {'branded': b, 'unbranded': u}
+                prompts_override = b + u
+        elif isinstance(parsed, list):
+            cleaned = [p.strip() for p in parsed if isinstance(p, str) and p.strip()]
+            if 5 <= len(cleaned) <= 20:
+                # Trim per-prompt length to a sane ceiling so a malicious
+                # client can't blow Claude's input budget.
+                prompts_override = [p[:500] for p in cleaned]
 
     # Cost control on free audits (email is OPTIONAL — not required to run):
     #   1. Per-IP per-day cap (primary): FREE_DAILY_CAP audits per IP per day —
@@ -10434,7 +10476,7 @@ def citation_audit():
         _inbound_id = _capture_inbound_lead(
             'started', problem_statement, ip, lead_email, _is_operator,
             _inbound_attr, geo=_coarse_geo(ip),
-            prompts_json=(json.dumps(prompts_override) if prompts_override else None))
+            prompts_json=(json.dumps(prompt_sets_override or prompts_override) if prompts_override else None))
         # Per-audit Anthropic usage sink — set BEFORE run_citation_audit so its
         # main-thread calls AND its panel pool (via copy_context) both attribute
         # here. Read after the run for the cost line in the debug email.
@@ -10446,6 +10488,7 @@ def citation_audit():
                 on_progress=on_progress,
                 tier=tier,
                 prompts_override=prompts_override,
+                prompt_sets_override=prompt_sets_override,
             )
             slug = uuid.uuid4().hex[:10]
             # Strip the debug-only keys (leading underscore) before the
@@ -10506,7 +10549,7 @@ def citation_audit():
                             'completed', problem_statement, ip, lead_email, _is_operator,
                             _inbound_attr, geo=_coarse_geo(ip), slug=slug,
                             brand=result.get('brand'), category=result.get('category'),
-                            prompts_json=(json.dumps(prompts_override) if prompts_override else None),
+                            prompts_json=(json.dumps(prompt_sets_override or prompts_override) if prompts_override else None),
                             est_cost_usd=_cost_total)
             except Exception as _ib_e:
                 print("inbound-audit completion update failed (continuing):", str(_ib_e)[:120])
@@ -13668,6 +13711,89 @@ def signal_report_json(slug):
     )
 
 
+def _citation_checks_for_report(data, deadline_seconds=30, max_urls=250):
+    """Page-ground a report's citations: fetch every distinct cited URL
+    (CitedPage cache first, reader-proxy fallback for bot walls) and count
+    on-page brand mentions. Returns {url: {status: ok|blocked|error,
+    brand_count: int, title: str}}. This is what separates a page that
+    actually talks about the brand from a co-citation, a bot-walled page we
+    cannot check, and a dead or fabricated URL. Never raises; URLs missed
+    by the deadline are simply absent from the map."""
+    brand = (data.get('brand') or '').strip()
+    if not brand:
+        return {}
+    names = [brand] + [a.strip() for a in (data.get('brand_aliases') or [])[:3]
+                       if isinstance(a, str) and a.strip()]
+    urls, seen = [], set()
+    for r in (data.get('all_responses') or []):
+        for c in (r.get('citations') or []):
+            u = (c.get('url') or '').strip() if isinstance(c, dict) else str(c).strip()
+            if u and u.startswith('http') and u not in seen:
+                seen.add(u)
+                urls.append(u)
+    urls = urls[:max_urls]
+    if not urls:
+        return {}
+    import hashlib as _hl
+    hashes = {u: _hl.sha1(u.encode()).hexdigest() for u in urls}
+    out, full = {}, {}
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=_PAGE_CACHE_TTL_DAYS)
+        for c in CitedPage.query.filter(CitedPage.url_hash.in_(list(hashes.values()))).all():
+            if not (c.fetched_at and c.fetched_at >= cutoff):
+                continue
+            counts = json.loads(c.name_counts or '{}')
+            if c.status == 'ok' and not any(n in counts for n in names):
+                continue  # cached by a different audit's name set; refetch
+            out[c.url] = {'status': c.status,
+                          'brand_count': max((counts.get(n, 0) for n in names), default=0),
+                          'title': c.title or ''}
+    except Exception as e:
+        print("citation-check cache read failed (continuing):", str(e)[:120])
+    to_fetch = [u for u in urls if u not in out]
+    if to_fetch:
+        ex = ThreadPoolExecutor(max_workers=12)
+        try:
+            futs = {ex.submit(_scrape_cited_page, u, names): u for u in to_fetch}
+            for fut in as_completed(list(futs.keys()), timeout=deadline_seconds):
+                try:
+                    res = fut.result()
+                    u = futs[fut]
+                    full[u] = res
+                    out[u] = {'status': res['status'],
+                              'brand_count': max((res['counts'].get(n, 0) for n in names), default=0),
+                              'title': res.get('title') or ''}
+                except Exception:
+                    pass
+        except FuturesTimeoutError:
+            print(f"citation-check: deadline hit, {len(to_fetch) - len(full)} pages unchecked")
+        except Exception as e:
+            print("citation-check scrape error (continuing):", str(e)[:120])
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
+        try:
+            for u, res in full.items():
+                h = hashes[u]
+                rec = CitedPage.query.filter_by(url_hash=h).first()
+                if rec is None:
+                    rec = CitedPage(url_hash=h, url=u)
+                    db.session.add(rec)
+                rec.domain = u.split('/')[2].lower() if '://' in u else ''
+                rec.status, rec.via = res['status'], res['via']
+                rec.title, rec.author = res['title'], res['author']
+                rec.published, rec.content_len = res['published'], res['content_len']
+                rec.name_counts = json.dumps(res['counts'])
+                rec.fetched_at = datetime.utcnow()
+            db.session.commit()
+        except Exception as e:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            print("citation-check cache write failed (continuing):", str(e)[:120])
+    return out
+
+
 def _render_kit_dashboard(data, public_slug=None):
     """Render a stored audit through the next-generation GEO dashboard
     (tools/audit_dashboard kit). Read-only over the persisted payload:
@@ -13712,6 +13838,10 @@ def _render_kit_dashboard(data, public_slug=None):
         "exclude_sources": [],
         "exec_summary": None,
         "automated_sample": True,   # numbers only: no advisory copy, no recommendations
+        # Page grounding: stored at run time for new audits; computed on the
+        # fly (cache-backed, deadline-capped) for reports that predate it.
+        # Never persisted from a view, so frozen slugs stay untouched.
+        "citation_checks": data.get('citation_checks') or _citation_checks_for_report(data),
         "method_notes": [
             "This dashboard is generated read-only from the audit's stored raw "
             "responses; every number recomputes from that data on each load. The "
