@@ -390,6 +390,7 @@ class Outreach(db.Model):
     followup_count = db.Column(db.Integer, default=0, nullable=False)
     insight = db.Column(db.Text, nullable=True)        # one-line lead insight, seeds proposed text
     relationship = db.Column(db.String(240), nullable=True)  # shared-connection hook (e.g. "fellow Oregon alum")
+    linkedin = db.Column(db.String(255), nullable=True)  # prospect's LinkedIn profile URL
     message = db.Column(db.Text, nullable=True)        # full suggested initial outreach message
     notes = db.Column(db.Text, nullable=True)
     sent_at = db.Column(db.DateTime, nullable=True)
@@ -12783,6 +12784,7 @@ def _ensure_outreach_columns():
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS relationship VARCHAR(240)",
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS message TEXT",
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS notes TEXT",
+        "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS linkedin VARCHAR(255)",
     ]
     try:
         with app.app_context():
@@ -12977,6 +12979,9 @@ def outreach_set(oid):
             o.insight = (request.form.get('insight') or '').strip() or None
         if 'notes' in request.form:
             o.notes = (request.form.get('notes') or '').strip() or None
+        if 'linkedin' in request.form:
+            _li = (request.form.get('linkedin') or '').strip()[:255]
+            o.linkedin = _li if _li.startswith(('http://', 'https://')) else None
         if request.form.get('status'):
             _outreach_apply_status(o, request.form.get('status'))
         db.session.commit()
@@ -13032,6 +13037,10 @@ def outreach_add():
         insight=(request.form.get('insight') or '').strip() or None,
         relationship=(request.form.get('relationship') or '').strip() or None,
         cadence=(request.form.get('cadence') or '5,14'))
+    _li = (request.form.get('linkedin') or '').strip()[:255]
+    if o is not None and _li.startswith(('http://', 'https://')):
+        o.linkedin = _li
+        db.session.commit()
     msg = (request.form.get('message') or '').strip()
     if msg and o is not None:
         o.message = msg
@@ -13353,6 +13362,10 @@ def outreach_board():
             f'data-due="{dueval}" data-dueflag="{1 if is_due else 0}" data-search="{search_blob}">'
             '<div class="chead">'
             f'<div><span class="pname">{html.escape(o.prospect_name)}</span> '
+            + (f'<a href="{html.escape(o.linkedin)}" target="_blank" rel="noopener" title="LinkedIn profile" '
+               'style="display:inline-block;background:#0a66c2;color:#fff;font-weight:700;font-size:10px;'
+               'padding:1px 5px;border-radius:3px;text-decoration:none;vertical-align:2px">in</a> '
+               if getattr(o, 'linkedin', None) else '') +
             f'<span class="ptitle">{html.escape(o.prospect_title or "")}'
             f'{" · " + html.escape(o.company) if o.company else ""}</span>{rel_badge}</div>'
             f'<span class="pill" style="background:{color}">{html.escape(label)}</span></div>'
@@ -13398,6 +13411,7 @@ def outreach_board():
         '<select name="channel"><option value="linkedin">LinkedIn</option>'
         '<option value="email">Email</option></select></div>'
         '<input name="relationship" placeholder="Shared connection (optional)">'
+        '<input name="linkedin" placeholder="LinkedIn URL (optional)">'
         '<input name="insight" placeholder="One-line lead insight (optional)">'
         '<div class="arow"><button type="submit" class="prim">Add prospect</button>'
         '<button type="button" onclick="toggleAdd()">Cancel</button></div></form>'
