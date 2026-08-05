@@ -1038,7 +1038,9 @@ def build(cfg, branded, organic, out_path):
             f'This is an automated sample analysis: '
             f'{(branded["n"] if branded else 0) + (organic["n"] if organic else 0)} answers '
             f'collected from five AI assistants with live web search, counted without human '
-            f'review. It reports the numbers and makes no recommendations.']
+            f'review. Treat it as an illustrative preview: the signals surfaced here are the '
+            f'kinds a consultative engagement develops at depth, with bespoke prompts, '
+            f'500 to 1,000 outputs, and human filtering and analysis.']
         if branded:
             b = branded
             share = round(100 * b["owned_citations"] / b["total_citations"]) if b["total_citations"] else 0
@@ -1089,7 +1091,8 @@ def build(cfg, branded, organic, out_path):
                 f'is context for the answer, not coverage of the brand; the source tables '
                 f'show the split per source.')
         exec_ps.append('Every number above is recomputable from the full responses in the '
-                       'appendix. Answers vary run to run; treat this sample as directional.')
+                       'appendix. A ten-prompt sample is directional by design; the engagement '
+                       'version validates and sizes what it surfaces.')
     if not exec_ps:
         exec_ps = []
         if branded:
@@ -1281,6 +1284,50 @@ def build(cfg, branded, organic, out_path):
         chip = '<span class="modechip br">by name</span>' if ds is branded else '<span class="modechip org">by category</span>'
         src_blocks.append(f'<h2 style="font-size:19px;margin-top:{"34" if src_blocks else "0"}px">{label} {chip}</h2>'
                           + economy_bar(ds) + sources_table(ds, tid))
+    # Illustrative advisory preview (self-serve artifact): the pipeline's
+    # headline move + top media targets, framed explicitly as examples of the
+    # insight type a consultative engagement develops and validates at depth.
+    ap = cfg.get("advisory_preview") or {}
+    if cfg.get("automated_sample") and (ap.get("headline_move") or ap.get("media_targets")):
+        hm = ap.get("headline_move") or {}
+        cards = []
+        if hm.get("text"):
+            cards.append(
+                f'<div style="background:linear-gradient(160deg,var(--panel),var(--panel2));'
+                f'border:1px solid var(--line);border-left:3px solid var(--coral);'
+                f'border-radius:12px;padding:20px 22px;margin-bottom:14px">'
+                f'<div style="font-family:Jost,sans-serif;font-size:12px;letter-spacing:1.5px;'
+                f'text-transform:uppercase;color:var(--coral);font-weight:700;margin-bottom:6px">'
+                f'Example move from this sample</div>'
+                f'<div style="font-size:15px;line-height:1.6">{esc(hm["text"])}</div></div>')
+        trows = []
+        for mtg in (ap.get("media_targets") or []):
+            outlet = mtg.get("outlet") or mtg.get("domain") or ""
+            dom = mtg.get("domain") or ""
+            why = mtg.get("gap_insight") or mtg.get("rationale") or ""
+            if not outlet:
+                continue
+            trows.append(
+                f'<div style="background:var(--panel);border:1px solid var(--line);'
+                f'border-radius:10px;padding:14px 16px;margin-bottom:10px;font-size:13.5px">'
+                f'<b>{esc(outlet)}</b>'
+                + (f' <a href="https://{esc(dom)}" target="_blank" rel="noopener" '
+                   f'style="color:var(--cyan);text-decoration:none;font-size:12.5px">{esc(dom)}</a>' if dom else '')
+                + (f'<div style="color:var(--dim);margin-top:6px;line-height:1.55">{esc(why)}</div>' if why else '')
+                + '</div>')
+        if cards or trows:
+            add("moves", "Illustrative moves", f"""
+<section id="moves">
+  <div class="gh">Illustrative moves</div>
+  <h2>What this sample suggests, as a preview</h2>
+  <div class="section-sub" style="color:var(--dim);font-size:13.5px;margin-bottom:16px;max-width:760px">
+  Surfaced automatically from this ten-prompt sample: examples of the insight type a
+  consultative engagement develops, validates against fetched coverage, and expands
+  across bespoke prompts, 500 to 1,000 outputs, and human analysis.</div>
+  {''.join(cards)}
+  {''.join(trows)}
+</section>""")
+
     add("sources", "Sources", f'''
 <section id="sources">
   <div class="gh">Source intelligence</div>
@@ -1335,7 +1382,7 @@ def build(cfg, branded, organic, out_path):
     by design; some build answers on many citations, others on few. Citation volume is a property of
     each model\'s retrieval behavior, not a verdict on the brand\'s visibility, which is why presence
     and prominence are measured per answer rather than by citation count.</p>
-    {'<p style="margin-top:10px"><b>Automated sample:</b> this dashboard is produced by an automated analysis with no human filtering or interpretation applied. It reports counts; it does not make recommendations. Answers vary run to run; this is a small, directional sample, not a census.</p>'
+    {'<p style="margin-top:10px"><b>Automated sample:</b> this dashboard is produced by an automated analysis with no human filtering applied, and is best read as an illustrative preview of the insight types a consultative engagement develops and validates at depth. Answers vary run to run; this is a small, directional sample, not a census.</p>'
      if cfg.get("automated_sample") else
      '<p style="margin-top:10px"><b>Reading this honestly:</b> this is a small, directional sample designed to map the terrain, not a census. Answers vary run to run; the patterns worth acting on are the ones that persist across assistants and questions, which a fuller audit confirms.</p>'}
     {(lambda cc: f'<p style="margin-top:10px"><b>Page check:</b> each distinct cited URL was fetched and scanned for on-page brand mentions ({sum(1 for v in cc.values() if v.get("status") == "ok")} of {len(cc)} pages loaded; bot-walled pages are marked unverifiable rather than guessed; unreachable URLs, including model-fabricated links, are flagged). The "pages confirming" column in the source tables reports it per source.</p>' if cc else '')(cfg.get("citation_checks") or {})}

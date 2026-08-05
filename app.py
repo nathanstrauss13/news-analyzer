@@ -13896,7 +13896,13 @@ def _render_kit_dashboard(data, public_slug=None):
         "competitors": comps,
         "exclude_sources": [],
         "exec_summary": None,
-        "automated_sample": True,   # numbers only: no advisory copy, no recommendations
+        "automated_sample": True,   # automated illustrative preview framing
+        # Nathan's call (Aug 5): keep the advisory richness on the shared
+        # artifact, framed as an illustrative preview of engagement insights.
+        "advisory_preview": ({
+            "headline_move": data.get('headline_move'),
+            "media_targets": (data.get('media_targets') or [])[:4],
+        } if (data.get('headline_move') or data.get('media_targets')) else None),
         # Page grounding: stored at run time for new audits; computed on the
         # fly (cache-backed, deadline-capped) for reports that predate it.
         # Never persisted from a view, so frozen slugs stay untouched.
@@ -13935,12 +13941,12 @@ def _render_kit_dashboard(data, public_slug=None):
             '<div style="background:#0e1016;border:1px solid #1e212b;border-left:3px solid #cbab6d;'
             'border-radius:14px;padding:26px 28px;font-family:Inter,-apple-system,sans-serif">'
             '<div style="font-family:Jost,sans-serif;font-size:19px;font-weight:600;color:#e8e9ee;margin-bottom:6px">'
-            'The numbers are automated. The analysis is not.</div>'
+            'An illustrative preview. The full read is human.</div>'
             '<div style="font-size:13.5px;color:#9aa0b0;line-height:1.6;max-width:660px;margin-bottom:16px">'
-            'This is an automated sample analysis based on 50 outputs; it reports the counts and '
-            'stops there. A consultation is bespoke: prompts designed around your stakeholders, '
-            '500 to 1,000 outputs, and human filtering and analysis to identify the signal and '
-            'what is truly actionable.</div>'
+            'This report is an automated sample analysis based on 50 outputs: a preview of the '
+            'insight types a consultative engagement develops. The engagement is bespoke: prompts '
+            'designed around your stakeholders, 500 to 1,000 outputs, and human filtering and '
+            'analysis to identify the signal and what is truly actionable.</div>'
             f'<a href="https://calendly.com/nstrauss/new-meeting" target="_blank" rel="noopener" '
             'style="display:inline-block;background:#cbab6d;color:#161206;font-weight:600;font-size:14px;'
             'padding:10px 22px;border-radius:9px;text-decoration:none;margin-right:12px">Book 30 minutes</a>'
