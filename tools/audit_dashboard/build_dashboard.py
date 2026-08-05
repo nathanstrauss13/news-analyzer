@@ -1049,9 +1049,15 @@ def build(cfg, branded, organic, out_path):
             hi = max(b["platforms"], key=lambda p: pp[p]["citations"])
             lo = min(b["platforms"], key=lambda p: pp[p]["citations"])
             deep = b["owned_citations"] - b["owned_home_citations"]
-            p1 = (f'Branded questions: {brand} is mentioned in {b["brand_rows"]} of {b["n"]} answers. '
-                  f'Those answers carry {b["total_citations"]} citations, {b["owned_citations"]} of them '
-                  f'({share}%) from {poss(brand)} own site')
+            if b["brand_rows"] >= b["n"]:
+                p1 = (f'Branded questions: as expected, {brand} is mentioned in all {b["n"]} answers, '
+                      f'since every prompt names the brand; presence here is the baseline, not a '
+                      f'finding, and the informative read is the sourcing. ')
+            else:
+                p1 = (f'Branded questions: {brand} is mentioned in {b["brand_rows"]} of {b["n"]} '
+                      f'answers, worth noting because every prompt names the brand. ')
+            p1 += (f'Those answers carry {b["total_citations"]} citations, {b["owned_citations"]} of them '
+                   f'({share}%) from {poss(brand)} own site')
             if top_ext:
                 p1 += f'; the most-cited outside source is {top_ext["root"]}'
             p1 += (f'. {deep} of the {b["owned_citations"]} owned citations '
