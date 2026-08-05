@@ -10417,8 +10417,8 @@ def citation_audit():
     today = date.today()
     ip = _client_ip()
     lead_email = None
-    if _ip_is_exempt_from_cap(ip):
-        print(f"[audit] FREE_AUDIT_BYPASS_IPS hit: {ip} (unlimited)")
+    if _ip_is_exempt_from_cap(ip) or _operator_ok():
+        print(f"[audit] cap-exempt run: ip={ip} operator_key={_operator_ok()} (unlimited)")
     else:
         # Email is optional. If one is provided (e.g. a future opt-in field or
         # the demo flow), capture it as a lead and honor the per-email lifetime
@@ -10486,7 +10486,7 @@ def citation_audit():
         }), 503
     # Slot secured — record per-IP usage now (deferred from the cap check above so
     # at-capacity retries don't burn the daily quota). Exempt IPs are never metered.
-    if not _ip_is_exempt_from_cap(ip):
+    if not (_ip_is_exempt_from_cap(ip) or _operator_ok()):
         try:
             _use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
             if _use:
@@ -10709,7 +10709,7 @@ def signal_generate_prompts():
     # spamming this endpoint without ever running an audit. We do NOT
     # increment here — only the actual audit increments. We just check.
     ip = _client_ip()
-    if not _ip_is_exempt_from_cap(ip):
+    if not (_ip_is_exempt_from_cap(ip) or _operator_ok()):
         today = date.today()
         use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
         if use and use.count >= FREE_DAILY_CAP:
