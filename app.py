@@ -10175,9 +10175,15 @@ def admin_annotate_scanner_clicks():
     source_kind IS NULL. Never changes is_bot — annotation only."""
     if not _operator_ok():
         abort(404)
-    rows = (LinkClick.query
-            .filter(LinkClick.is_bot.is_(False), LinkClick.source_kind.is_(None))
-            .order_by(LinkClick.clicked_at.desc()).limit(500).all())
+    # ?redo=1 re-evaluates rows already annotated 'human' (used when the
+    # detection rule widens); default pass only fills NULLs.
+    q = LinkClick.query.filter(LinkClick.is_bot.is_(False))
+    if request.args.get('redo') == '1':
+        q = q.filter(db.or_(LinkClick.source_kind.is_(None),
+                            LinkClick.source_kind == 'human'))
+    else:
+        q = q.filter(LinkClick.source_kind.is_(None))
+    rows = q.order_by(LinkClick.clicked_at.desc()).limit(500).all()
     n_scan = n_human = 0
     for c in rows:
         try:
