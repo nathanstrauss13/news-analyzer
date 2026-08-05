@@ -705,7 +705,7 @@ def bar_rows(items, you_name=None, denom=None):
         if pp:
             parts = [f'{p} {pp[p]}' for p in PLATFORM_ORDER if pp.get(p)]
             # plain text only: CSS attr() tooltips render characters, not HTML
-            tip_txt = f'{i["name"]}, named per assistant:\n' + ", ".join(parts or ["(none)"])
+            tip_txt = f'{i["name"]}, named per agent:\n' + ", ".join(parts or ["(none)"])
             tip = f' data-tip="{esc(tip_txt)}"'
         w = round(100 * i["count"] / mx)
         out.append(
@@ -754,7 +754,7 @@ def platform_cards(a, branded):
     if types_present:
         sw = "".join(f'<span><i class="mix-{t}"></i>{TYPE_INDEX[t][0]}</span>' for t in types_present)
         legend = (f'<div class="econlegend" style="margin-top:12px">'
-                  f'<span style="color:var(--muted)">Bar under each assistant: its citation mix by source type.</span>'
+                  f'<span style="color:var(--muted)">Bar under each agent: its citation mix by source type.</span>'
                   f'{sw}</div>')
     return f'<div class="plats">{"".join(out)}</div>{legend}'
 
@@ -902,7 +902,7 @@ def sources_table(a, table_id, limit=18):
             f'<th class="sortable" onclick="sortRows(\'{table_id}\',2)">Citations</th>'
             f'<th class="sortable" onclick="sortRows(\'{table_id}\',3)">Answers citing</th>'
             + pchead +
-            f'<th>Assistants</th></tr></thead><tbody>'
+            f'<th>Agents</th></tr></thead><tbody>'
             + "".join(rows) + f"</tbody></table>{more}</div>")
 
 
@@ -955,7 +955,7 @@ def query_appendix(a, dataset_label, idx_prefix):
     out = [f'<div class="qtools" id="{pid}tools">'
            f'<button class="qbtn" onclick="toggleAll(\'{pid}\',true)">Expand all</button>'
            f'<button class="qbtn" onclick="toggleAll(\'{pid}\',false)">Collapse all</button>'
-           f'<button class="qbtn on" data-p="all" onclick="platFilter(\'{pid}\',this)">All assistants</button>'
+           f'<button class="qbtn on" data-p="all" onclick="platFilter(\'{pid}\',this)">All agents</button>'
            f'{plat_chips}'
            f'<input class="qsearch" type="search" placeholder="Filter questions&hellip;" '
            f'oninput="qSearch(\'{pid}\',this.value)"></div>']
@@ -1037,7 +1037,7 @@ def build(cfg, branded, organic, out_path):
         exec_ps = [
             f'This is an automated sample analysis: '
             f'{(branded["n"] if branded else 0) + (organic["n"] if organic else 0)} answers '
-            f'collected from five AI assistants with live web search, counted without human '
+            f'collected from five AI agents with live web search, counted without human '
             f'review. Treat it as an illustrative preview: the signals surfaced here are the '
             f'kinds a consultative engagement develops at depth, with bespoke prompts, '
             f'500 to 1,000 outputs, and human filtering and analysis.']
@@ -1062,7 +1062,7 @@ def build(cfg, branded, organic, out_path):
                 p1 += f'; the most-cited outside source is {top_ext["root"]}'
             p1 += (f'. {deep} of the {b["owned_citations"]} owned citations '
                    f'{"points" if deep == 1 else "point"} deeper than the homepage. '
-                   f'Citation volume varies by assistant: {hi} {pp[hi]["citations"]}, {lo} {pp[lo]["citations"]}.')
+                   f'Citation volume varies by agent: {hi} {pp[hi]["citations"]}, {lo} {pp[lo]["citations"]}.')
             exec_ps.append(p1)
         if organic:
             o = organic
@@ -1123,7 +1123,7 @@ def build(cfg, branded, organic, out_path):
                           f'homepage, so deeper citable pages are the clearest owned opening')
             if pp[hi]["citations"] >= 2 * max(1, pp[lo]["citations"]):
                 exec_ps.append(
-                    f'Two patterns shape that sourcing. The assistants differ sharply in how much they retrieve: '
+                    f'Two patterns shape that sourcing. The agents differ sharply in how much they retrieve: '
                     f'{hi} builds its answers on {pp[hi]["citations"]} citations while {lo} uses '
                     f'{pp[lo]["citations"]} on the same questions, so the brand\'s citable footprint matters most '
                     f'where retrieval is heaviest. And {depth_note}.')
@@ -1187,7 +1187,7 @@ def build(cfg, branded, organic, out_path):
 <section id="contrast">
   <div class="gh">The headline contrast</div>
   <h2>Known by name, not yet found by category</h2>
-  <div class="gsub">The same five assistants, two kinds of questions. Asked about {esc(brand)} directly,
+  <div class="gsub">The same five agents, two kinds of questions. Asked about {esc(brand)} directly,
   AI answers fluently and cites the brand\'s own site. Asked category questions with no brand named,
   the brand\'s site {"does not yet appear" if o["owned_citations"] == 0 else "appears far less often"}.</div>
   <div class="contrast">
@@ -1215,7 +1215,7 @@ def build(cfg, branded, organic, out_path):
 <section id="landscape">
   <div class="gh">Unbranded category questions</div>
   <h2>Who AI names when nobody asks for you</h2>
-  <div class="gsub">Across {o["n"]} category answers (10 unbranded prompts, five assistants),
+  <div class="gsub">Across {o["n"]} category answers (10 unbranded prompts, five agents),
   how often each name appears. Counted from the full response text with word-boundary matching.</div>
   {bar_rows(comp_items, you_name=brand, denom=o["n"])}
 </section>''')
@@ -1271,7 +1271,7 @@ def build(cfg, branded, organic, out_path):
 
     # organic per-platform (if no branded, show organic platform cards separately)
     if organic and not branded:
-        add("platforms", "Assistants", f'''
+        add("platforms", "Agents", f'''
 <section id="platforms">
   <div class="gh">Per-assistant read</div>
   <h2>Where visibility concentrates</h2>
@@ -1384,7 +1384,7 @@ def build(cfg, branded, organic, out_path):
     per assistant; every citation URL is captured, redirect-resolved where applicable, deduplicated
     and classified. Brand and competitor counts use word-boundary matching over the full response text
     and can be reproduced from the appendix above.</p>
-    <p style="margin-top:10px"><b>Per-assistant differences:</b> the assistants retrieve differently
+    <p style="margin-top:10px"><b>Per-agent differences:</b> the agents retrieve differently
     by design; some build answers on many citations, others on few. Citation volume is a property of
     each model\'s retrieval behavior, not a verdict on the brand\'s visibility, which is why presence
     and prominence are measured per answer rather than by citation count.</p>

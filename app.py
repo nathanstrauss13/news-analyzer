@@ -8129,7 +8129,7 @@ def _send_requester_report_email(to_email, brand, slug):
         subject = f"Your AI citation audit for {brand} is ready"
         text = (
             f"Your free AI citation audit for {brand} is ready:\n\n{url}\n\n"
-            "It reports how five AI assistants answer branded and unbranded "
+            "It reports how five AI agents answer branded and unbranded "
             "questions in your category: where the brand appears, which sources "
             "carry the answers, and which of your own pages AI cites. The "
             "numbers are automated; every figure is recomputable from the full "
@@ -8140,7 +8140,7 @@ def _send_requester_report_email(to_email, brand, slug):
         html_body = (
             f'<p>Your free AI citation audit for <b>{html.escape(brand)}</b> is ready:</p>'
             f'<p><a href="{url}">{url}</a></p>'
-            '<p>It reports how five AI assistants answer branded and unbranded '
+            '<p>It reports how five AI agents answer branded and unbranded '
             'questions in your category: where the brand appears, which sources '
             'carry the answers, and which of your own pages AI cites. The numbers '
             'are automated; every figure is recomputable from the full responses '
@@ -10903,6 +10903,17 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     that didn't make the original cut. For changes to the per-target
     rationale wording, run a fresh audit.
     """
+    # Heal empty brand_domains: an empty list is always a resolver failure at
+    # run time (never a real answer) and silently zeroes owned attribution —
+    # the Eliyan case: 96 eliyan.com citations classified as external.
+    if not data.get('brand_domains'):
+        try:
+            data = dict(data)
+            data['brand_domains'] = _resolve_brand_domains(
+                data.get('brand') or '', data.get('category') or '')
+            print(f"[rerender] re-resolved empty brand_domains -> {data['brand_domains']}")
+        except Exception as _bde:
+            print("[rerender] brand_domains re-resolve failed (continuing):", str(_bde)[:100])
     all_responses = data.get('all_responses') or []
     brand = data.get('brand') or ''
     if not all_responses or not brand:
