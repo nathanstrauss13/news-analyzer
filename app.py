@@ -7897,7 +7897,9 @@ def _compute_audit_anomaly_flags(result, duration_seconds, per_provider_done, pe
         if total_citations < 20:
             flags.append("LOW_CITATION_COUNT")
 
-        if duration_seconds and duration_seconds > 600:
+        # 10x5 split + page-grounding pushed normal runtime past the old 10-min
+        # bar; flag only what is genuinely stuck.
+        if duration_seconds and duration_seconds > 1200:
             flags.append("SLOW_AUDIT")
 
         if len(media_targets) < 3:
@@ -8286,7 +8288,7 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
         flags = _compute_audit_anomaly_flags(result, duration_seconds, per_provider_done, per_provider_errors)
         flags_label = ", ".join(flags) if flags else "OK"
 
-        # Est. Anthropic cost for THIS audit (from the per-audit usage sink).
+        # Est. cross-provider API cost for THIS audit (per-audit usage sink).
         if cost_total is not None:
             _by_provider, _tot_search = {}, 0
             for r in (cost_rows or []):
@@ -8294,8 +8296,8 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
                 _by_provider[prov] = _by_provider.get(prov, 0.0) + (r.get("est_cost_usd") or 0)
                 _tot_search += r.get("searches", 0)
             _seg = [f"{p} ${v:.2f}" for p, v in sorted(_by_provider.items(), key=lambda kv: -kv[1])]
-            cost_label = f"~${cost_total:.2f}"
-            cost_detail = (f" ({', '.join(_seg)}; {_tot_search} web searches)" if _seg else "")
+            cost_label = f"~${cost_total:.2f} total"
+            cost_detail = (f" ({', '.join(_seg)}; {_tot_search} web searches; gemini + perplexity not metered)" if _seg else "")
         else:
             cost_label, cost_detail = "(not measured)", ""
 
@@ -8325,7 +8327,7 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
             f"Report: {report_link}",
             f"Raw JSON: {json_link}",
             f"",
-            f"Est. Anthropic cost: {cost_label}{cost_detail}",
+            f"Est. API cost, all providers: {cost_label}{cost_detail}",
             f"Duration: {duration_seconds:.1f}s" if duration_seconds else "Duration: (unknown)",
             f"",
             f"Stats:",
@@ -8378,7 +8380,7 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
         )
         duration_html = f'{duration_seconds:.1f}s' if duration_seconds else '(unknown)'
         cost_html = (
-            f'<p style="margin:10px 0"><strong>Est. Anthropic cost:</strong> '
+            f'<p style="margin:10px 0"><strong>Est. API cost, all providers:</strong> '
             f'<span style="font-weight:700">{html.escape(cost_label)}</span>'
             f'<span style="color:#666">{html.escape(cost_detail)}</span></p>'
         )
