@@ -10168,6 +10168,33 @@ def healthz():
     }), 200
 
 
+@app.route('/admin/annotate-scanner-clicks', methods=['POST'])
+def admin_annotate_scanner_clicks():
+    """Backfill source_kind on human-classified clicks recorded before the
+    scanner annotation shipped. Idempotent: only touches rows where
+    source_kind IS NULL. Never changes is_bot — annotation only."""
+    if not _operator_ok():
+        abort(404)
+    rows = (LinkClick.query
+            .filter(LinkClick.is_bot.is_(False), LinkClick.source_kind.is_(None))
+            .order_by(LinkClick.clicked_at.desc()).limit(500).all())
+    n_scan = n_human = 0
+    for c in rows:
+        try:
+            kind = 'scanner' if _ip_looks_like_scanner(c.ip) else 'human'
+        except Exception:
+            continue
+        c.source_kind = kind
+        if kind == 'scanner':
+            n_scan += 1
+        else:
+            n_human += 1
+    db.session.commit()
+    return Response(
+        f"annotated {len(rows)} clicks: {n_scan} scanner, {n_human} human\n",
+        mimetype='text/plain')
+
+
 @app.route('/admin/reclassify-clicks', methods=['POST'])
 def admin_reclassify_clicks():
     """Operator, one-shot + idempotent: re-run the CURRENT bot classification
