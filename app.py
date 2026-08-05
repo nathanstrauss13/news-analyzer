@@ -12289,12 +12289,14 @@ _OUTREACH_STATUS_LABELS = {
     'followed_up': 'Followed up',
     'replied': 'Replied', 'call_scheduled': 'Call scheduled',
     'won': 'Won', 'cold': 'Cold', 'passed': 'Passed',
+    'archived': 'Archived',
 }
 _OUTREACH_STATUS_COLORS = {
     'queued': '#9aa0a6', 'sent': '#2356c7', 'opened': '#1db954',
     'followed_up': '#e8820c',
     'replied': '#0a8a6f', 'call_scheduled': '#7a3ff2',
     'won': '#0a8a0a', 'cold': '#b00020', 'passed': '#9aa0a6',
+    'archived': '#6a6e7e',
 }
 # Statuses still "in play" for follow-up reminders.
 _OUTREACH_ACTIVE = ('sent', 'opened', 'followed_up')
@@ -12411,7 +12413,7 @@ def _outreach_apply_status(o, status):
         o.next_followup_due = _outreach_compute_due(o)
     elif status == 'queued':
         o.next_followup_due = None
-    else:  # replied | call_scheduled | won | cold | passed
+    else:  # replied | call_scheduled | won | cold | passed | archived
         o.next_followup_due = None
 
 
@@ -12983,6 +12985,28 @@ def outreach_set(oid):
     return _outreach_redirect(oid)
 
 
+@app.route('/outreach/bulk-archive', methods=['POST'])
+def outreach_bulk_archive():
+    """Bulk-move cards to 'archived' (Nathan's tranche-pivot request):
+    f=<status> archives every card currently in that status; f=all archives
+    everything except won and already-archived. Cards keep their /r/ tracked
+    links and full open history — archived is a board state, not a delete."""
+    if not _operator_ok():
+        abort(404)
+    f = (request.form.get('f') or '').strip()
+    if f == 'all':
+        targets = Outreach.query.filter(Outreach.status.notin_(('won', 'archived'))).all()
+    elif f in _OUTREACH_STATUS_LABELS and f != 'archived':
+        targets = Outreach.query.filter_by(status=f).all()
+    else:
+        targets = []
+    for o in targets:
+        _outreach_apply_status(o, 'archived')
+    db.session.commit()
+    print(f"[outreach] bulk-archived {len(targets)} cards (filter={f})")
+    return redirect(url_for('outreach_board') + _outreach_keyq())
+
+
 @app.route('/outreach/add', methods=['POST'])
 def outreach_add():
     """Quick-add a prospect from the board UI (vs. hand-typing /outreach/new?...).
@@ -13159,13 +13183,23 @@ function applyHook(id){
   saveField(mg);hookPreview(id);mg.focus();
 }
 function setFilter(f){try{sessionStorage.setItem('orFilter',f);}catch(e){}applyView();}
+function bulkArchive(){
+  var f='all';try{f=sessionStorage.getItem('orFilter')||'all';}catch(e){}
+  if(f==='due'){alert('Pick a status filter (or All) to bulk-archive; Due is a reminder view.');return;}
+  if(f==='archived'){alert('These cards are already archived.');return;}
+  var vis=document.querySelectorAll('.card:not([style*="display: none"])').length;
+  var what=(f==='all')?'every non-Won card':'all '+f.replace('_',' ')+' cards';
+  if(!confirm('Archive '+what+' ('+vis+' shown)? They keep their tracked links and open history, and stay viewable under the Archived filter.')){return;}
+  document.getElementById('bulkArchF').value=f;
+  document.getElementById('bulkArchForm').submit();
+}
 function applyView(){
   var f='all',q='';try{f=sessionStorage.getItem('orFilter')||'all';q=(sessionStorage.getItem('orSearch')||'').toLowerCase().trim();}catch(e){}
   var chips=document.querySelectorAll('.chip');for(var i=0;i<chips.length;i++){chips[i].classList.toggle('on',chips[i].dataset.f===f);}
   var cards=document.querySelectorAll('.card'),shown=0;
   for(var j=0;j<cards.length;j++){
     var c=cards[j];
-    var okS=(f==='all')||(f==='due'?c.dataset.dueflag==='1':c.dataset.status===f);
+    var okS=(f==='all')?(c.dataset.status!=='archived'):(f==='due'?c.dataset.dueflag==='1':c.dataset.status===f);
     var okQ=!q||(c.dataset.search.indexOf(q)>=0);
     var v=okS&&okQ;c.style.display=v?'':'none';if(v){shown++;}
   }
@@ -13342,6 +13376,12 @@ def outreach_board():
         f'<button type="button" class="chip" data-f="{f}" onclick="setFilter(\'{f}\')">'
         f'{html.escape(lbl)}<span class="cct">{ct}</span></button>'
         for f, lbl, ct in chip_defs)
+    chips += (
+        f'<form id="bulkArchForm" method="post" action="{root}/outreach/bulk-archive{keyq}" '
+        'style="display:inline"><input type="hidden" name="f" id="bulkArchF">'
+        '<button type="button" class="chip" style="border-style:dashed" '
+        'onclick="bulkArchive()" title="Archive every card in the current filter '
+        '(keeps tracked links and open history)">Archive shown</button></form>')
 
     # ---- quick-add: datalist of report slugs so the operator can't fat-finger one ----
     slug_opts = ''.join(
