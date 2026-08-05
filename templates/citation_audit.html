@@ -1975,7 +1975,7 @@
             <div class="prompt-editor-header">
                 <div>
                     <div class="prompt-editor-title">Review &amp; revise your audit prompts</div>
-                    <div class="prompt-editor-desc">These are the prompts we'll run across all 5 AI assistants (Claude, ChatGPT, Gemini, Perplexity, and Grok). Edit any to match how your real audience actually asks. <strong>Don't name your brand or competitors — that biases organic discovery.</strong> Use brand-agnostic framing instead.</div>
+                    <div class="prompt-editor-desc">These are the prompts we'll run across all 5 AI assistants (Claude, ChatGPT, Gemini, Perplexity, and Grok). Edit any to match how your real audience actually asks. <strong>Branded prompts ask about your brand by name; keep the name in those.</strong> <strong>Unbranded prompts measure unprompted discovery: don't name your brand or competitors there.</strong></div>
                 </div>
                 <span class="prompt-editor-count" id="promptEditorCount">10 prompts</span>
             </div>
@@ -1983,7 +1983,6 @@
             <div class="prompt-editor-warning" id="promptEditorWarning" style="display:none"></div>
             <div class="prompt-editor-toolbar">
                 <div class="prompt-editor-toolbar-left">
-                    <button class="prompt-row-btn" onclick="addPrompt()">+ Add prompt</button>
                     <button class="prompt-row-btn" onclick="resetPrompts()">Reset to auto-generated</button>
                 </div>
                 <div class="prompt-editor-toolbar-right">
@@ -2227,9 +2226,12 @@
         // ── Prompt editor state + handlers ────────────────────────────────
         // Lives across openPromptEditor() / addPrompt() / runFromEditor() so
         // edits accumulate without re-rendering blowing them away.
-        let editorPrompts = [];
-        let editorOriginalPrompts = [];  // for reset
+        // Two labeled halves (phase-2 split). editorFlat is the legacy
+        // fallback when the server returns no labeled sets.
+        let editorBranded = [], editorUnbranded = [], editorFlat = [];
+        let editorOrig = {branded: [], unbranded: [], flat: []};  // for reset
         let editorProblemStatement = '';
+        function editorIsLabeled() { return editorBranded.length > 0 || editorUnbranded.length > 0; }
 
         function openPromptEditor() {
             const input = document.getElementById('problemInput').value.trim();
@@ -2268,8 +2270,10 @@
                     return;
                 }
                 const data = await r.json();
-                editorPrompts = (data.prompts || []).slice();
-                editorOriginalPrompts = editorPrompts.slice();
+                editorBranded = (data.branded_prompts || []).slice();
+                editorUnbranded = (data.unbranded_prompts || []).slice();
+                editorFlat = (editorBranded.length || editorUnbranded.length) ? [] : (data.prompts || []).slice();
+                editorOrig = {branded: editorBranded.slice(), unbranded: editorUnbranded.slice(), flat: editorFlat.slice()};
                 renderPromptList();
             }).catch(() => {
                 cancelPromptEditor();
@@ -2280,56 +2284,77 @@
 
         function renderPromptList() {
             const el = document.getElementById('promptList');
-            document.getElementById('promptEditorCount').textContent = `${editorPrompts.length} prompts`;
+            const labeled = editorIsLabeled();
+            const total = labeled ? (editorBranded.length + editorUnbranded.length) : editorFlat.length;
+            document.getElementById('promptEditorCount').textContent = labeled
+                ? `${editorBranded.length} branded + ${editorUnbranded.length} unbranded`
+                : `${total} prompts`;
             const warnEl = document.getElementById('promptEditorWarning');
-            if (editorPrompts.length < 5) {
-                warnEl.style.display = '';
-                warnEl.textContent = `Need at least 5 prompts to run an audit (you have ${editorPrompts.length}).`;
-            } else if (editorPrompts.length > 20) {
-                warnEl.style.display = '';
-                warnEl.textContent = `Max 20 prompts (you have ${editorPrompts.length}).`;
+            let warn = '';
+            if (labeled) {
+                if (editorBranded.length < 3 || editorUnbranded.length < 3) warn = 'Keep at least 3 prompts in each half.';
+                else if (editorBranded.length > 10 || editorUnbranded.length > 10) warn = 'Max 10 prompts per half.';
+                else if (total > 20) warn = `Max 20 prompts total (you have ${total}).`;
             } else {
-                warnEl.style.display = 'none';
+                if (total < 5) warn = `Need at least 5 prompts to run an audit (you have ${total}).`;
+                else if (total > 20) warn = `Max 20 prompts (you have ${total}).`;
             }
+            warnEl.style.display = warn ? '' : 'none';
+            warnEl.textContent = warn;
             el.innerHTML = '';
-            editorPrompts.forEach((p, i) => {
-                const row = document.createElement('div');
-                row.className = 'prompt-row';
-                row.innerHTML = `
-                    <span class="pidx">${i + 1}</span>
-                    <textarea class="ptext-input" rows="1" data-idx="${i}">${esc(p)}</textarea>
-                    <button class="prompt-row-btn danger" data-idx="${i}" title="Delete prompt">✕</button>
-                `;
-                const textarea = row.querySelector('textarea');
-                textarea.addEventListener('input', e => {
-                    editorPrompts[i] = e.target.value;
+            let n = 0;
+            const groups = labeled
+                ? [['Branded · how AI describes you when asked directly', editorBranded, 'branded'],
+                   ['Unbranded · unprompted category discovery (no brand names)', editorUnbranded, 'unbranded']]
+                : [[null, editorFlat, 'flat']];
+            groups.forEach(([title, arr, key]) => {
+                if (title) {
+                    const gh = document.createElement('div');
+                    gh.className = 'prompt-group-head';
+                    gh.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:14px 4px 6px;color:#cbab6d;font-size:12px;letter-spacing:1.2px;text-transform:uppercase;font-weight:700;';
+                    gh.innerHTML = `<span>${title}</span><button class="prompt-row-btn" style="text-transform:none;letter-spacing:0;" onclick="addPrompt('${key}')">+ Add</button>`;
+                    el.appendChild(gh);
+                }
+                arr.forEach((p, i) => {
+                    n += 1;
+                    const row = document.createElement('div');
+                    row.className = 'prompt-row';
+                    row.innerHTML = `
+                        <span class="pidx">${n}</span>
+                        <textarea class="ptext-input" rows="1">${esc(p)}</textarea>
+                        <button class="prompt-row-btn danger" title="Delete prompt">✕</button>
+                    `;
+                    const textarea = row.querySelector('textarea');
+                    textarea.addEventListener('input', e => {
+                        arr[i] = e.target.value;
+                        e.target.style.height = 'auto';
+                        e.target.style.height = e.target.scrollHeight + 'px';
+                    });
+                    textarea.style.height = 'auto';
+                    textarea.style.height = textarea.scrollHeight + 'px';
+                    row.querySelector('.prompt-row-btn.danger').addEventListener('click', () => {
+                        arr.splice(i, 1);
+                        renderPromptList();
+                    });
+                    el.appendChild(row);
                 });
-                // Auto-grow textareas
-                textarea.style.height = 'auto';
-                textarea.style.height = textarea.scrollHeight + 'px';
-                textarea.addEventListener('input', e => {
-                    e.target.style.height = 'auto';
-                    e.target.style.height = e.target.scrollHeight + 'px';
-                });
-                row.querySelector('.prompt-row-btn.danger').addEventListener('click', () => {
-                    editorPrompts.splice(i, 1);
-                    renderPromptList();
-                });
-                el.appendChild(row);
             });
         }
 
-        function addPrompt() {
-            if (editorPrompts.length >= 20) return;
-            editorPrompts.push('');
+        function addPrompt(key) {
+            const arr = key === 'branded' ? editorBranded : (key === 'unbranded' ? editorUnbranded : editorFlat);
+            const total = editorIsLabeled() ? (editorBranded.length + editorUnbranded.length) : editorFlat.length;
+            if (total >= 20 || (editorIsLabeled() && arr.length >= 10)) return;
+            arr.push('');
             renderPromptList();
-            // Focus the newly-added textarea
             const inputs = document.querySelectorAll('.ptext-input');
             if (inputs.length) inputs[inputs.length - 1].focus();
         }
 
         function resetPrompts() {
-            editorPrompts = editorOriginalPrompts.slice();
+            editorBranded = editorOrig.branded.slice();
+            editorUnbranded = editorOrig.unbranded.slice();
+            editorFlat = editorOrig.flat.slice();
             renderPromptList();
         }
 
@@ -2337,19 +2362,31 @@
             document.getElementById('promptEditor').classList.remove('active');
             document.getElementById('formSection').classList.remove('hidden');
             setHomeChrome(true);
-            editorPrompts = [];
-            editorOriginalPrompts = [];
+            editorBranded = []; editorUnbranded = []; editorFlat = [];
+            editorOrig = {branded: [], unbranded: [], flat: []};
             editorProblemStatement = '';
         }
 
         function runFromEditor() {
-            const cleaned = editorPrompts.map(p => (p || '').trim()).filter(p => p.length > 0);
-            if (cleaned.length < 5 || cleaned.length > 20) {
-                document.getElementById('promptEditorWarning').style.display = '';
-                document.getElementById('promptEditorWarning').textContent = `Need 5–20 prompts to run (you have ${cleaned.length}).`;
+            const clean = a => a.map(p => (p || '').trim()).filter(p => p.length > 0);
+            const warnEl = document.getElementById('promptEditorWarning');
+            if (editorIsLabeled()) {
+                const b = clean(editorBranded), u = clean(editorUnbranded);
+                if (b.length < 3 || u.length < 3 || b.length > 10 || u.length > 10 || b.length + u.length > 20) {
+                    warnEl.style.display = '';
+                    warnEl.textContent = `Each half needs 3-10 prompts, max 20 total (you have ${b.length} branded + ${u.length} unbranded).`;
+                    return;
+                }
+                document.getElementById('promptEditor').classList.remove('active');
+                runAudit({input: editorProblemStatement, prompts: b.concat(u), prompt_sets: {branded: b, unbranded: u}});
                 return;
             }
-            // Hide editor; runAudit will show loading state.
+            const cleaned = clean(editorFlat);
+            if (cleaned.length < 5 || cleaned.length > 20) {
+                warnEl.style.display = '';
+                warnEl.textContent = `Need 5-20 prompts to run (you have ${cleaned.length}).`;
+                return;
+            }
             document.getElementById('promptEditor').classList.remove('active');
             runAudit({input: editorProblemStatement, prompts: cleaned});
         }
@@ -2397,6 +2434,9 @@
             form.append('problem_statement', input);
             form.append('email', email);
             form.append('tier', tier);
+            if (opts.prompt_sets && (opts.prompt_sets.branded || []).length && (opts.prompt_sets.unbranded || []).length) {
+                form.append('prompt_sets', JSON.stringify(opts.prompt_sets));
+            }
             if (opts.prompts && Array.isArray(opts.prompts) && opts.prompts.length) {
                 form.append('prompts', JSON.stringify(opts.prompts));
             }
