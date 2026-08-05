@@ -11590,8 +11590,13 @@ def _ip_looks_like_scanner(ip):
             d = json.loads(r.read().decode('utf-8', 'ignore'))
         if d.get('status') == 'success':
             blob = ' '.join(str(d.get(k) or '') for k in ('asname', 'org', 'isp')).upper()
-            verdict = (bool(d.get('proxy') or d.get('hosting'))
-                       and any(h in blob for h in _SCANNER_ASN_HINTS))
+            flagged = bool(d.get('proxy') or d.get('hosting'))
+            # Named cheap-VPS ASN, OR proxy AND hosting together — the latter
+            # catches bulk hosts we haven't enumerated (HostRoyale et al.)
+            # while corporate egress (proxy only, on AWS/Azure/Zscaler) stays
+            # human. Enumerated majors keep working with either flag alone.
+            verdict = flagged and (any(h in blob for h in _SCANNER_ASN_HINTS)
+                                   or (d.get('proxy') and d.get('hosting')))
     except Exception:
         verdict = False
     _IP_SCANNER_CACHE[ip] = verdict
