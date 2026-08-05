@@ -368,6 +368,10 @@ class LinkClick(db.Model):
     ip = db.Column(db.String(64), nullable=True)
     user_agent = db.Column(db.Text, nullable=True)
     referer = db.Column(db.String(500), nullable=True)
+    # 'scanner' when the source IP looks like link-safety infrastructure
+    # (cheap-VPS ASN + proxy/hosting). ANNOTATION ONLY — never suppresses the
+    # open, so the July 2026 lesson (corporate proxies are real buyers) holds.
+    source_kind = db.Column(db.String(16), nullable=True)
     clicked_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
@@ -11531,6 +11535,42 @@ _LINK_PREVIEW_BOT_UA = (
 )
 
 
+_SCANNER_ASN_HINTS = (
+    'VULTR', 'DIGITALOCEAN', 'DIGITAL OCEAN', 'LINODE', 'HETZNER', 'OVH',
+    'CHOOPA', 'CONSTANT COMPANY', 'CONTABO', 'SCALEWAY', 'UPCLOUD',
+)
+_IP_SCANNER_CACHE = {}
+
+
+def _ip_looks_like_scanner(ip):
+    """True when an IP looks like link-safety scanning infrastructure: a
+    cheap-VPS/bulk-hosting ASN that is also flagged proxy or hosting.
+
+    This is an ANNOTATION signal only — it never changes is_bot, so a genuine
+    open is never hidden (the 2026-07-21 lesson: enterprise buyers egress via
+    corporate cloud proxies, and suppressing those hid Verifone/GE opens).
+    Corporate egress lives on AWS/Azure/Zscaler ASNs, which are deliberately
+    NOT in the hint list; LinkedIn-style scanners rent Vultr/DigitalOcean."""
+    if not ip or ip in ('127.0.0.1', '::1', 'localhost', 'unknown'):
+        return False
+    if ip in _IP_SCANNER_CACHE:
+        return _IP_SCANNER_CACHE[ip]
+    verdict = False
+    try:
+        import urllib.request
+        url = f"http://ip-api.com/json/{ip}?fields=status,proxy,hosting,asname,org,isp"
+        with urllib.request.urlopen(url, timeout=2) as r:
+            d = json.loads(r.read().decode('utf-8', 'ignore'))
+        if d.get('status') == 'success':
+            blob = ' '.join(str(d.get(k) or '') for k in ('asname', 'org', 'isp')).upper()
+            verdict = (bool(d.get('proxy') or d.get('hosting'))
+                       and any(h in blob for h in _SCANNER_ASN_HINTS))
+    except Exception:
+        verdict = False
+    _IP_SCANNER_CACHE[ip] = verdict
+    return verdict
+
+
 def _is_link_preview_bot(ua, method):
     """True if this hit is an automated preview/crawler rather than a human
     opening the link. Conservative: HEAD requests and empty UAs count as bots."""
@@ -11572,7 +11612,7 @@ def _mint_tracked_link(slug, recipient=None, campaign=None, token=None):
 
 
 def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats_url,
-                      visitor_no=1):
+                      visitor_no=1, source_kind=None):
     """Fire-and-forget alert when a tracked link gets a NEW unique visitor
     (a human open from an IP that hasn't opened this link before). visitor_no=1
     is the classic first-open ping; 2+ means a new device/network on the same
@@ -11587,7 +11627,9 @@ def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats
         from sendgrid.helpers.mail import Mail
 
         who = recipient or f"Someone (link {token})"
-        if visitor_no <= 1:
+        if (source_kind or '') == 'scanner':
+            subject = f"🤖 Link scanner hit on {who}'s report (not a human open)"
+        elif visitor_no <= 1:
             subject = f"📬 {who} opened your citation audit report"
             lead = f"{who} just opened the report you shared."
             tail = f"This is their first open. Re-opens and the full list live at {stats_url}"
@@ -11751,10 +11793,18 @@ def track_and_redirect(token):
     new_ip = (not is_bot) and (
         LinkClick.query.filter_by(token=token, is_bot=False, ip=ip).count() == 0
     )
+    # Scanner annotation computed BEFORE the insert try-block so a DB failure
+    # can never leave it unbound for the alert below.
+    _src_kind = None
+    if not is_bot:
+        try:
+            _src_kind = 'scanner' if _ip_looks_like_scanner(ip) else 'human'
+        except Exception:
+            _src_kind = None
     try:
         db.session.add(LinkClick(
             token=token, is_bot=is_bot, ip=ip,
-            user_agent=ua[:1000], referer=ref,
+            user_agent=ua[:1000], referer=ref, source_kind=_src_kind,
         ))
         db.session.commit()
     except Exception as e:
@@ -11785,7 +11835,7 @@ def track_and_redirect(token):
         threading.Thread(
             target=_send_click_email,
             args=(link.recipient, _link_slug_base(link.slug), token, ip, ua, when_et, report_url, stats_url),
-            kwargs={'visitor_no': visitor_no},
+            kwargs={'visitor_no': visitor_no, 'source_kind': _src_kind},
             daemon=True,
         ).start()
 
@@ -12818,6 +12868,7 @@ def _ensure_inbound_columns():
     has them from create_all and the duplicate-column error is caught and ignored.
     Backfills existing rows: they all have a slug (completed) and no operator flag."""
     migrations = [
+        "ALTER TABLE link_clicks ADD COLUMN IF NOT EXISTS source_kind VARCHAR(16)",
         "ALTER TABLE inbound_audits ADD COLUMN IF NOT EXISTS status VARCHAR(16)",
         "ALTER TABLE inbound_audits ADD COLUMN IF NOT EXISTS email VARCHAR(254)",
         "ALTER TABLE inbound_audits ADD COLUMN IF NOT EXISTS is_operator BOOLEAN",
@@ -13288,16 +13339,27 @@ def outreach_board():
         track_url = f"{root}/r/{o.link_token}" if o.link_token else '—'
         first = _outreach_first_name(o)
         # Per-card open analytics: genuine human opens of this prospect's /r/ link
-        opens, last_open = 0, None
+        opens, last_open, scanner_opens = 0, None, 0
         if o.link_token:
             _oc = (LinkClick.query.filter_by(token=o.link_token, is_bot=False)
                    .order_by(LinkClick.clicked_at.desc()).all())
             opens = len(_oc)
-            last_open = _oc[0].clicked_at if _oc else None
-        if opens:
-            open_badge = (f'<span style="color:#1db954;font-weight:600">👀 {opens} open'
-                          f'{"s" if opens != 1 else ""}</span>'
+            scanner_opens = sum(1 for c in _oc if (c.source_kind or '') == 'scanner')
+            _human = [c for c in _oc if (c.source_kind or '') != 'scanner']
+            last_open = (_human[0].clicked_at if _human else _oc[0].clicked_at) if _oc else None
+        human_opens = opens - scanner_opens
+        if human_opens:
+            open_badge = (f'<span style="color:#1db954;font-weight:600">👀 {human_opens} open'
+                          f'{"s" if human_opens != 1 else ""}</span>'
                           f'<span style="color:#999"> · last {html.escape(_fmt_et(last_open))}</span>')
+            if scanner_opens:
+                open_badge += (f'<span style="color:#b0873a" title="Clicks from link-safety scanning '
+                               f'infrastructure (cheap-VPS proxy ASNs), counted separately"> · '
+                               f'{scanner_opens} scanner</span>')
+        elif scanner_opens:
+            open_badge = (f'<span style="color:#b0873a;font-weight:600" title="Only link-safety scanner '
+                          f'traffic so far (cheap-VPS proxy ASNs) — the recipient has not opened yet">'
+                          f'🤖 {scanner_opens} scanner hit{"s" if scanner_opens != 1 else ""}, no human open</span>')
         else:
             open_badge = '<span style="color:#bbb">no opens yet</span>'
         days = f"{(datetime.utcnow() - o.sent_at).days}d ago" if o.sent_at else 'not sent'
