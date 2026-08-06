@@ -1034,13 +1034,9 @@ def build(cfg, branded, organic, out_path):
     # sample's job. Operator-built dashboards (no flag) keep the fuller draft.
     exec_ps = cfg.get("exec_summary")
     if not exec_ps and cfg.get("automated_sample"):
-        exec_ps = [
-            f'This is an automated sample analysis: '
-            f'{(branded["n"] if branded else 0) + (organic["n"] if organic else 0)} answers '
-            f'collected from five AI agents with live web search, counted without human '
-            f'review. Treat it as an illustrative preview: the signals surfaced here are the '
-            f'kinds a consultative engagement develops at depth, with bespoke prompts, '
-            f'500 to 1,000 outputs, and human filtering and analysis.']
+        # Findings first, method last. Entries are (bold label | None, text);
+        # the renderer bolds the label and escapes the body.
+        exec_ps = []
         if branded:
             b = branded
             share = round(100 * b["owned_citations"] / b["total_citations"]) if b["total_citations"] else 0
@@ -1050,55 +1046,56 @@ def build(cfg, branded, organic, out_path):
             lo = min(b["platforms"], key=lambda p: pp[p]["citations"])
             deep = b["owned_citations"] - b["owned_home_citations"]
             if b["brand_rows"] >= b["n"]:
-                p1 = (f'Branded questions: as expected, {brand} is mentioned in all {b["n"]} answers, '
-                      f'since every prompt names the brand; presence here is the baseline, not a '
-                      f'finding, and the informative read is the sourcing. ')
+                p1 = (f'as expected, {brand} is named in all {b["n"]} answers since every prompt '
+                      f'includes the brand, so the informative read is the sourcing. ')
             else:
-                p1 = (f'Branded questions: {brand} is mentioned in {b["brand_rows"]} of {b["n"]} '
-                      f'answers, worth noting because every prompt names the brand. ')
-            p1 += (f'Those answers carry {b["total_citations"]} citations, {b["owned_citations"]} of them '
+                p1 = (f'{brand} is named in {b["brand_rows"]} of {b["n"]} answers, worth noting '
+                      f'because every prompt includes the brand. ')
+            p1 += (f'Those answers carry {b["total_citations"]} citations, {b["owned_citations"]} '
                    f'({share}%) from {poss(brand)} own site')
             if top_ext:
-                p1 += f'; the most-cited outside source is {top_ext["root"]}'
-            p1 += (f'. {deep} of the {b["owned_citations"]} owned citations '
-                   f'{"points" if deep == 1 else "point"} deeper than the homepage. '
-                   f'Citation volume varies by agent: {hi} {pp[hi]["citations"]}, {lo} {pp[lo]["citations"]}.')
-            exec_ps.append(p1)
+                p1 += f', the most-cited outside source being {top_ext["root"]}'
+            p1 += (f'. {deep} of the {b["owned_citations"]} owned citations go deeper than the '
+                   f'homepage. Citation volume varies by agent: {hi} {pp[hi]["citations"]}, '
+                   f'{lo} {pp[lo]["citations"]}.')
+            exec_ps.append(("Branded questions", p1))
         if organic:
             o = organic
             top = o["competitors"][0] if o["competitors"] else None
-            p2 = f'Unbranded category questions: {brand} appears in {o["brand_rows"]} of {o["n"]} answers'
+            p2 = f'{brand} appears in {o["brand_rows"]} of {o["n"]} answers'
             if top:
                 p2 += f'; the most-named tracked competitor is {top["name"]} at {top["count"]}'
             p2 += '.'
             pr = o.get("prominence") or {}
             if pr.get("brand_present"):
-                p2 += (f' Where {brand} appears, it is the first tracked name mentioned in '
-                       f'{pr.get("brand_first", 0)} of those {pr["brand_present"]} answers.')
+                p2 += (f' It is the first tracked name mentioned in {pr.get("brand_first", 0)} '
+                       f'of those {pr["brand_present"]}.')
             pd, ad = o.get("presence_drivers") or [], o.get("absence_drivers") or []
             if pd:
-                p2 += (' The answers naming ' + brand + ' most often cite '
-                       + ' and '.join(r for r, _c in pd[:2]) + '.')
-            if ad:
-                p2 += (' The answers that omit it most often cite '
-                       + ' and '.join(r for r, _c in ad[:2]) + '.')
-            exec_ps.append(p2)
+                p2 += (' Answers naming it most often cite '
+                       + ' and '.join(r for r, _c in pd[:2]))
+                p2 += ('; those omitting it cite ' + ' and '.join(r for r, _c in ad[:2]) + '.') if ad else '.'
+            elif ad:
+                p2 += ' Answers omitting it most often cite ' + ' and '.join(r for r, _c in ad[:2]) + '.'
+            exec_ps.append(("Unbranded category questions", p2))
         _cc = cfg.get("citation_checks") or {}
         if _cc:
             _n_ok = sum(1 for v in _cc.values() if v.get("status") == "ok")
             _n_conf = sum(1 for v in _cc.values() if v.get("status") == "ok" and v.get("brand_count"))
-            _n_blk = sum(1 for v in _cc.values() if v.get("status") == "blocked")
-            _n_err = sum(1 for v in _cc.values() if v.get("status") not in ("ok", "blocked"))
-            exec_ps.append(
-                f'Page check: every distinct cited URL was fetched. Of {len(_cc)} pages, '
-                f'{_n_ok} loaded and {_n_conf} mention {brand} on the page; '
-                f'{_n_blk} sit behind bot walls and could not be checked; '
-                f'{_n_err} did not resolve. A citation whose page never mentions the brand '
-                f'is context for the answer, not coverage of the brand; the source tables '
-                f'show the split per source.')
-        exec_ps.append('Every number above is recomputable from the full responses in the '
-                       'appendix. A ten-prompt sample is directional by design; the engagement '
-                       'version validates and sizes what it surfaces.')
+            _n_miss = len(_cc) - _n_ok
+            p3 = (f'of {len(_cc)} cited URLs, {_n_ok} loaded and {_n_conf} mention {brand} on the '
+                  f'page')
+            if _n_miss:
+                p3 += f'; {_n_miss} could not be fetched (bot walls or dead links)'
+            p3 += ('. A page that never mentions the brand is context for the answer, not coverage '
+                   'of it; the source tables show the split per source.')
+            exec_ps.append(("Page check", p3))
+        _n_all = (branded["n"] if branded else 0) + (organic["n"] if organic else 0)
+        exec_ps.append((None,
+            f'A ten-prompt sample is directional by design: {_n_all} answers from five AI agents '
+            f'with live web search, counted without human review, every number recomputable from '
+            f'the appendix. Treat it as an illustrative preview of what a consultative engagement '
+            f'develops at depth, with bespoke prompts, 500 to 1,000 outputs, and human analysis.'))
     if not exec_ps:
         exec_ps = []
         if branded:
@@ -1171,7 +1168,12 @@ def build(cfg, branded, organic, out_path):
         else:
             exec_ps.append('This is a small-sample, directional read, not a verdict; '
                            'a fuller audit across more queries would confirm where the most efficient openings lie.')
-    exec_html = "".join(f"<p>{p if cfg.get('exec_summary') else esc(p)}</p>" for p in exec_ps)
+    def _exec_p(item):
+        if isinstance(item, tuple):
+            lbl, body = item
+            return (f"<p>{('<b>' + esc(lbl) + ':</b> ') if lbl else ''}{esc(body)}</p>")
+        return f"<p>{item if cfg.get('exec_summary') else esc(item)}</p>"
+    exec_html = "".join(_exec_p(p) for p in exec_ps)
 
     # ---- nav links & sections
     navlinks, sections = [], []
