@@ -93,6 +93,7 @@ TYPE_LABELS = [
     ("community",   "Community",              "comm"),
     ("social",      "Social",                 "soc"),
     ("reference",   "Reference data",         "ref"),
+    ("retail",      "Retail &amp; marketplace", "retail"),
     ("corporate",   "Company &amp; platform", "corp"),
 ]
 TYPE_INDEX = {k: (lbl, cls) for k, lbl, cls in TYPE_LABELS}
@@ -590,6 +591,7 @@ tr:hover td{background:rgba(255,255,255,.015)}
 .typechip.inst{color:#b9c7ff;border-color:rgba(147,169,255,.3);background:rgba(147,169,255,.06)}
 .typechip.rev{color:#f2b8d0;border-color:rgba(242,184,208,.28);background:rgba(242,184,208,.05)}
 .typechip.comm{color:#a8e6c1;border-color:rgba(140,230,170,.25);background:rgba(140,230,170,.05)}
+.typechip.retail{color:#f0b48a;border-color:rgba(240,180,138,.3);background:rgba(240,180,138,.06)}
 .typechip.soc{color:#d8c6f5;border-color:rgba(200,170,245,.28);background:rgba(200,170,245,.05)}
 .typechip.ref{color:#9fd6d0;border-color:rgba(140,214,205,.28);background:rgba(140,214,205,.05)}
 .typechip.corp{color:#c9cfdb;border-color:rgba(180,190,210,.28);background:rgba(180,190,210,.05)}
