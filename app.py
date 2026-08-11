@@ -9852,6 +9852,8 @@ FREE_DAILY_CAP = max(1, int(os.environ.get("FREE_DAILY_CAP", "3") or "3"))
 # (hundreds of audits = real provider spend). Both tunable via env for the window.
 MAX_CONCURRENT_AUDITS = max(1, int(os.environ.get("MAX_CONCURRENT_AUDITS", "2") or "2"))
 GLOBAL_DAILY_CAP = max(1, int(os.environ.get("GLOBAL_DAILY_CAP", "150") or "150"))
+# Prompt-preview generations per IP per day (harvest guard, separate from audits).
+PREVIEW_DAILY_CAP = max(1, int(os.environ.get("PREVIEW_DAILY_CAP", "6") or "6"))
 _AUDIT_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_AUDITS)
 _audit_inflight_lock = threading.Lock()
 _audit_inflight = 0
@@ -10758,6 +10760,24 @@ def signal_generate_prompts():
     ip = _client_ip()
     if not (_ip_is_exempt_from_cap(ip) or _operator_ok()):
         today = date.today()
+        # Prompt generation is metered on its OWN per-IP counter (prefixed key,
+        # no migration): previously it only READ the audit counter, so an IP
+        # that never ran an audit could harvest unlimited generated prompt sets.
+        _pv_key = f"preview:{ip}"[:64]
+        _pv = FreeAuditUse.query.filter_by(ip=_pv_key, day=today).first()
+        if _pv and _pv.count >= PREVIEW_DAILY_CAP:
+            return jsonify({
+                "error": "You've reached today's prompt-preview limit. Run an audit or talk to us about a bespoke set.",
+                "code": "rate_limited",
+            }), 429
+        try:
+            if _pv:
+                _pv.count += 1
+            else:
+                db.session.add(FreeAuditUse(ip=_pv_key, day=today, count=1))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
         use = FreeAuditUse.query.filter_by(ip=ip, day=today).first()
         if use and use.count >= FREE_DAILY_CAP:
             return jsonify({
@@ -13932,6 +13952,13 @@ def signal_report_json(slug):
 
     brand_slug = re.sub(r'[^a-z0-9]+', '-', (data.get('brand') or 'report').lower()).strip('-') or 'report'
     filename = f"signal-finder-{brand_slug}-{slug}.json"
+    # The export is a transparency feature: the client gets every raw answer and
+    # citation so any number can be recomputed. It is NOT a methodology dump —
+    # strip internal QA telemetry (the named check list is a map of the failure
+    # modes we've learned to guard against) unless the operator asks for it.
+    if not _operator_ok():
+        data = {k: v for k, v in data.items() if k not in ('qa',)}
+        data['qa_verified'] = True
     return Response(
         json.dumps(data, indent=2, ensure_ascii=False),
         mimetype='application/json',
