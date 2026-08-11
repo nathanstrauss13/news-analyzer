@@ -72,6 +72,14 @@ REFERENCE = {"wikipedia.org", "wikidata.org", "britannica.com", "crunchbase.com"
 # (App Store links, payment/commerce platforms): companies, not media. Roots
 # only (apps.apple.com groups to apple.com). Extend per client via config
 # "corporate_sources". A configured competitor domain always wins over this.
+MAJOR_PUBLISHERS = {"nytimes.com", "wsj.com", "washingtonpost.com", "ft.com",
+    "reuters.com", "bloomberg.com", "cnbc.com", "cnn.com", "bbc.com", "bbc.co.uk",
+    "theguardian.com", "apnews.com", "npr.org", "forbes.com", "fortune.com",
+    "businessinsider.com", "axios.com", "techcrunch.com", "theverge.com",
+    "wired.com", "arstechnica.com", "engadget.com", "cnet.com", "zdnet.com",
+    "venturebeat.com", "theinformation.com", "economist.com", "barrons.com",
+    "marketwatch.com", "fastcompany.com", "inc.com", "entrepreneur.com"}
+
 CORPORATE = {"apple.com", "google.com", "shopify.com", "stripe.com", "paypal.com",
              "salesforce.com", "adobe.com", "oracle.com", "sap.com", "microsoft.com",
              "amazon.com", "meta.com", "samsung.com", "intuit.com"}
@@ -235,7 +243,20 @@ def load_rows(path):
 
 
 # ---------------------------------------------------------------- analysis
-def classify_root(root, owned_roots, competitor_roots, corporate_roots=frozenset()):
+# Types an LLM classification may supply for domains the deterministic rules
+# don't recognize. 'aggregator' folds into corporate for display purposes.
+_LLM_TYPE_MAP = {"competitor": "competitor", "editorial": "editorial", "retail": "retail",
+                 "reviews": "reviews", "community": "community", "social": "social",
+                 "reference": "reference", "corporate": "corporate",
+                 "institutional": "institutional", "aggregator": "corporate"}
+
+
+def classify_root(root, owned_roots, competitor_roots, corporate_roots=frozenset(),
+                  domain_types=None):
+    """Deterministic rules first; an optional LLM type map (domain_types) then
+    resolves what would otherwise fall through to 'editorial'. Owned domains,
+    configured competitors and the curated sets always win over the model, so a
+    bad LLM answer can never relabel a known source."""
     if root in ASSISTANT_DOMAINS:
         return None                       # self-reference, excluded entirely
     if root in owned_roots:
@@ -254,6 +275,12 @@ def classify_root(root, owned_roots, competitor_roots, corporate_roots=frozenset
         return "corporate"
     if root.endswith((".edu", ".gov", ".ac.uk", ".gov.uk")) or root in {"nsf.gov", "nist.gov"}:
         return "institutional"
+    if root in MAJOR_PUBLISHERS:          # unmistakable press never gets relabeled
+        return "editorial"
+    if domain_types:
+        t = _LLM_TYPE_MAP.get((domain_types.get(root) or "").lower())
+        if t:
+            return t
     return "editorial"
 
 
@@ -374,7 +401,8 @@ def analyze(rows, cfg):
                 typ = "owned"
                 root = host          # aggregate under the brand's help-center host
             else:
-                typ = classify_root(root, owned_roots, competitor_roots, corporate_roots)
+                typ = classify_root(root, owned_roots, competitor_roots, corporate_roots,
+                                    domain_types=cfg.get("domain_types"))
             if typ is None:
                 continue
             total_citations += 1

@@ -9650,6 +9650,15 @@ Respond with ONLY valid JSON:
     # bot-walled pages, and dead or fabricated URLs. Stored on the payload so
     # the dashboard renders instantly with verification baked in.
     try:
+        emit("analysis", "Classifying citation sources...", 0, 1)
+        analysis["domain_types"] = _domain_types_for_report(
+            {"brand": brand, "category": category,
+             "brand_domains": analysis.get("brand_domains"),
+             "competitors": analysis.get("competitors"),
+             "all_responses": analysis.get("all_responses")})
+    except Exception as _dte:
+        print("domain-type classification failed (continuing):", str(_dte)[:120])
+    try:
         emit("analysis", "Checking cited pages for on-page brand mentions...", 0, 1)
         analysis["citation_checks"] = _citation_checks_for_report(
             {"brand": brand, "brand_aliases": analysis.get("brand_aliases"),
@@ -13930,6 +13939,99 @@ def signal_report_json(slug):
     )
 
 
+_DOMAIN_TYPE_CACHE = {}
+_DOMAIN_TYPES_VALID = ("competitor", "editorial", "retail", "reviews", "community",
+                       "social", "reference", "corporate", "institutional", "aggregator")
+
+
+def _classify_domains_llm(roots, brand, category, competitor_names=None, batch=60):
+    """Classify observed citation domains with Claude instead of letting every
+    unrecognized domain fall through to 'editorial'.
+
+    Deliberately narrow by design, because LLM resolvers have burned us before
+    (hallucinated brand domains: Crypto.com -> cdc.gov; hallucinated competitor
+    parents: PIMCO -> Capital Group). Two guards make this safe:
+      1. We only ever ask about domains ACTUALLY OBSERVED in this audit's
+         citations, so the model cannot invent a domain into the report.
+      2. Callers apply the result only where the deterministic rules have no
+         opinion — owned domains, configured competitors and the curated
+         publisher/social/community/reference sets always win.
+    Returns {root: type} for types in _DOMAIN_TYPES_VALID; unknown or malformed
+    answers are simply omitted, leaving the existing fallthrough in place."""
+    roots = [r for r in dict.fromkeys(roots or []) if r]
+    out = {}
+    todo = []
+    for r in roots:
+        ck = (r, (category or '')[:40])
+        if ck in _DOMAIN_TYPE_CACHE:
+            out[r] = _DOMAIN_TYPE_CACHE[ck]
+        else:
+            todo.append(r)
+    if not todo:
+        return out
+    comp_line = (f"Known competitors of the audited brand: {', '.join(competitor_names[:12])}."
+                 if competitor_names else "")
+    for i in range(0, len(todo), batch):
+        chunk = todo[i:i + batch]
+        prompt = (
+            f'Classify each website domain by what it IS, for a citation audit of "{brand}" '
+            f'in the category "{category}". {comp_line}\n\n'
+            f'Types (use exactly one per domain):\n'
+            f'- competitor: a company selling a competing product/service to the audited brand '
+            f'(INCLUDING the official sites of the competitors named above)\n'
+            f'- editorial: journalism, trade press, magazines, news outlets, independent bloggers\n'
+            f'- retail: shops and marketplaces that sell products\n'
+            f'- reviews: consumer review and rating platforms\n'
+            f'- community: forums, Q&A, user discussion\n'
+            f'- social: social networks and video platforms\n'
+            f'- reference: encyclopedias, dictionaries, general reference\n'
+            f'- corporate: a company site that is NOT a competitor (vendors, partners, unrelated firms)\n'
+            f'- institutional: government, universities, standards bodies, non-profits\n'
+            f'- aggregator: data/stat aggregators, directory and listicle-farm sites\n\n'
+            f'DOMAINS:\n' + '\n'.join(chunk) + '\n\n'
+            f'Return ONLY a JSON object mapping each domain to its type, no prose.')
+        try:
+            msg = _claude_msg(model=CLAUDE_HAIKU, max_tokens=2000,
+                              messages=[{"role": "user", "content": prompt}])
+            txt = msg.content[0].text
+            s, e = txt.find('{'), txt.rfind('}')
+            data = json.loads(txt[s:e + 1])
+        except Exception as ex:
+            print("domain-type classify failed (continuing):", str(ex)[:120])
+            continue
+        for r in chunk:
+            v = str(data.get(r, '') or '').strip().lower()
+            if v in _DOMAIN_TYPES_VALID:
+                out[r] = v
+                _DOMAIN_TYPE_CACHE[(r, (category or '')[:40])] = v
+    return out
+
+
+def _domain_types_for_report(data, max_domains=180):
+    """Observed-citation domains -> LLM type map, for dashboard classification."""
+    try:
+        from tools.audit_dashboard import build_dashboard as _kit
+    except Exception:
+        return {}
+    brand = (data.get('brand') or '').strip()
+    owned = set()
+    for d_ in (data.get('brand_domains') or []):
+        owned.add(_kit.root_of(_kit.host_of(_kit.norm_url('https://' + d_))))
+    counts = {}
+    for r in (data.get('all_responses') or []):
+        for c in (r.get('citations') or []):
+            u = (c.get('url') or '') if isinstance(c, dict) else str(c)
+            if not u:
+                continue
+            root = _kit.root_of(_kit.host_of(_kit.norm_url(u)))
+            if root and root not in owned:
+                counts[root] = counts.get(root, 0) + 1
+    ranked = [r for r, _n in sorted(counts.items(), key=lambda kv: -kv[1])][:max_domains]
+    names = [(c.get('name') if isinstance(c, dict) else str(c)) for c in (data.get('competitors') or [])]
+    names = [n for n in names if n]
+    return _classify_domains_llm(ranked, brand, data.get('category') or '', names)
+
+
 def _citation_checks_for_report(data, deadline_seconds=30, max_urls=250):
     """Page-ground a report's citations: fetch every distinct cited URL
     (CitedPage cache first, reader-proxy fallback for bot walls) and count
@@ -14072,6 +14174,9 @@ def _render_kit_dashboard(data, public_slug=None):
         # fly (cache-backed, deadline-capped) for reports that predate it.
         # Never persisted from a view, so frozen slugs stay untouched.
         "citation_checks": data.get('citation_checks') or _citation_checks_for_report(data),
+        # Domain classification: LLM types for domains the deterministic rules
+        # don't recognize (stops competitor sites reading as editorial).
+        "domain_types": data.get('domain_types') or _domain_types_for_report(data),
         "method_notes": [
             "This dashboard is generated read-only from the audit's stored raw "
             "responses; every number recomputes from that data on each load. The "
