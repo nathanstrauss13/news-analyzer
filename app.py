@@ -14148,6 +14148,39 @@ def _render_kit_dashboard(data, public_slug=None):
         if name.strip():
             comps.append({"name": name.strip()})
 
+    # Enrichment maps (page checks + domain types) are EXPENSIVE: an LLM call
+    # plus up to 250 page fetches. Compute at most once per report, persist to
+    # the payload, and never recompute on later views — recomputing per view
+    # starved workers on the 2 GB instance and 502'd heavy reports.
+    if public_slug and not (data.get('citation_checks') and data.get('domain_types')):
+        _new = {}
+        if not data.get('citation_checks'):
+            try:
+                _new['citation_checks'] = _citation_checks_for_report(data, deadline_seconds=12)
+            except Exception as _e1:
+                print("view-time citation checks failed (continuing):", str(_e1)[:100])
+        if not data.get('domain_types'):
+            try:
+                _new['domain_types'] = _domain_types_for_report(data, max_domains=120)
+            except Exception as _e2:
+                print("view-time domain types failed (continuing):", str(_e2)[:100])
+        if _new:
+            data = {**data, **_new}
+            try:
+                _rec = SharedResult.query.filter_by(slug=public_slug).first()
+                if _rec:
+                    _p = json.loads(_rec.payload) if _rec.payload else {}
+                    _p.update(_new)
+                    _rec.payload = json.dumps(_p, default=str)
+                    db.session.commit()
+                    print(f"[enrich] persisted {list(_new)} for slug={public_slug}")
+            except Exception as _e3:
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+                print("enrichment persist failed (continuing):", str(_e3)[:100])
+
     # Verified sub-brand aliases from the pipeline (BlackRock->iShares class):
     # without them the dashboard's own counter regresses to the pre-alias
     # undercount the QA history documents.
@@ -14173,10 +14206,10 @@ def _render_kit_dashboard(data, public_slug=None):
         # Page grounding: stored at run time for new audits; computed on the
         # fly (cache-backed, deadline-capped) for reports that predate it.
         # Never persisted from a view, so frozen slugs stay untouched.
-        "citation_checks": data.get('citation_checks') or _citation_checks_for_report(data),
+        "citation_checks": data.get('citation_checks') or {},
         # Domain classification: LLM types for domains the deterministic rules
         # don't recognize (stops competitor sites reading as editorial).
-        "domain_types": data.get('domain_types') or _domain_types_for_report(data),
+        "domain_types": data.get('domain_types') or {},
         "method_notes": [
             "This dashboard is generated read-only from the audit's stored raw "
             "responses; every number recomputes from that data on each load. The "
