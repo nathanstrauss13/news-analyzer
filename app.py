@@ -12551,11 +12551,16 @@ def _outreach_upsert(name, slug, title=None, company=None, channel='linkedin',
     """Idempotent create-or-update of a prospect. On first create, mints the
     prospect's tracked link (using `token` if given). Safe against concurrent
     gunicorn workers via the (prospect_name, slug) unique constraint."""
+    slug = (slug or '').strip()
     o = Outreach.query.filter_by(prospect_name=name, slug=slug).first()
     if not o:
         recip = name + (f" — {company}" if company else "")
-        link = _mint_tracked_link(slug, recip, "outreach", token=token)
-        o = Outreach(prospect_name=name, slug=slug, link_token=link.token,
+        # Slug-less cards (traditional-comms outreach carrying no report link)
+        # get no tracked link: there is nothing to track. Stored as '' rather
+        # than NULL so the existing NOT NULL column needs no migration.
+        link = _mint_tracked_link(slug, recip, "outreach", token=token) if slug else None
+        o = Outreach(prospect_name=name, slug=slug,
+                     link_token=(link.token if link else None),
                      channel=channel or 'linkedin', cadence=cadence or '5,14')
         db.session.add(o)
         try:
@@ -13150,12 +13155,17 @@ def outreach_add():
     from urllib.parse import quote_plus
     name = (request.form.get('name') or '').strip()
     slug = (request.form.get('slug') or '').strip()
-    if not name or not slug:
-        return _outreach_redirect(extra='err=' + quote_plus('Name and report slug are required.'))
-    _report = _load_signal_report(slug)
-    if not _report:
-        return _outreach_redirect(extra='err=' + quote_plus(f"No report found for slug '{slug}'."))
-    _ok, _err = _qa_gate_for_outreach(_report, request.form.get('force') == '1')
+    if not name:
+        return _outreach_redirect(extra='err=' + quote_plus('Prospect name is required.'))
+    # Slug is OPTIONAL: traditional-comms outreach (proof-point pitches) carries
+    # no report link. With a slug, the report must exist and pass the QA gate
+    # exactly as before.
+    _ok, _err = True, None
+    if slug:
+        _report = _load_signal_report(slug)
+        if not _report:
+            return _outreach_redirect(extra='err=' + quote_plus(f"No report found for slug '{slug}'."))
+        _ok, _err = _qa_gate_for_outreach(_report, request.form.get('force') == '1')
     if not _ok:
         return _outreach_redirect(extra='err=' + quote_plus(_err))
     o = _outreach_upsert(
@@ -13497,6 +13507,20 @@ def outreach_board():
         )
         search_blob = html.escape(' '.join(
             x for x in (o.prospect_name, o.company, o.prospect_title, o.slug) if x).lower())
+        # Slug-less cards (traditional-comms outreach, no report link) show a
+        # plain marker instead of a dead report link / tracked-link row.
+        if o.slug:
+            meta_block = (f'<div class="meta"><a href="{root}/signal/{html.escape(o.slug)}">'
+                          f'{html.escape(o.slug)}</a> · {days} · {due} · {open_badge} · '
+                          f'<code>{html.escape(track_url)}</code></div>')
+            dash_block = (f'<div class="dashrow"><a href="{root}/signal/{html.escape(o.slug)}" '
+                          f'target="_blank">📊 Open dashboard</a> '
+                          '<span class="muted">(preview — doesn\'t count as an open)</span></div>')
+        else:
+            meta_block = (f'<div class="meta"><span style="color:#8a8f9a">no report</span> · '
+                          f'{days} · {due}</div>')
+            dash_block = ''
+
         cards.append(
             f'<div class="card" id="card-{o.id}" data-status="{o.status}" data-order="{idx}" '
             f'data-due="{dueval}" data-dueflag="{1 if is_due else 0}" data-search="{search_blob}">'
@@ -13509,10 +13533,7 @@ def outreach_board():
             f'<span class="ptitle">{html.escape(o.prospect_title or "")}'
             f'{" · " + html.escape(o.company) if o.company else ""}</span>{rel_badge}</div>'
             f'<span class="pill" style="background:{color}">{html.escape(label)}</span></div>'
-            f'<div class="meta"><a href="{root}/signal/{html.escape(o.slug)}">{html.escape(o.slug)}</a> · '
-            f'{days} · {due} · {open_badge} · <code>{html.escape(track_url)}</code></div>'
-            f'<div class="dashrow"><a href="{root}/signal/{html.escape(o.slug)}" target="_blank">📊 Open dashboard</a> '
-            '<span class="muted">(preview — doesn\'t count as an open)</span></div>'
+            + meta_block + dash_block +
             f'{hook_block}{msg_block}{notes_block}{proposed}'
             f'<div class="actions"><span class="setlbl">Status</span>{status_sel}{"".join(btns)}{del_btn}</div>'
             '</div>'
@@ -13545,7 +13566,7 @@ def outreach_board():
         '<div id="addbox" class="addbox" style="display:none">'
         f'<form method="post" action="{root}/outreach/add{keyq}" class="addform">'
         '<div class="arow"><input name="name" placeholder="Prospect name *" required>'
-        '<input name="slug" list="slugs" placeholder="Report slug *" required></div>'
+        '<input name="slug" list="slugs" placeholder="Report slug (optional)"></div>'
         '<div class="arow"><input name="title" placeholder="Title">'
         '<input name="company" placeholder="Company">'
         '<select name="channel"><option value="linkedin">LinkedIn</option>'
