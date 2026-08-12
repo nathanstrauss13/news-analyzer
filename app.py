@@ -180,6 +180,26 @@ class CitedPage(db.Model):
     name_counts = db.Column(db.Text)    # JSON {brand_or_competitor_name: count}
     fetched_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
+class ApiUsage(db.Model):
+    """Durable API spend ledger: one row per (day, provider, model). The old
+    counter was a process global, so a deploy or OOM restart zeroed it and a
+    day's real spend became unknowable. Rows accumulate in Postgres instead,
+    which also captures OPERATOR runs (they skip lead capture, so their cost
+    was previously never stamped anywhere)."""
+    __tablename__ = 'api_usage'
+    id = db.Column(db.Integer, primary_key=True)
+    day = db.Column(db.Date, nullable=False, index=True)
+    provider = db.Column(db.String(24), nullable=False, index=True)
+    model = db.Column(db.String(120), nullable=False)
+    calls = db.Column(db.Integer, default=0, nullable=False)
+    in_tokens = db.Column(db.BigInteger, default=0, nullable=False)
+    out_tokens = db.Column(db.BigInteger, default=0, nullable=False)
+    cache_read = db.Column(db.BigInteger, default=0, nullable=False)
+    cache_write = db.Column(db.BigInteger, default=0, nullable=False)
+    searches = db.Column(db.Integer, default=0, nullable=False)
+    __table_args__ = (db.UniqueConstraint('day', 'provider', 'model', name='uq_api_usage_day_model'),)
+
+
 class Subscription(db.Model):
     __tablename__ = 'subscriptions'
     id = db.Column(db.Integer, primary_key=True)
@@ -479,9 +499,51 @@ _SEARCH_PER_1K = {
 }
 
 
+_USAGE_PENDING = {}          # (day, provider, model) -> summed counters, flushed to DB
+_USAGE_FLUSH_LOCK = threading.Lock()
+
+
+def _flush_usage_to_db():
+    """Persist buffered usage into the ApiUsage ledger. Batched (not per call)
+    so telemetry never adds a DB round-trip to the hot path. Never raises."""
+    global _USAGE_PENDING
+    with _USAGE_FLUSH_LOCK:
+        pending, _USAGE_PENDING = _USAGE_PENDING, {}
+    if not pending:
+        return
+    try:
+        with app.app_context():
+            for (day, provider, model), d in pending.items():
+                row = ApiUsage.query.filter_by(day=day, provider=provider, model=model).first()
+                if row is None:
+                    row = ApiUsage(day=day, provider=provider, model=model)
+                    db.session.add(row)
+                row.calls = (row.calls or 0) + d["calls"]
+                row.in_tokens = (row.in_tokens or 0) + d["in"]
+                row.out_tokens = (row.out_tokens or 0) + d["out"]
+                row.cache_read = (row.cache_read or 0) + d["cache_read"]
+                row.cache_write = (row.cache_write or 0) + d["cache_write"]
+                row.searches = (row.searches or 0) + d["searches"]
+            db.session.commit()
+    except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        # Put the counts back so nothing is silently lost on a transient failure.
+        with _USAGE_FLUSH_LOCK:
+            for k, d in pending.items():
+                tgt = _USAGE_PENDING.setdefault(k, {"calls": 0, "in": 0, "out": 0,
+                                                    "cache_read": 0, "cache_write": 0, "searches": 0})
+                for kk in tgt:
+                    tgt[kk] += d[kk]
+        print("usage flush failed (buffered for retry):", str(e)[:120])
+
+
 def _record_usage(provider, model, in_tok, out_tok, searches=0, cache_read=0, cache_write=0):
-    """Shared usage recorder: process-global counter (/admin/usage) + the
-    current audit's sink (per-audit cost email). Never raises."""
+    """Shared usage recorder: durable per-day ledger + process counter
+    (/admin/usage) + the current audit's sink (per-audit cost email).
+    Never raises."""
     try:
         key = f"{provider}:{model}"
         row = {"model": key, "in": in_tok or 0, "out": out_tok or 0,
@@ -496,6 +558,16 @@ def _record_usage(provider, model, in_tok, out_tok, searches=0, cache_read=0, ca
         sink = _audit_usage_ctx.get()
         if sink is not None:
             sink.append(row)
+        with _USAGE_FLUSH_LOCK:
+            pk = (date.today(), provider, model or "?")
+            d2 = _USAGE_PENDING.setdefault(pk, {"calls": 0, "in": 0, "out": 0,
+                                                "cache_read": 0, "cache_write": 0, "searches": 0})
+            d2["calls"] += 1
+            for k in ("in", "out", "cache_read", "cache_write", "searches"):
+                d2[k] += row[k]
+            due = len(_USAGE_PENDING) >= 6 or sum(x["calls"] for x in _USAGE_PENDING.values()) >= 25
+        if due:
+            threading.Thread(target=_flush_usage_to_db, daemon=True).start()
     except Exception:
         pass
 
@@ -10289,18 +10361,54 @@ def admin_usage():
     pool together (cap is 2)."""
     if not _operator_ok():
         abort(404)
+    _flush_usage_to_db()                      # capture anything still buffered
+    days = max(1, min(90, int(request.args.get('days', 7) or 7)))
+    since = date.today() - timedelta(days=days - 1)
+    # Durable ledger (survives restarts, includes operator runs)
+    ledger, by_day = {}, {}
+    try:
+        for r in ApiUsage.query.filter(ApiUsage.day >= since).all():
+            key = f"{r.provider}:{r.model}"
+            d = ledger.setdefault(key, {"calls": 0, "in": 0, "out": 0,
+                                        "cache_read": 0, "cache_write": 0, "searches": 0})
+            d["calls"] += r.calls or 0
+            d["in"] += r.in_tokens or 0
+            d["out"] += r.out_tokens or 0
+            d["cache_read"] += r.cache_read or 0
+            d["cache_write"] += r.cache_write or 0
+            d["searches"] += r.searches or 0
+            dd = by_day.setdefault(r.day.isoformat(), {})
+            k2 = dd.setdefault(key, {"calls": 0, "in": 0, "out": 0,
+                                     "cache_read": 0, "cache_write": 0, "searches": 0})
+            k2["calls"] += r.calls or 0
+            k2["in"] += r.in_tokens or 0
+            k2["out"] += r.out_tokens or 0
+            k2["cache_read"] += r.cache_read or 0
+            k2["cache_write"] += r.cache_write or 0
+            k2["searches"] += r.searches or 0
+    except Exception as e:
+        print("usage ledger read failed:", str(e)[:120])
+    total, rows = _usage_cost(ledger)
+    calls = sum(d['calls'] for d in ledger.values())
+    daily = []
+    for dstr in sorted(by_day, reverse=True):
+        dtot, _r = _usage_cost(by_day[dstr])
+        daily.append({'day': dstr, 'est_usd': round(dtot, 2),
+                      'calls': sum(x['calls'] for x in by_day[dstr].values())})
     with _USAGE_LOCK:
         snap = {m: dict(d) for m, d in _USAGE.items()}
-    total, rows = _usage_cost(snap)
-    calls = sum(d['calls'] for d in snap.values())
+    proc_total, _pr = _usage_cost(snap)
     out = {
+        'window_days': days,
+        'since': since.isoformat(),
         'total_est_usd': round(total, 4),
         'total_calls': calls,
-        'est_per_audit_usd': round(total / calls * 18, 4) if calls else 0,  # ~18 Claude calls/audit
+        'by_day': daily,
+        'since_process_start_usd': round(proc_total, 4),
         'by_model': rows,
         'note': ('Estimate at list pricing (override via OPENAI_*/OPENROUTER_* env). Covers '
                  'Anthropic + OpenAI + OpenRouter; Gemini and Perplexity are not yet metered. '
-                 'Anthropic input includes injected web-search page tokens. Reset with ?reset=1.'),
+                 'Anthropic input includes injected web-search page tokens. Durable per-day ledger (survives restarts, includes operator runs); ?days=N to widen the window. ?reset=1 clears only the in-process counter, never the ledger.'),
     }
     if request.args.get('reset') == '1':
         with _USAGE_LOCK:
@@ -10659,6 +10767,10 @@ def citation_audit():
             # Fire the owner debug email AFTER the result is pushed to the
             # queue so the user-visible response never waits on email send.
             duration_seconds = (datetime.utcnow() - start_dt).total_seconds()
+            try:
+                _flush_usage_to_db()      # this run's spend hits the ledger now
+            except Exception:
+                pass
             try:
                 _send_audit_debug_email(
                     result,
