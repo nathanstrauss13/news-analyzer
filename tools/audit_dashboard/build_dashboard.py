@@ -108,6 +108,10 @@ TYPE_INDEX = {k: (lbl, cls) for k, lbl, cls in TYPE_LABELS}
 
 
 # ---------------------------------------------------------------- utilities
+_NUM_WORDS = {5: "Five", 10: "Ten", 13: "Thirteen", 15: "Fifteen", 20: "Twenty",
+              25: "Twenty-five", 26: "Twenty-six", 30: "Thirty", 50: "Fifty", 60: "Sixty"}
+
+
 def esc(s):
     return html.escape(str(s if s is not None else ""))
 
@@ -1255,7 +1259,7 @@ def build(cfg, branded, organic, out_path):
 <section id="landscape">
   <div class="gh">Unbranded category questions</div>
   <h2>Who AI names when nobody asks for you</h2>
-  <div class="gsub">Across {o["n"]} category answers (10 unbranded prompts, five agents),
+  <div class="gsub">Across {o["n"]} category answers ({len(o["prompts"])} unbranded prompts, {len(o["platforms"])} agents),
   how often each name appears. Counted from the full response text with word-boundary matching.</div>
   {bar_rows(comp_items, you_name=brand, denom=o["n"])}
 </section>''')
@@ -1299,9 +1303,9 @@ def build(cfg, branded, organic, out_path):
 <section id="branded">
   <div class="gh">Branded questions</div>
   <h2>Who AI trusts to tell {esc(with_the(brand))} story</h2>
-  <div class="gsub">Ten branded prompts (what is it, is it legit, how does it compare, who uses it,
-  what does it cost) run on all five assistants. Every assistant engages, which is the baseline
-  for branded questions; the read that matters is how much sourcing each does and which
+  <div class="gsub">{_NUM_WORDS.get(len(b["prompts"]), str(len(b["prompts"])))} branded prompts, each naming the brand, run on {"all " if len(b["platforms"]) > 1 else ""}{len(b["platforms"])} agents.
+  {"Every agent engages, which is the baseline for branded questions" if b["brand_rows"] >= b["n"] else f'{brand} is named in {b["brand_rows"]} of {b["n"]} answers'};
+  the read that matters is how much sourcing each does and which
   {esc(brand)} pages AI pulls from.</div>
   {platform_cards(b, branded=True)}
   <h2 style="font-size:19px;margin-top:34px">{esc(with_the(brand, cap=True))} pages AI actually cites</h2>
@@ -1561,7 +1565,7 @@ document.querySelectorAll('.donutwrap').forEach(function(w){
     <div class="eyebrow">AI Visibility Intelligence &middot; {esc(cfg.get("prepared_for", brand))}</div>
     <h1>{esc(title)}</h1>
     <div><span class="cat">{esc(category)}</span></div>
-    <div class="runmeta">{esc(today)} &middot; five AI assistants, live web search &middot; every answer and citation in the appendix</div>
+    <div class="runmeta">{esc(today)} &middot; five AI agents, live web search &middot; every answer and citation in the appendix</div>
     <div class="cards">{cards_html}</div>
   </header>
 
