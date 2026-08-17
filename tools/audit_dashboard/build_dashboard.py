@@ -52,6 +52,14 @@ ASSISTANT_DOMAINS = {"chatgpt.com", "openai.com", "claude.ai", "anthropic.com",
 # vertexaisearch.cloud.google.com is google.com, which would misfile these
 # as corporate citations; they are retrieval plumbing, not sources).
 ASSISTANT_HOSTS = {"vertexaisearch.cloud.google.com"}
+# Gemini also emits malformed redirect-host variants in the wild
+# (vertexaisearch.google.com, vertexaisearch.cloud.google.google.com), so
+# plumbing detection is a pattern, not exact set membership.
+_PLUMBING_HOST_TOKENS = ("vertexaisearch",)
+
+
+def is_plumbing_host(host):
+    return host in ASSISTANT_HOSTS or any(tok in host for tok in _PLUMBING_HOST_TOKENS)
 
 # Multi-label public suffixes we care about for registrable-root grouping.
 _SECOND_LEVEL = {"co.uk", "ac.uk", "org.uk", "gov.uk", "com.au", "net.au",
@@ -393,7 +401,7 @@ def analyze(rows, cfg):
     for i, r in enumerate(rows):
         for u in r["urls"]:
             host = host_of(u)
-            if host in ASSISTANT_HOSTS:
+            if is_plumbing_host(host):
                 continue             # retrieval plumbing, not a source
             root = root_of(host)
             if root in exclude:      # config escape hatch for junk sources
@@ -480,7 +488,7 @@ def analyze(rows, cfg):
     for i, r in enumerate(rows):
         for u in r["urls"]:
             host = host_of(u)
-            if host in ASSISTANT_HOSTS:
+            if is_plumbing_host(host):
                 continue
             root = root_of(host)
             if root in exclude or classify_root(root, owned_roots, competitor_roots, corporate_roots) is None:
