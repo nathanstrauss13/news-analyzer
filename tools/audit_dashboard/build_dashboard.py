@@ -1579,7 +1579,7 @@ document.querySelectorAll('.donutwrap').forEach(function(w){
 
   <footer>
     Prepared by <a href="https://innatec3.com" target="_blank" rel="noopener">Innate C3</a> &middot;
-    AI Visibility Intelligence &middot; a communications-grade read of how AI assistants describe,
+    AI Visibility Intelligence &middot; a communications-grade read of how AI agents describe,
     source and recommend in this category. Confidential, prepared for {esc(cfg.get("prepared_for", brand))}.
   </footer>
 </div>
