@@ -10251,6 +10251,35 @@ def healthz():
     }), 200
 
 
+@app.route('/admin/upload-static-report', methods=['POST'])
+def admin_upload_static_report():
+    """Operator: publish a kit-built static dashboard at /signal/<slug>.
+    Body: slug=<slug> + html=<file or form field>. Upserts the SharedResult
+    row with payload {'static_html': ...}. Frozen slugs are refused."""
+    if not _operator_ok():
+        abort(404)
+    slug = (request.form.get('slug') or '').strip()
+    if not re.fullmatch(r'[a-z0-9][a-z0-9\-]{2,60}', slug):
+        return Response("bad slug\n", status=400, mimetype='text/plain')
+    _FROZEN = {'adobe-enterprise', 'todd-snyder', 'gap', 'liquid-death'}
+    if slug in _FROZEN:
+        return Response("slug is frozen\n", status=400, mimetype='text/plain')
+    f = request.files.get('html')
+    html_body = f.read().decode('utf-8', 'replace') if f else (request.form.get('html') or '')
+    if len(html_body) < 1000 or '<html' not in html_body[:2000].lower():
+        return Response("html body missing or not a page\n", status=400, mimetype='text/plain')
+    payload = {'static_html': html_body, 'brand': (request.form.get('brand') or '').strip() or slug,
+               'kind': 'static_dashboard'}
+    rec = SharedResult.query.filter_by(slug=slug).first()
+    if rec is None:
+        rec = SharedResult(slug=slug, payload=json.dumps(payload))
+        db.session.add(rec)
+    else:
+        rec.payload = json.dumps(payload)
+    db.session.commit()
+    return Response(f"published /signal/{slug} ({len(html_body)//1024} KB)\n", mimetype='text/plain')
+
+
 @app.route('/admin/annotate-scanner-clicks', methods=['POST'])
 def admin_annotate_scanner_clicks():
     """Backfill source_kind on human-classified clicks recorded before the
@@ -11482,6 +11511,12 @@ def view_signal_report(slug):
     # skipped inside _log_page_visit.
     if not (request.args.get('fresh') or request.args.get('refresh') or request.args.get('save')):
         _log_page_visit('report', slug=slug)
+
+    # Static client deliverables (kit-built dashboards uploaded whole via
+    # /admin/upload-static-report) serve verbatim: no rerender, no filters,
+    # no enrichment — the artifact IS the payload.
+    if data.get('static_html'):
+        return Response(data['static_html'], mimetype='text/html')
 
     data = _apply_display_editorial_filter(data)
 
