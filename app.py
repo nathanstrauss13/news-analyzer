@@ -10950,7 +10950,11 @@ def _load_signal_report(slug):
         data = json.loads(rec.payload)
     except Exception:
         return None
-    if not isinstance(data, dict) or "media_targets" not in data:
+    if not isinstance(data, dict):
+        return None
+    # Static client deliverables carry only static_html; audit payloads carry
+    # media_targets. Either is a valid report.
+    if "media_targets" not in data and not data.get("static_html"):
         return None
     data["slug"] = slug
     return data
