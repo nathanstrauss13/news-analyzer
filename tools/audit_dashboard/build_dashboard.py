@@ -1317,10 +1317,10 @@ def build(cfg, branded, organic, out_path):
     if organic and not branded:
         add("platforms", "Agents", f'''
 <section id="platforms">
-  <div class="gh">Per-assistant read</div>
+  <div class="gh">Per-agent read</div>
   <h2>Where visibility concentrates</h2>
-  <div class="gsub">The same questions produce different answers on different assistants;
-  concentration on one assistant usually means search-surfaced visibility rather than
+  <div class="gsub">The same questions produce different answers on different agents;
+  concentration on one agent usually means search-surfaced visibility rather than
   model-embedded knowledge.</div>
   {platform_cards(organic, branded=False)}
 </section>''')
@@ -1401,7 +1401,7 @@ def build(cfg, branded, organic, out_path):
 <section id="appendix">
   <div class="gh">Full transparency appendix</div>
   <h2>Every question, every answer, every citation</h2>
-  <div class="gsub">Nothing summarized away: the complete responses from each assistant and the
+  <div class="gsub">Nothing summarized away: the complete responses from each agent and the
   citations behind them, exactly as collected. Click any question to expand.</div>
   {"".join(appendix_blocks)}
 </section>''')
@@ -1425,7 +1425,7 @@ def build(cfg, branded, organic, out_path):
     <p><b>Panel:</b> ChatGPT, Claude, Gemini, Perplexity and Grok, each answering with live web
     search enabled, so results reflect what AI finds and cites today rather than static model memory.</p>
     <p style="margin-top:10px"><b>Sample:</b> {n_desc}, collected {esc(today)}. Each prompt runs once
-    per assistant; every citation URL is captured, redirect-resolved where applicable, deduplicated
+    per agent; every citation URL is captured, redirect-resolved where applicable, deduplicated
     and classified. Brand and competitor counts use word-boundary matching over the full response text
     and can be reproduced from the appendix above.</p>
     <p style="margin-top:10px"><b>Per-agent differences:</b> the agents retrieve differently
@@ -1434,7 +1434,7 @@ def build(cfg, branded, organic, out_path):
     and prominence are measured per answer rather than by citation count.</p>
     {'<p style="margin-top:10px"><b>Automated sample:</b> this dashboard is produced by an automated analysis with no human filtering applied, and is best read as an illustrative preview of the insight types a consultative engagement develops and validates at depth. Answers vary run to run; this is a small, directional sample, not a census.</p>'
      if cfg.get("automated_sample") else
-     '<p style="margin-top:10px"><b>Reading this honestly:</b> this is a small, directional sample designed to map the terrain, not a census. Answers vary run to run; the patterns worth acting on are the ones that persist across assistants and questions, which a fuller audit confirms.</p>'}
+     '<p style="margin-top:10px"><b>Reading this honestly:</b> this is a directional sample: a terrain read. Answers vary run to run; the patterns worth acting on are the ones that persist across agents and questions, which a fuller audit confirms.</p>'}
     {(lambda cc: f'<p style="margin-top:10px"><b>Page check:</b> each distinct cited URL was fetched and scanned for on-page brand mentions ({sum(1 for v in cc.values() if v.get("status") == "ok")} of {len(cc)} pages loaded; bot-walled pages are marked unverifiable rather than guessed; unreachable URLs, including model-fabricated links, are flagged). The "pages confirming" column in the source tables reports it per source.</p>' if cc else '')(cfg.get("citation_checks") or {})}
     {"".join(f'<p style="margin-top:10px">{note}</p>' for note in cfg.get("method_notes") or [])}
   </div>
