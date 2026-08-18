@@ -84,7 +84,10 @@ Cutover shipped in the same commit:
 
 Rollback at any point: `signal-finder-v1` tag per REVERT.md.
 
-## Follow-ups (not yet done)
+## Follow-ups
+- DONE 8/17: completion-email copy reviewed — requester email already describes the dashboard accurately (agents, branded/unbranded, appendix recomputability); no change needed.
+- DONE 8/17: cost telemetry — durable ApiUsage ledger in production (/admin/usage?days=N) + CostTracker (tools/collector_costs.py) with adapter last_usage for local kit runs. October re-run MUST record costs via CostTracker and stamp run_cost into the payload.
+- DONE 8/13: per-report enrichment (page checks + domain types) computed once and persisted; heavy-render 502s resolved. (not yet done)
 
 - PDF export of the dashboard view (classic PDF route still renders the
   classic template; fine during transition).
