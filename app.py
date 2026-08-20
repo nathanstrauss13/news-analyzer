@@ -11741,6 +11741,7 @@ def view_signal_report_owned(slug):
 # matching here (plus HEAD requests and empty UAs) is logged as a bot hit and
 # never triggers the email alert.
 _LINK_PREVIEW_BOT_UA = (
+    'linkcheck', 'healthcheck',   # our own monitors (innatec3-linkcheck/1.0)
     'bot', 'crawler', 'spider', 'preview', 'linkpreview', 'link-preview',
     'linkedinbot', 'slackbot', 'slack-imgproxy', 'facebookexternalhit',
     'facebot', 'whatsapp', 'telegram', 'twitterbot', 'discordbot',
@@ -12944,6 +12945,31 @@ def _run_daily_linkcheck():
             text_body="Broken links:\n" + "\n".join(f"{l} {u} {s}" for l, u, s in broken))
     except Exception as e:
         print("linkcheck alert email failed:", str(e)[:120])
+
+
+@app.route('/admin/purge-linkcheck-visits', methods=['POST'])
+def admin_purge_linkcheck_visits():
+    """Operator: delete PageVisit rows created by the link-health monitor before
+    its UA was bot-classified (signature: one IP visiting >=20 distinct report
+    slugs in a single day — no human does that). Idempotent."""
+    if not _operator_ok():
+        abort(404)
+    from sqlalchemy import func
+    cutoff = datetime.utcnow() - timedelta(days=2)
+    sus = (db.session.query(PageVisit.ip)
+           .filter(PageVisit.created_at >= cutoff, PageVisit.kind == 'report',
+                   PageVisit.ip.isnot(None))
+           .group_by(PageVisit.ip)
+           .having(func.count(func.distinct(PageVisit.slug)) >= 20).all())
+    ips = [x[0] for x in sus]
+    n = 0
+    if ips:
+        n = (PageVisit.query
+             .filter(PageVisit.created_at >= cutoff, PageVisit.ip.in_(ips))
+             .delete(synchronize_session=False))
+        db.session.commit()
+    return Response(f"purged {n} monitor visits from {len(ips)} ip(s): {ips}\n",
+                    mimetype='text/plain')
 
 
 @app.route('/admin/linkcheck')
