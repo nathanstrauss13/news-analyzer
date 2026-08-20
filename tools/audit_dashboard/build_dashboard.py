@@ -80,6 +80,39 @@ REFERENCE = {"wikipedia.org", "wikidata.org", "britannica.com", "crunchbase.com"
 # (App Store links, payment/commerce platforms): companies, not media. Roots
 # only (apps.apple.com groups to apple.com). Extend per client via config
 # "corporate_sources". A configured competitor domain always wins over this.
+# Editorial sub-tiers for fashion/beauty audits (PUIG framing: fashion pubs vs
+# beauty pubs vs commercial "best-of"/affiliate publishers). Opt-in via
+# cfg["editorial_subtypes"]: True uses these curated sets; a dict overlays
+# per-root overrides {"root": "fashion"|"beauty"|"commercial"|"enthusiast"}.
+FASHION_PUBS = {"vogue.com", "gq.com", "harpersbazaar.com", "elle.com", "wwd.com",
+    "fashionista.com", "thecut.com", "vanityfair.com", "marieclaire.com",
+    "instyle.com", "esquire.com", "gqmagazine.co.uk", "vogue.co.uk", "grazia.com"}
+BEAUTY_PUBS = {"allure.com", "byrdie.com", "glamour.com", "cosmopolitan.com",
+    "refinery29.com", "popsugar.com", "beautylish.com", "temptalia.com",
+    "whowhatwear.com", "ipsy.com", "stylecraze.com"}
+COMMERCIAL_PUBS = {"nymag.com", "goodhousekeeping.com", "realsimple.com",
+    "menshealth.com", "womenshealthmag.com", "buzzfeed.com", "usmagazine.com",
+    "brides.com", "theknot.com", "reviewed.com", "today.com", "people.com",
+    "oprahdaily.com", "cnn.com", "nypost.com", "forbes.com", "travelandleisure.com"}
+ENTHUSIAST_PUBS = {"fragrantica.com", "basenotes.net", "basenotes.com", "parfumo.com",
+    "parfumo.net", "fragrantix.com", "thesmellofman.com", "aromatick.com",
+    "cafleurebon.com", "perfumesociety.org"}
+
+
+def editorial_subtype(root, overrides=None):
+    if isinstance(overrides, dict) and root in overrides:
+        return overrides[root]
+    if root in FASHION_PUBS:
+        return "fashion"
+    if root in BEAUTY_PUBS:
+        return "beauty"
+    if root in COMMERCIAL_PUBS:
+        return "commercial"
+    if root in ENTHUSIAST_PUBS:
+        return "enthusiast"
+    return "other editorial"
+
+
 MAJOR_PUBLISHERS = {"nytimes.com", "wsj.com", "washingtonpost.com", "ft.com",
     "reuters.com", "bloomberg.com", "cnbc.com", "cnn.com", "bbc.com", "bbc.co.uk",
     "theguardian.com", "apnews.com", "npr.org", "forbes.com", "fortune.com",
@@ -498,6 +531,30 @@ def analyze(rows, cfg):
             if root in exclude or classify_root(root, owned_roots, competitor_roots, corporate_roots) is None:
                 continue
             (hit_src if r["brand_hit"] else miss_src)[root] += 1
+    # Answer-level outlet association (publication over/under-index): for each
+    # outlet, of the answers citing it, in how many is the brand named. The
+    # per-outlet presence rate against the dataset baseline is the PR-targeting
+    # read: outlets that travel with presence vs outlets that travel with absence.
+    _outlet_pa = defaultdict(lambda: [0, 0])
+    for r in rows:
+        _roots = set()
+        for u in r["urls"]:
+            h2 = host_of(u)
+            if is_plumbing_host(h2):
+                continue
+            rt = root_of(h2)
+            if rt in exclude or rt in owned_roots:
+                continue
+            if classify_root(rt, owned_roots, competitor_roots, corporate_roots) is None:
+                continue
+            _roots.add(rt)
+        for rt in _roots:
+            _outlet_pa[rt][0 if r["brand_hit"] else 1] += 1
+    outlet_index = [{"root": rt, "answers": p + a2, "present": p,
+                     "rate": p / (p + a2)}
+                    for rt, (p, a2) in _outlet_pa.items() if (p + a2) >= 3]
+    outlet_index.sort(key=lambda x: (-x["rate"], -x["answers"]))
+
     presence_drivers = sorted(((k, v) for k, v in hit_src.items()), key=lambda kv: -kv[1])[:4]
     absence_drivers = sorted(((k, v) for k, v in miss_src.items() if k not in owned_roots),
                              key=lambda kv: -kv[1])[:4]
@@ -506,6 +563,7 @@ def analyze(rows, cfg):
         "rows": rows, "n": n, "platforms": platforms, "bforms": bforms,
         "prominence": prominence,
         "presence_drivers": presence_drivers, "absence_drivers": absence_drivers,
+        "outlet_index": outlet_index,
         "brand_per_platform": brand_per_plat,
         "brand_rows": brand_rows, "per_platform": per_platform,
         "competitors": comp_counts,
@@ -1377,6 +1435,77 @@ def build(cfg, branded, organic, out_path):
   {''.join(cards)}
   {''.join(trows)}
 </section>""")
+
+    # Publication signal: per-outlet over/under-index vs presence (opt-in)
+    if organic and cfg.get("outlet_index"):
+        oi = organic["outlet_index"]
+        base = organic["brand_rows"] / organic["n"] if organic["n"] else 0
+        over = [x for x in oi if x["rate"] > base][:8]
+        under = [x for x in oi if x["rate"] <= base][-8:][::-1]
+
+        def _oi_rows(items, color):
+            out = []
+            for x in items:
+                w = max(x["rate"] * 100, 2)
+                out.append(
+                    f'<div class="hbrow" style="height:21px">'
+                    f'<div class="hbl">{esc(x["root"])}</div>'
+                    f'<div class="hbtrack"><div class="hbbar" style="width:{w:.0f}%;background:{color}"></div>'
+                    f'<span class="hbv">{x["present"]} of {x["answers"]}</span></div></div>')
+            return '<div class="hb">' + "".join(out) + '</div>'
+
+        add("pubsignal", "Publications", f'''
+<section id="pubsignal">
+  <div class="gh">Publication signal</div>
+  <h2>Which outlets travel with presence, and which with absence</h2>
+  <div class="gsub">For each publication cited in at least three unbranded answers: of the answers
+  citing it, how many name {esc(brand)}. The dataset baseline is {organic["brand_rows"]} of
+  {organic["n"]} ({base:.0%}). Outlets far above the baseline are where existing coverage already
+  carries the brand into answers; outlets at or near zero are the earned-media whitespace, down to
+  the individual publication.</div>
+  <div class="grid">
+    <div><div class="ev"><div class="et">Above baseline · travel with presence</div></div>
+    {_oi_rows(over, "#c2a36b")}</div>
+    <div><div class="ev"><div class="et">At or below baseline · travel with absence</div></div>
+    {_oi_rows(under, "#c06a52")}</div>
+  </div>
+  <div class="gsub" style="margin-top:12px;font-size:10.5px">Bar length is the share of the
+  outlet's citing answers that name {esc(brand)}; the count label is the raw fraction. Small
+  denominators are shown rather than hidden: treat single-digit bases as directional.</div>
+</section>''')
+
+    # Editorial mix: fashion / beauty / commercial split within editorial (opt-in)
+    _ed_sub_cfg = cfg.get("editorial_subtypes")
+    if organic and _ed_sub_cfg:
+        _ov = _ed_sub_cfg if isinstance(_ed_sub_cfg, dict) else None
+        _mix = defaultdict(lambda: [0, []])
+        for s in organic["sources"]:
+            if s["type"] == "editorial":
+                st = editorial_subtype(s["root"], _ov)
+                _mix[st][0] += s["count"]
+                _mix[st][1].append((s["root"], s["count"]))
+        _ed_total = sum(v[0] for v in _mix.values())
+        _order = ["fashion", "beauty", "commercial", "enthusiast", "other editorial"]
+        _tiles = []
+        for st in _order:
+            if st not in _mix:
+                continue
+            ct, outlets = _mix[st]
+            tops = ", ".join(f"{r} ({c})" for r, c in sorted(outlets, key=lambda x: -x[1])[:4])
+            _tiles.append(
+                f'<div class="fact"><div class="fv">{ct}<span class="u"> · '
+                f'{ct / _ed_total:.0%} of editorial</span></div>'
+                f'<div class="fk"><b>{esc(st)}</b> · {esc(tops)}</div></div>')
+        add("edmix", "Editorial mix", f'''
+<section id="edmix">
+  <div class="gh">Editorial mix</div>
+  <h2>Fashion, beauty and commercial press pull different weight</h2>
+  <div class="gsub">The {_ed_total} editorial citations behind the unbranded answers, split by
+  publication tier. Fashion titles, beauty titles, commercial "best of" publishers and enthusiast
+  platforms are different pitching motions with different conversion into AI answers; this is the
+  split that decides where the earned effort goes.</div>
+  <div class="factrow" style="grid-template-columns:repeat({min(len(_tiles), 5)},1fr)">{"".join(_tiles)}</div>
+</section>''')
 
     add("sources", "Sources", f'''
 <section id="sources">
