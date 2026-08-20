@@ -3258,6 +3258,14 @@ def run_daily_inbound_digest():
     except Exception as e:
         print("run_daily_inbound_digest error:", e)
 
+def run_daily_linkcheck():
+    """Daily public-link health check (cron 8:20 UTC). Thin wrapper; late-binds
+    to the impl defined later in the file."""
+    try:
+        _run_daily_linkcheck()
+    except Exception as e:
+        print("run_daily_linkcheck error:", e)
+
 # Start scheduler (guard against double-start under reloader)
 if BackgroundScheduler:
     try:
@@ -3268,6 +3276,7 @@ if BackgroundScheduler:
             scheduler.add_job(run_outreach_digest, 'cron', hour=8, minute=5)
             scheduler.add_job(run_daily_traffic_digest, 'cron', hour=8, minute=10)
             scheduler.add_job(run_daily_inbound_digest, 'cron', hour=8, minute=15)
+            scheduler.add_job(run_daily_linkcheck, 'cron', hour=8, minute=20)
             scheduler.start()
             app._alerts_scheduler_started = True
             print("Alert scheduler started.")
@@ -12872,6 +12881,81 @@ def _send_daily_traffic_email(rows, total_opens):
         _send_mail_object(msg)
     except Exception as e:
         print("daily traffic digest email failed:", e)
+
+
+# Public links whose health we guarantee: vanity slugs on the marketing site
+# (Squarespace URL mappings -> signal) plus every friendly-named signal report.
+# The Aug 19 incident: ALL Squarespace mappings vanished and nobody knew until
+# a prospect-facing link was hit by hand.
+_VANITY_SLUGS = [s.strip() for s in os.environ.get(
+    "VANITY_LINK_SLUGS", "puig,gap,adobe-enterprise,todd-snyder,liquid-death").split(",") if s.strip()]
+_LINK_HEALTH_ALERTED = set()   # per-process: alert once per broken target
+
+
+def _check_public_links():
+    """Return (results, broken): results = [(label, url, status, ok)]."""
+    root = os.environ.get("PUBLIC_BASE_URL", "https://signal.innatec3.com").rstrip('/')
+    targets = []
+    for s in _VANITY_SLUGS:
+        targets.append((f"vanity /{s}", f"https://innatec3.com/{s}"))
+    try:
+        with app.app_context():
+            for (slug,) in db.session.query(SharedResult.slug).all():
+                if slug and not re.fullmatch(r"[0-9a-f]{10}", slug):
+                    targets.append((f"signal /{slug}", f"{root}/signal/{slug}"))
+    except Exception as e:
+        print("linkcheck slug enumeration failed:", str(e)[:100])
+    results, broken = [], []
+    for label, url in targets:
+        try:
+            r = requests.get(url, timeout=20, allow_redirects=True,
+                             headers={"User-Agent": "innatec3-linkcheck/1.0"})
+            # a signal slug that 302s home renders 200 at /citation-audit: treat
+            # landing on the audit homepage as broken for a report link
+            ok = (r.status_code == 200 and "/citation-audit" not in r.url)
+            status = f"{r.status_code}{'' if ok else ' -> ' + r.url[:60]}"
+        except Exception as e:
+            ok, status = False, f"error: {str(e)[:60]}"
+        results.append((label, url, status, ok))
+        if not ok:
+            broken.append((label, url, status))
+    return results, broken
+
+
+def _run_daily_linkcheck():
+    results, broken = _check_public_links()
+    new_broken = [b for b in broken if b[1] not in _LINK_HEALTH_ALERTED]
+    print(f"[linkcheck] {len(results)} targets, {len(broken)} broken, {len(new_broken)} new")
+    if not new_broken:
+        return
+    for _, url, _ in new_broken:
+        _LINK_HEALTH_ALERTED.add(url)
+    lines = "".join(f"<li><b>{html.escape(l)}</b> · {html.escape(u)} · {html.escape(s)}</li>"
+                    for l, u, s in broken)
+    try:
+        _send_mail_object(
+            subject=f"🔗 {len(broken)} public link{'s' if len(broken) != 1 else ''} broken "
+                    f"({len(new_broken)} new)",
+            html_body=(f"<p>Daily link health check found broken client-facing links:</p>"
+                       f"<ul>{lines}</ul>"
+                       f"<p>Vanity links live in Squarespace URL mappings (marketing); "
+                       f"signal links are report slugs. On-demand recheck: "
+                       f"/admin/linkcheck?key=...</p>"),
+            text_body="Broken links:\n" + "\n".join(f"{l} {u} {s}" for l, u, s in broken))
+    except Exception as e:
+        print("linkcheck alert email failed:", str(e)[:120])
+
+
+@app.route('/admin/linkcheck')
+def admin_linkcheck():
+    """Operator: run the public-link health check on demand, plaintext report."""
+    if not _operator_ok():
+        abort(404)
+    results, broken = _check_public_links()
+    lines = [f"{'OK    ' if ok else 'BROKEN'} {label:28s} {status:40s} {url}"
+             for label, url, status, ok in results]
+    lines.append(f"\n{len(results)} targets, {len(broken)} broken")
+    return Response("\n".join(lines) + "\n", mimetype='text/plain')
 
 
 def _run_daily_inbound_digest():
