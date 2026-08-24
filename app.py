@@ -486,16 +486,36 @@ _MODEL_PRICES = {
     "openai:gpt-4o-search-preview": (
         float(os.environ.get("OPENAI_IN_PER_M", 2.5)),
         float(os.environ.get("OPENAI_OUT_PER_M", 10.0))),
+    "openai:gpt-4o": (2.5, 10.0),
+    # gpt-5-search-api: resp.model comes back dated, so key both forms.
+    "openai:gpt-5-search-api": (
+        float(os.environ.get("OPENAI_SEARCH_IN_PER_M", 1.25)),
+        float(os.environ.get("OPENAI_SEARCH_OUT_PER_M", 10.0))),
+    "openai:gpt-5-search-api-2025-10-14": (
+        float(os.environ.get("OPENAI_SEARCH_IN_PER_M", 1.25)),
+        float(os.environ.get("OPENAI_SEARCH_OUT_PER_M", 10.0))),
     "openrouter:*": (
         float(os.environ.get("OPENROUTER_IN_PER_M", 3.0)),
         float(os.environ.get("OPENROUTER_OUT_PER_M", 15.0))),
+    "gemini:gemini-2.5-flash": (
+        float(os.environ.get("GEMINI_IN_PER_M", 0.30)),
+        float(os.environ.get("GEMINI_OUT_PER_M", 2.50))),
+    "gemini:gemini-2.0-flash": (0.10, 0.40),
+    "perplexity:sonar-pro": (
+        float(os.environ.get("PERPLEXITY_IN_PER_M", 3.0)),
+        float(os.environ.get("PERPLEXITY_OUT_PER_M", 15.0))),
 }
 _PROVIDER_FALLBACK_PRICES = {"anthropic": (3.0, 15.0), "openai": (2.5, 10.0),
-                             "openrouter": (3.0, 15.0)}
+                             "openrouter": (3.0, 15.0), "gemini": (0.30, 2.50),
+                             "perplexity": (3.0, 15.0)}
 _SEARCH_PER_1K = {
     "anthropic": 10.0,
     "openai": float(os.environ.get("OPENAI_SEARCH_PER_1K", 30.0)),
     "openrouter": float(os.environ.get("OPENROUTER_ONLINE_PER_1K", 4.0)),
+    # Google Search grounding is billed per grounded request; Perplexity bills a
+    # per-request search fee on top of tokens (tier-dependent — override via env).
+    "gemini": float(os.environ.get("GEMINI_SEARCH_PER_1K", 14.0)),
+    "perplexity": float(os.environ.get("PERPLEXITY_SEARCH_PER_1K", 5.0)),
 }
 
 
@@ -568,6 +588,49 @@ def _record_usage(provider, model, in_tok, out_tok, searches=0, cache_read=0, ca
             due = len(_USAGE_PENDING) >= 6 or sum(x["calls"] for x in _USAGE_PENDING.values()) >= 25
         if due:
             threading.Thread(target=_flush_usage_to_db, daemon=True).start()
+    except Exception:
+        pass
+
+
+def _record_oai_usage(provider, resp, default_model, searches=0):
+    """Record usage from any OpenAI-compatible response object (OpenAI,
+    OpenRouter, Perplexity). Never raises — telemetry must not break a call."""
+    try:
+        u = getattr(resp, "usage", None)
+        if u is None:
+            return
+        _record_usage(provider, getattr(resp, "model", None) or default_model,
+                      getattr(u, "prompt_tokens", 0) or 0,
+                      getattr(u, "completion_tokens", 0) or 0,
+                      searches=searches)
+    except Exception:
+        pass
+
+
+def _record_gemini_usage(model, resp):
+    """Record usage from a google-genai response (usage_metadata, not usage).
+    Google bills Search grounding per grounded *request*, not per query, and
+    that fee — not tokens — dominates Gemini audit spend, so count one search
+    only when the response actually came back grounded."""
+    try:
+        u = getattr(resp, "usage_metadata", None)
+        if u is None:
+            return
+        try:
+            grounded = 1 if any(getattr(c, "grounding_metadata", None)
+                                for c in (resp.candidates or [])) else 0
+        except Exception:
+            grounded = 0
+        # Grounded calls inject the retrieved pages as input tokens, and this
+        # SDK build exposes NO field for them: a probe showed prompt=18 +
+        # candidates=468 against total=817, i.e. ~40% of the volume invisible.
+        # Derive input from the total so that injection is billed, not dropped.
+        out_tok = ((getattr(u, "candidates_token_count", 0) or 0)
+                   + (getattr(u, "thoughts_token_count", 0) or 0))
+        prompt_tok = getattr(u, "prompt_token_count", 0) or 0
+        total_tok = getattr(u, "total_token_count", 0) or 0
+        in_tok = max(prompt_tok, total_tok - out_tok)
+        _record_usage("gemini", model, in_tok, out_tok, searches=grounded)
     except Exception:
         pass
 
@@ -7699,26 +7762,32 @@ def _claude_grounded(prompt):
 
 
 def _chatgpt_grounded(prompt):
-    """ChatGPT via the single-pass gpt-4o-search-preview model (one search pass,
-    not the agentic Responses-API loop that OOM'd). Cited URLs come from
-    message.annotations."""
-    resp = openai_client.with_options(timeout=90.0).chat.completions.create(
-        model="gpt-4o-search-preview",
-        max_tokens=2500,
+    """ChatGPT via the single-pass search model (one search pass, not the
+    agentic Responses-API loop that OOM'd). Cited URLs come from
+    message.annotations.
+
+    2026-08-24: gpt-4o-search-preview AND gpt-4o-mini-search-preview were
+    retired by OpenAI and now 404. Because this call is wrapped in a
+    try/except that silently falls back to parametric gpt-4o, the failure was
+    invisible: audits kept "succeeding" while ChatGPT answered from training
+    data with no retrieval at all (grounded=False on every row). Replaced with
+    gpt-5-search-api, which is search-native and returns url_citation
+    annotations. NOTE: the gpt-5 family rejects `max_tokens` — it requires
+    `max_completion_tokens`. If this model is ever retired too, the same silent
+    fallback will recur; check `grounded` in the QA gate, not just error counts.
+    """
+    model = os.environ.get("OPENAI_SEARCH_MODEL", "gpt-5-search-api")
+    resp = openai_client.with_options(timeout=120.0).chat.completions.create(
+        model=model,
+        max_completion_tokens=2500,
         web_search_options={},
         messages=[
             {"role": "system", "content": CITATION_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
     )
-    try:
-        u = getattr(resp, "usage", None)
-        if u is not None:
-            _record_usage("openai", getattr(resp, "model", None) or "gpt-4o-search-preview",
-                          getattr(u, "prompt_tokens", 0), getattr(u, "completion_tokens", 0),
-                          searches=1)   # search-preview does one web-search pass per call
-    except Exception:
-        pass
+    # the search model does one web-search pass per call
+    _record_oai_usage("openai", resp, model, searches=1)
     msg = resp.choices[0].message
     return _append_sources(msg.content or '', _annotation_urls(msg))
 
@@ -7736,14 +7805,8 @@ def _grok_grounded(prompt):
             {"role": "user", "content": prompt},
         ],
     )
-    try:
-        u = getattr(resp, "usage", None)
-        if u is not None:
-            _record_usage("openrouter", getattr(resp, "model", None) or model,
-                          getattr(u, "prompt_tokens", 0), getattr(u, "completion_tokens", 0),
-                          searches=1)   # :online web plugin bills per request
-    except Exception:
-        pass
+    # :online web plugin bills per request
+    _record_oai_usage("openrouter", resp, model, searches=1)
     msg = resp.choices[0].message
     return _append_sources(msg.content or '', _annotation_urls(msg))
 
@@ -7805,6 +7868,7 @@ def _call_llm(provider, enriched_prompt):
                 {"role": "user", "content": enriched_prompt},
             ],
         )
+        _record_oai_usage("openai", resp, "gpt-4o")
         return (resp.choices[0].message.content, False)
     if provider == "Gemini":
         if not gemini_client:
@@ -7823,6 +7887,7 @@ def _call_llm(provider, enriched_prompt):
                 contents=gemini_prompt,
                 config=grounding_config,
             )
+            _record_gemini_usage("gemini-2.5-flash", resp)
             text = resp.text or ""
             # Append grounding URIs so extract_urls() picks them up. The chunk
             # `.web.uri` is almost always a vertexaisearch.cloud.google.com
@@ -7872,6 +7937,7 @@ def _call_llm(provider, enriched_prompt):
                 model="gemini-2.0-flash",
                 contents=gemini_prompt,
             )
+            _record_gemini_usage("gemini-2.0-flash", resp)
             return (resp.text, False)
     if provider == "Perplexity":
         if not perplexity_client:
@@ -7884,6 +7950,8 @@ def _call_llm(provider, enriched_prompt):
                 {"role": "user", "content": enriched_prompt},
             ],
         )
+        # sonar-pro is search-native: every call bills a request fee on top of tokens
+        _record_oai_usage("perplexity", resp, "sonar-pro", searches=1)
         text = resp.choices[0].message.content or ''
         # Perplexity returns a `citations` array on the top-level response
         # object (NOT on the message). These are the actual sources Perplexity
@@ -7918,14 +7986,16 @@ def _call_llm(provider, enriched_prompt):
                 return (_grok_grounded(enriched_prompt), True)
             except Exception as e:
                 print("Grok :online failed; parametric fallback:", str(e)[:160])
+        _fallback_model = os.environ.get("XAI_OPENROUTER_MODEL", "x-ai/grok-4.3")
         resp = openrouter_client.chat.completions.create(
-            model=os.environ.get("XAI_OPENROUTER_MODEL", "x-ai/grok-4.3"),
+            model=_fallback_model,
             max_tokens=2000,
             messages=[
                 {"role": "system", "content": CITATION_SYSTEM_PROMPT},
                 {"role": "user", "content": enriched_prompt},
             ],
         )
+        _record_oai_usage("openrouter", resp, _fallback_model)
         return (resp.choices[0].message.content, False)
     raise ValueError(f"Unknown provider: {provider}")
 
@@ -7982,6 +8052,27 @@ def _compute_audit_anomaly_flags(result, duration_seconds, per_provider_done, pe
 
         if total_citations < 20:
             flags.append("LOW_CITATION_COUNT")
+
+        # Grounding regression: ALL_GROUNDED providers each wrap their grounded
+        # call in a try/except that falls back to a parametric (no-retrieval)
+        # call. That fallback is silent — when OpenAI retired
+        # gpt-4o-search-preview on 2026-08-24, every ChatGPT row came back
+        # grounded=False for weeks while the run still reported zero errors, so
+        # the audit looked clean while one of five agents was answering from
+        # training data. Flag any provider that produced answers with retrieval
+        # on NONE of them; the run is still usable, but the methodology line
+        # "all agents with live web search" is false for that provider.
+        if ALL_GROUNDED:
+            _grounded_by_provider = {}
+            for r in (result.get("all_responses") or []):
+                if r.get("error"):
+                    continue
+                prov = r.get("llm") or "?"
+                seen, hit = _grounded_by_provider.get(prov, (0, 0))
+                _grounded_by_provider[prov] = (seen + 1, hit + (1 if r.get("grounded") else 0))
+            for prov, (seen, hit) in sorted(_grounded_by_provider.items()):
+                if seen >= 3 and hit == 0:
+                    flags.append(f"UNGROUNDED_PROVIDER:{prov}")
 
         # 10x5 split + page-grounding pushed normal runtime past the old 10-min
         # bar; flag only what is genuinely stuck.
@@ -8983,6 +9074,28 @@ def _qa_audit(payload):
     dh = (errors / max(1, len(ar))) <= 0.30 and (rate is None or rate >= 0.95)
     add('delivery_health', dh, f"grounded {grounded}/{len(ar)}, errors {errors}, rate {rate}",
         "grounded, <5% error", 'PARTIAL_DELIVERY/HIGH_ERROR' if not dh else '')
+
+    # ---- CHECK 13: per-provider grounding coverage (warn) ----
+    # delivery_health computes `grounded` above but never tests it, so a whole
+    # agent can answer from training data with zero errors and still pass. That
+    # happened: OpenAI retired gpt-4o-search-preview, the grounded call 404'd,
+    # the try/except fell back to parametric gpt-4o, and every ChatGPT row came
+    # back grounded=False while the audit reported client_ready. Non-blocking —
+    # the collected data is still real — but it makes the methodology claim
+    # "all agents with live web search" false for that provider, which is a
+    # human call, so surface it rather than gate on it.
+    _gp = {}
+    for r in ar:
+        if r.get('error'):
+            continue
+        prov = r.get('llm') or '?'
+        seen, hit = _gp.get(prov, (0, 0))
+        _gp[prov] = (seen + 1, hit + (1 if r.get('grounded') else 0))
+    _dark = [prov for prov, (seen, hit) in sorted(_gp.items()) if seen >= 3 and hit == 0]
+    add('provider_grounding', not _dark,
+        ", ".join(f"{p} {_gp[p][1]}/{_gp[p][0]}" for p in sorted(_gp)) or "n/a",
+        "every provider grounded on >=1 answer",
+        f"no retrieval at all from: {', '.join(_dark)}" if _dark else '')
 
     blocking_fail = [c['check'] for c in checks if c['blocking'] and not c['pass']]
     return {'checks': checks, 'flags': flags, 'client_ready': not blocking_fail,
@@ -10445,7 +10558,7 @@ def admin_usage():
         'since_process_start_usd': round(proc_total, 4),
         'by_model': rows,
         'note': ('Estimate at list pricing (override via OPENAI_*/OPENROUTER_* env). Covers '
-                 'Anthropic + OpenAI + OpenRouter; Gemini and Perplexity are not yet metered. '
+                 'all five audit providers (Anthropic, OpenAI, OpenRouter, Gemini, Perplexity). '
                  'Anthropic input includes injected web-search page tokens. Durable per-day ledger (survives restarts, includes operator runs); ?days=N to widen the window. ?reset=1 clears only the in-process counter, never the ledger.'),
     }
     if request.args.get('reset') == '1':
