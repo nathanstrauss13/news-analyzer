@@ -389,6 +389,9 @@
     {% if data.per_llm_visibility %}
     <h2>Where AI sees you</h2>
     <div class="section-note">{{ data.brand }} mention rate by assistant — across the same unbranded category queries.</div>
+    {% if data.brand_presence_split and (data.brand_presence_split.cited_only or 0) > 0 %}
+    <div class="section-note">Named in the answer text in {{ data.brand_presence_split.named_prose }} answer{{ '' if data.brand_presence_split.named_prose == 1 else 's' }} · carried only inside cited links in {{ data.brand_presence_split.cited_only }} more.</div>
+    {% endif %}
     {% for x in data.per_llm_visibility %}
     {% set pct = (x.rate * 100) | round | int %}
     <div class="ai-vis-row{% if x.mentions == 0 %} zero{% endif %}">

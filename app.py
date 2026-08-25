@@ -6517,6 +6517,11 @@ def _compute_per_llm_visibility(brand, all_responses, aliases=None, gate_respons
         subset = [r for r in all_responses if r.get('llm') == l]
         n = len(subset)
         m = sum(1 for r in subset if _union.search(_response_text(r)))
+        # Named-in-prose: the name survives into the answer TEXT, not just a
+        # cited link. URL-stripped with the same regex as the generic-token
+        # gate, so 'campbells.com' in a Sources block never counts as prose.
+        mp = sum(1 for r in subset
+                 if _union.search(_URLISH_RE.sub(' ', _response_text(r))))
         # Prefer the per-response `grounded` flag (present on audits run after
         # the grounded-retrieval change): an assistant is "grounded" here if a
         # majority of its responses actually retrieved. Fall back to the static
@@ -6529,6 +6534,7 @@ def _compute_per_llm_visibility(brand, all_responses, aliases=None, gate_respons
         out.append({
             'llm': l,
             'mentions': m,
+            'named_prose': mp,
             'total': n,
             'rate': round(m / n, 3) if n else 0.0,
             'grounded': grounded,
@@ -8894,7 +8900,7 @@ def _qa_audit(payload):
         ci = rc(_qa_wb(term)); cs = rc(_qa_wb(term, case_sensitive=True))
         return ci, cs, ((ci - cs) >= 3 and cs < ci * 0.5)
 
-    BLOCKING = {'brand_recount', 'alias_quality', 'alias_domain_hallucination', 'brand_generic_overcount',
+    BLOCKING = {'brand_recount', 'presence_split', 'alias_quality', 'alias_domain_hallucination', 'brand_generic_overcount',
                 'competitor_subbrand_parity', 'competitor_generic_overcount', 'owned_domain_exact',
                 'subbrand_undercount'}
 
@@ -8930,6 +8936,26 @@ def _qa_audit(payload):
     corrected['brand_mention_count'] = true_brand
     corrected['per_llm'] = {l: true_pl[l][0] for l in true_pl}
     corrected['forms_used'] = all_forms
+
+    # ---- CHECK 1b: named-in-prose vs cited-in-sources split ----
+    # Same forms, same corpus, URL-stripped — so stored == recount by
+    # construction on new payloads; a mismatch means the split drifted from
+    # the count (the convention-mix failure class). Pre-split payloads pass
+    # as n/a rather than fail retroactively.
+    _true_prose = sum(1 for r in ar
+                      if union.search(_URLISH_RE.sub(' ', r.get('response') or '')))
+    _true_split = {'named_prose': _true_prose,
+                   'cited_only': max(0, true_brand - _true_prose)}
+    _split_stored = payload.get('brand_presence_split')
+    if isinstance(_split_stored, dict):
+        ok1b = (_split_stored.get('named_prose') == _true_split['named_prose']
+                and _split_stored.get('cited_only') == _true_split['cited_only'])
+        add('presence_split', ok1b, f"stored {_split_stored}", f"true {_true_split}",
+            '' if ok1b else 'stored split does not match prose recount')
+    else:
+        add('presence_split', True, 'n/a (payload predates split metric)',
+            'named_prose + cited_only stored', '')
+    corrected['brand_presence_split'] = _true_split
 
     # ---- CHECK 2: alias substring inflation / quality ----
     add('alias_quality', not bad, f"bad {[a for a, _ in bad]}", "all >=3ch, in-raw, non-generic",
@@ -9353,6 +9379,17 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     _cnt_forms, _cnt_union = _brand_count_forms(brand, brand_aliases, all_responses,
                                                 gate_responses=_all_responses_full)
     brand_mention_count = sum(1 for r in all_responses if _cnt_union.search(_response_text(r)))
+    # Named-vs-cited split: brand_mention_count is full-text (name ANYWHERE in
+    # the answer, cited links included — the platform's uniform convention).
+    # named_prose narrows to the answer TEXT with URLs stripped; cited_only is
+    # the remainder. Tracked separately because they move independently — the
+    # Campbell's three-run sequence showed the same retrieved article carrying
+    # the name into prose twice, then surviving only as a link (presence
+    # decaying from the text into the citations while the source held).
+    _named_prose_count = sum(1 for r in all_responses
+                             if _cnt_union.search(_URLISH_RE.sub(' ', _response_text(r))))
+    brand_presence_split = {"named_prose": _named_prose_count,
+                            "cited_only": max(0, brand_mention_count - _named_prose_count)}
     # Per-assistant visibility — computed here (before the analysis prompt) so
     # the summary can call out lopsided concentration. (Re-stored on the
     # analysis dict below for the UI.)
@@ -9633,6 +9670,7 @@ The client's brand is "{brand}". Their goal: "{problem_statement}"
 
 DETERMINISTIC FACTS (pre-computed from raw response text — use these EXACTLY, do not re-estimate):
 - Brand mention count: {brand_mention_count} of {len(all_responses)} responses mention "{brand}" (deterministic substring count over full response text — authoritative).
+- Of those, {brand_presence_split['named_prose']} name the brand in the answer text itself; {brand_presence_split['cited_only']} carry it only inside cited source links (a reader would not see the name unless they open the links). If cited_only is nonzero, that nuance is worth one clause — presence in citations is weaker than presence in prose.
 - PER-ASSISTANT VISIBILITY (how many of EACH AI's responses mention the brand): {_per_llm_facts}. Read: {_per_llm_read}. If this is lopsided (the brand surfaces on one or two assistants and is absent from the rest), that is a CRITICAL finding for the executive_summary — it means the brand is search-surfaced but not embedded in the models people use most.
 - TOP COMPETITOR MENTION COUNTS (pre-computed deterministically — these are the AUTHORITATIVE counts for the `competitors` array. Do NOT re-estimate, do NOT add competitors not in this list, do NOT change the counts):
 {top_competitor_block}
@@ -9981,6 +10019,7 @@ Respond with ONLY valid JSON:
         analysis["headline_move"] = None
     # Per-assistant visibility — which of the 5 AIs actually surface the brand.
     analysis["brand_aliases"] = brand_aliases
+    analysis["brand_presence_split"] = brand_presence_split
     try:
         analysis["per_llm_visibility"] = _compute_per_llm_visibility(
             brand, all_responses, aliases=brand_aliases, gate_responses=_all_responses_full)
@@ -11321,6 +11360,10 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
                   f"{data.get('brand_mention_count')} -> {new_brand_count}")
             _count_changed = True
         out['brand_mention_count'] = new_brand_count
+        _np = sum(1 for r in all_responses
+                  if _bunion.search(_URLISH_RE.sub(' ', _response_text(r))))
+        out['brand_presence_split'] = {"named_prose": _np,
+                                       "cited_only": max(0, new_brand_count - _np)}
     # Sync the denominator to the cleaned response set so mindshare % is over
     # what was actually delivered (a dropped-error rerender shrinks this from
     # e.g. 50 -> 40, correcting ServiceNow's "34%" to ~43% over 4 live LLMs).
@@ -14160,6 +14203,10 @@ def signal_report_csv(slug):
     writer.writerow(["brand", data.get("brand") or ""])
     writer.writerow(["category", data.get("category") or ""])
     writer.writerow(["brand_mention_count", data.get("brand_mention_count") or 0])
+    _bps = data.get("brand_presence_split") or {}
+    if _bps:
+        writer.writerow(["brand_named_in_prose", _bps.get("named_prose", "")])
+        writer.writerow(["brand_cited_links_only", _bps.get("cited_only", "")])
     writer.writerow(["total_responses", data.get("total_responses") or 0])
     writer.writerow(["total_citations_extracted", data.get("total_citations_extracted") or 0])
     writer.writerow(["responses_completed", data.get("responses_completed") or 0])

@@ -2633,6 +2633,9 @@
                 ${(data.per_llm_visibility && data.per_llm_visibility.length) ? `
                     <div class="ai-visibility">
                         <div class="ai-visibility-label">Where AI sees you — ${esc(data.brand || 'your brand')} mention rate by assistant</div>
+                        ${(data.brand_presence_split && (data.brand_presence_split.cited_only || 0) > 0) ? `
+                            <div class="ai-visibility-read" style="margin:2px 0 10px;">Named in the answer text in <strong>${data.brand_presence_split.named_prose}</strong> ${data.brand_presence_split.named_prose === 1 ? 'answer' : 'answers'} · carried only inside cited links in <strong>${data.brand_presence_split.cited_only}</strong> more — a reader sees the name only if they open the links.</div>
+                        ` : ''}
                         <div class="ai-visibility-rows">
                             ${data.per_llm_visibility.map(x => {
                                 const pct = Math.round((x.rate || 0) * 100);
@@ -2641,7 +2644,7 @@
                                     <div class="ai-vis-row ${zero ? 'zero' : ''}">
                                         <span class="ai-vis-name">${esc(x.llm)}${x.grounded ? '<span class="ai-vis-tag">search</span>' : ''}</span>
                                         <div class="ai-vis-track"><div class="ai-vis-fill ${zero ? 'zero' : ''}" style="width:${pct}%"></div></div>
-                                        <span class="ai-vis-num">${x.mentions}/${x.total}</span>
+                                        <span class="ai-vis-num">${x.mentions}/${x.total}${(x.named_prose !== undefined && x.named_prose !== x.mentions) ? ` <span style="opacity:.55;font-size:.85em;">(${x.named_prose} named)</span>` : ''}</span>
                                     </div>
                                 `;
                             }).join('')}
