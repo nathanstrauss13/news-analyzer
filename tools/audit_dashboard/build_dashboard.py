@@ -226,9 +226,20 @@ def match_forms(name, aliases=None, corpus=None):
     return forms
 
 
+URLISH_RE = re.compile(
+    r"https?://\S+|www\.\S+|\b[a-z0-9][a-z0-9.-]*\.(?:com|net|org|io|ai|co)(?:/\S*)?", re.I)
+
+
 def present(forms, text):
     t = text or ""
     return any(re.search(r"\b" + re.escape(f) + r"\b", t, re.I) for f in forms)
+
+
+def present_prose(forms, text):
+    """Named in the answer TEXT itself — URLs stripped first, so a brand that
+    survives only inside cited links does not count. Mirrors the platform's
+    named_prose metric (same strip regex as app.py's _URLISH_RE)."""
+    return present(forms, URLISH_RE.sub(" ", text or ""))
 
 
 def page_kind(disp):
@@ -363,10 +374,14 @@ def analyze(rows, cfg):
     per_platform = {p: {"total": 0, "brand": 0, "citations": 0,
                         "types": defaultdict(int), "top_sources": defaultdict(int)}
                     for p in platforms}
+    brand_prose_rows = 0
     for r in rows:
         hit = present(bforms, r["response"])
+        prose = present_prose(bforms, r["response"]) if hit else False
         r["brand_hit"] = hit
+        r["brand_prose"] = prose
         brand_rows += 1 if hit else 0
+        brand_prose_rows += 1 if prose else 0
         pp = per_platform[r["platform"]]
         pp["total"] += 1
         pp["brand"] += 1 if hit else 0
@@ -565,7 +580,8 @@ def analyze(rows, cfg):
         "presence_drivers": presence_drivers, "absence_drivers": absence_drivers,
         "outlet_index": outlet_index,
         "brand_per_platform": brand_per_plat,
-        "brand_rows": brand_rows, "per_platform": per_platform,
+        "brand_rows": brand_rows, "brand_prose_rows": brand_prose_rows,
+        "per_platform": per_platform,
         "competitors": comp_counts,
         "sources": sources, "type_totals": dict(type_totals),
         "total_citations": total_citations,
@@ -1067,8 +1083,11 @@ def query_appendix(a, dataset_label, idx_prefix):
                 marks.append(f'<span class="qmark miss" title="{esc(p)}: not run">&ndash;</span>')
             else:
                 hit = r.get("brand_hit")
-                marks.append(f'<span class="qmark {"hit" if hit else "miss"}" title="{esc(p)}">'
-                             f'{"&#10003;" if hit else "&middot;"}</span>')
+                linkonly = hit and not r.get("brand_prose", hit)
+                _cls = "hit linkonly" if linkonly else ("hit" if hit else "miss")
+                _title = f"{esc(p)}: named in cited links only" if linkonly else esc(p)
+                marks.append(f'<span class="qmark {_cls}" title="{_title}">'
+                             f'{"(&#10003;)" if linkonly else ("&#10003;" if hit else "&middot;")}</span>')
         bodies = []
         for p in PLATFORM_ORDER:
             r = plats.get(p)
@@ -1112,8 +1131,12 @@ def build(cfg, branded, organic, out_path):
     if organic:
         o = organic
         pct = round(100 * o["brand_rows"] / o["n"]) if o["n"] else 0
+        _prose = o.get("brand_prose_rows")
+        _linkonly = (o["brand_rows"] - _prose) if _prose is not None else 0
+        _split_note = (f' &mdash; {_prose} named in the text, {_linkonly} in cited links only'
+                       if _linkonly > 0 else '')
         cards.append(('coral', f'{o["brand_rows"]}/{o["n"]}',
-                      f'unbranded category answers mention {esc(brand)} ({pct}%)'))
+                      f'unbranded category answers mention {esc(brand)} ({pct}%){_split_note}'))
         top = o["competitors"][0] if o["competitors"] else None
         if top:
             cards.append(('', f'{round(100*top["count"]/o["n"])}%',
