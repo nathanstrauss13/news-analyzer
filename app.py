@@ -6489,7 +6489,7 @@ def _verify_brand_aliases(aliases, all_responses):
     return out
 
 
-def _compute_per_llm_visibility(brand, all_responses, aliases=None):
+def _compute_per_llm_visibility(brand, all_responses, aliases=None, gate_responses=None):
     """Per-assistant brand visibility: for each LLM, in how many of ITS responses
     the brand appears. A headline "20% mindshare" can hide the real story — e.g. a
     brand cited in 9/10 Gemini responses but 0/10 on ChatGPT/Claude/Grok is
@@ -6504,7 +6504,7 @@ def _compute_per_llm_visibility(brand, all_responses, aliases=None):
     """
     if not brand or not all_responses:
         return []
-    _, _union = _brand_count_forms(brand, aliases, all_responses)
+    _, _union = _brand_count_forms(brand, aliases, all_responses, gate_responses=gate_responses)
     order = []
     seen = set()
     for r in all_responses:
@@ -8794,7 +8794,7 @@ def _count_alias_verdict(alias, all_responses):
     return True, ''
 
 
-def _brand_count_forms(brand, aliases, all_responses):
+def _brand_count_forms(brand, aliases, all_responses, gate_responses=None):
     """Corpus-aware match forms for the brand MENTION COUNT — the single
     source of truth shared by the audit pipeline, the per-LLM visibility
     split, the rerender recount, and the QA gate's brand_recount. Extracted
@@ -8813,7 +8813,18 @@ def _brand_count_forms(brand, aliases, all_responses):
     # URL-stripped corpus for the generic-usage gate: 'lumen' inside
     # lumen.com/... citation links is brand evidence, not common-English usage,
     # and must not disqualify the 'Lumen' token (real case: Lumen 11 -> 6).
-    plain = [_URLISH_RE.sub(' ', r.get('response') or '') for r in ar]
+    #
+    # gate_responses widens the EVIDENCE corpus without widening the count.
+    # Split audits count on the unbranded half, but that half is the worst
+    # place to learn that a mid-name token is generic English: "soup" barely
+    # appears in unbranded answers precisely because Campbell's is absent from
+    # them. Real case (94f86163db): lowercase 'soup' hit 8 responses across the
+    # full 70 but only 2 of the unbranded 50, so the gate kept bare "Soup" as a
+    # form and counted "mainstream soup brands" / "vegan soups" as Campbell's
+    # (stored 8 vs true 6). Callers pass the FULL response set here; a wider
+    # corpus can only DROP forms, never add them, so it is strictly conservative.
+    plain = [_URLISH_RE.sub(' ', r.get('response') or '')
+             for r in (gate_responses or ar)]
     def rc_plain(pat):
         return sum(1 for t in plain if pat.search(t))
     forms = [brand] if brand else []
@@ -8853,6 +8864,7 @@ def _qa_audit(payload):
     when the stored ones fail a check. Safe to call on any payload shape;
     missing fields degrade gracefully rather than raising."""
     ar = payload.get('all_responses') or []
+    _ar_full = ar   # full corpus for the generic-usage gate (see _brand_count_forms)
     # Split-audit payloads: stored metrics are unbranded-scoped, so the QA
     # recount must run over the same subset or every check would "fail" by
     # the branded half's near-guaranteed brand mentions (metrics_scope
@@ -8900,7 +8912,7 @@ def _qa_audit(payload):
         ok, why = _count_alias_verdict(a, ar)
         (verified if ok else bad).append((a, why))
     verified_names = [a for a, _ in verified]
-    all_forms, union = _brand_count_forms(brand, aliases, ar)
+    all_forms, union = _brand_count_forms(brand, aliases, ar, gate_responses=_ar_full)
 
     # ---- CHECK 1: brand recount + per-LLM ----
     true_brand = rc(union)
@@ -9338,12 +9350,14 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     brand_aliases = _verify_brand_aliases(brand_aliases, all_responses)  # drop hallucinated/generic aliases
     # Corpus-aware forms shared with the QA gate — stored count == QA recount
     # by construction (see _brand_count_forms for the STACK/Signet/Scribes bugs).
-    _cnt_forms, _cnt_union = _brand_count_forms(brand, brand_aliases, all_responses)
+    _cnt_forms, _cnt_union = _brand_count_forms(brand, brand_aliases, all_responses,
+                                                gate_responses=_all_responses_full)
     brand_mention_count = sum(1 for r in all_responses if _cnt_union.search(_response_text(r)))
     # Per-assistant visibility — computed here (before the analysis prompt) so
     # the summary can call out lopsided concentration. (Re-stored on the
     # analysis dict below for the UI.)
-    _per_llm_vis = _compute_per_llm_visibility(brand, all_responses, aliases=brand_aliases)
+    _per_llm_vis = _compute_per_llm_visibility(brand, all_responses, aliases=brand_aliases,
+                                               gate_responses=_all_responses_full)
     _per_llm_read = _llm_visibility_read(brand, _per_llm_vis)
     _per_llm_facts = "; ".join(f"{x['llm']} {x['mentions']}/{x['total']}" for x in _per_llm_vis) or "(n/a)"
     emit("extract", f"Found {total_citations} citations across {len(ranked_domains)} domains · brand cited in {brand_mention_count}/{len(all_responses)} responses", extract_total, extract_total)
@@ -9968,7 +9982,8 @@ Respond with ONLY valid JSON:
     # Per-assistant visibility — which of the 5 AIs actually surface the brand.
     analysis["brand_aliases"] = brand_aliases
     try:
-        analysis["per_llm_visibility"] = _compute_per_llm_visibility(brand, all_responses, aliases=brand_aliases)
+        analysis["per_llm_visibility"] = _compute_per_llm_visibility(
+            brand, all_responses, aliases=brand_aliases, gate_responses=_all_responses_full)
         analysis["per_llm_read"] = _llm_visibility_read(brand, analysis["per_llm_visibility"])
     except Exception as _pv_e:
         print("per-LLM visibility computation failed (continuing without):", _pv_e)
@@ -11298,7 +11313,8 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     # BlackRock) so the headline reflects current guardrails + the brand's sub-brands.
     _count_changed = False
     if all_responses and brand:
-        _, _bunion = _brand_count_forms(brand, brand_aliases, all_responses)
+        _, _bunion = _brand_count_forms(brand, brand_aliases, all_responses,
+                                        gate_responses=out['all_responses'])
         new_brand_count = sum(1 for r in all_responses if _bunion.search(_response_text(r)))
         if new_brand_count != (data.get('brand_mention_count') or 0):
             print(f"[rerender] brand_mention_count (alias-aware) recount: "
@@ -11399,7 +11415,8 @@ def _rerender_from_cached_responses(data, regenerate_summary=False):
     # Per-assistant visibility — pure-python over cached responses, so the
     # ?fresh/?refresh rerender surfaces it on existing audits too.
     try:
-        out['per_llm_visibility'] = _compute_per_llm_visibility(brand, all_responses, aliases=brand_aliases)
+        out['per_llm_visibility'] = _compute_per_llm_visibility(
+            brand, all_responses, aliases=brand_aliases, gate_responses=out['all_responses'])
         out['per_llm_read'] = _llm_visibility_read(brand, out['per_llm_visibility'])
     except Exception:
         out['per_llm_visibility'] = []
