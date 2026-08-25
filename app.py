@@ -7660,7 +7660,7 @@ def _apply_url_resolution(all_responses, url_map):
                 dropped += 1
                 continue
             try:
-                host = final.split('/')[2].lower()
+                host = final.split('/')[2].lower().split(':', 1)[0]
                 host = host[4:] if host.startswith('www.') else host
                 if host in DOMAIN_BLACKLIST:
                     dropped += 1
@@ -14465,15 +14465,19 @@ def _classify_domains_llm(roots, brand, category, competitor_names=None, batch=6
             f'Types (use exactly one per domain):\n'
             f'- competitor: a company selling a competing product/service to the audited brand '
             f'(INCLUDING the official sites of the competitors named above)\n'
-            f'- editorial: journalism, trade press, magazines, news outlets, independent bloggers\n'
+            f'- editorial: journalism, trade press, magazines, news outlets, independent bloggers, '
+            f'and self-published journalism/newsletters (Substack, Medium publications)\n'
             f'- retail: shops and marketplaces that sell products\n'
             f'- reviews: consumer review and rating platforms\n'
             f'- community: forums, Q&A, user discussion\n'
-            f'- social: social networks and video platforms\n'
+            f'- social: platforms where the cited page is authored by a USER rather than editorial '
+            f'staff (Facebook, YouTube, Instagram, TikTok, LinkedIn, X, Reddit, Pinterest). '
+            f'NOT news portals\n'
             f'- reference: encyclopedias, dictionaries, general reference\n'
             f'- corporate: a company site that is NOT a competitor (vendors, partners, unrelated firms)\n'
             f'- institutional: government, universities, standards bodies, non-profits\n'
-            f'- aggregator: data/stat aggregators, directory and listicle-farm sites\n\n'
+            f'- aggregator: portals and syndicators that republish other outlets\' work (Yahoo, AOL, '
+            f'MSN, news portals), plus data/stat aggregators, directories, listicle farms\n\n'
             f'DOMAINS:\n' + '\n'.join(chunk) + '\n\n'
             f'Return ONLY a JSON object mapping each domain to its type, no prose.')
         try:

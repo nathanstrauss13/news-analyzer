@@ -63,7 +63,10 @@ def is_plumbing_host(host):
 
 # Multi-label public suffixes we care about for registrable-root grouping.
 _SECOND_LEVEL = {"co.uk", "ac.uk", "org.uk", "gov.uk", "com.au", "net.au",
-                 "co.jp", "co.in", "com.br", "co.nz", "com.sg", "com.hk"}
+                 "org.au", "gov.au", "edu.au", "co.jp", "or.jp", "ne.jp",
+                 "co.in", "org.in", "com.br", "org.br", "co.nz", "org.nz",
+                 "com.sg", "com.hk", "com.mx", "com.tw", "co.za", "org.za",
+                 "com.cn", "org.cn", "co.kr", "or.kr"}
 
 REVIEW_TALENT = {"glassdoor.com", "g2.com", "capterra.com", "trustpilot.com",
                  "indeed.com", "gartner.com", "trustradius.com", "getapp.com",
@@ -181,7 +184,10 @@ def norm_url(u):
 
 
 def host_of(disp):
-    return disp.split("/", 1)[0].lower()
+    # Split off any :port — Gemini emits e.g. thetakeout.com:443, and a port
+    # that survives into the host makes root_of() return "com:443" and splits
+    # one source into two rows (the aol.com/aol.com:443 dedup bug).
+    return disp.split("/", 1)[0].split(":", 1)[0].lower()
 
 
 def root_of(host):
