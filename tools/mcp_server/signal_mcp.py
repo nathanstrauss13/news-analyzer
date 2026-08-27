@@ -255,6 +255,22 @@ def _convention(payload, counting="stored (full-text: name anywhere in the answe
     }
 
 
+def _build_block():
+    """Build/staleness fields alone, for responses that span audits (or carry
+    no figures) and so have no single payload to derive scope from."""
+    _bstat, _bwarn = _build_state()
+    _unsup = _cfg().get("_unsupported") or []
+    return {
+        "server_build": SERVER_BUILD,
+        "build_check": _bstat,
+        **({"config_features_unsupported":
+            f"this server build does not understand config keys {_unsup} — output "
+            f"may be incomplete; restart or update the connector before relying on "
+            f"figures"} if _unsup else {}),
+        **({"stale_server": _bwarn} if _bwarn else {}),
+    }
+
+
 def _evidence(slug, payload):
     """Page-level evidence for a slug: the payload's own citation_checks
     when present, else a config-declared supplement file (an offline
@@ -349,7 +365,7 @@ def list_audits() -> dict:
                         "qa_verified": bool(p.get("qa_verified"))})
         except Exception as e:
             out.append({"slug": a.get("slug"), "error": str(e)[:120]})
-    return {"audits": out}
+    return {"audits": out, "convention": _build_block()}
 
 
 @server.tool()
@@ -718,7 +734,7 @@ def request_rerun(slug: str, reason: str = "") -> dict:
         f.write(json.dumps({"ts": time.strftime("%Y-%m-%d %H:%M:%S"),
                             "client": cfg.get("client"), "slug": slug,
                             "reason": reason[:500]}) + "\n")
-    return {"status": "requested", "slug": slug,
+    return {"status": "requested", "slug": slug, "convention": _build_block(),
             "what_happens_next": "The operator reviews the request, runs the same prompt set "
                                  "verbatim, quality-gates the result, and the new run appears "
                                  "in list_audits. Typical turnaround: within 2 business days."}
