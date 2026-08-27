@@ -41,7 +41,14 @@ CACHE_DIR = os.path.expanduser("~/.signal_mcp/cache")
 CACHE_TTL = int(os.environ.get("SIGNAL_MCP_CACHE_TTL", 24 * 3600))
 REQUESTS_LOG = os.path.expanduser("~/.signal_mcp/rerun_requests.log")
 
-server = MCPServer("signal-audit")
+server = MCPServer(
+    "signal-audit",
+    instructions=(
+        "Every response's convention block carries server_build (the code this "
+        "server process loaded) and, when determinable, a stale_server warning. "
+        "If stale_server is present, or server_build differs from a build named "
+        "elsewhere in the conversation, SAY SO before reporting any figure — the "
+        "numbers may come from outdated logic."))
 
 # Build stamp, computed at process start from the code actually loaded. Every
 # response carries it, so a stale server process is self-identifying: two
@@ -60,6 +67,30 @@ def _build_stamp():
     return h.hexdigest()[:12]
 
 SERVER_BUILD = _build_stamp()
+_STALE = {"checked": False, "warning": None}
+
+
+def _stale_warning():
+    """Self-DETECTING staleness (not merely self-identifying): compare this
+    process's loaded-code stamp against the published reference once per
+    process. Unreachable reference -> no warning (never block on the check);
+    a mismatch -> a warning field injected into every response."""
+    if not _STALE["checked"]:
+        _STALE["checked"] = True
+        try:
+            cfg = _cfg()
+            url = f"{cfg['base_url']}/mcp/current-build"
+            ref = json.loads(urlopen(Request(url, headers={"User-Agent": "signal-mcp/1.0"}),
+                                     timeout=10, context=_SSL_CTX).read().decode())
+            cur = ref.get("current_build")
+            if cur and cur != SERVER_BUILD:
+                _STALE["warning"] = (
+                    f"STALE SERVER: this process loaded build {SERVER_BUILD} but the "
+                    f"current build is {cur}. Restart the assistant's connection before "
+                    f"relying on any figure — reporting logic may have changed.")
+        except Exception:
+            pass
+    return _STALE["warning"]
 
 # ── config / fetch / cache ────────────────────────────────────────────────
 
@@ -128,6 +159,7 @@ def _convention(payload, counting="stored (full-text: name anywhere in the answe
     _, unb, branded = _split_rows(payload)
     return {
         "server_build": SERVER_BUILD,
+        **({"stale_server": _stale_warning()} if _stale_warning() else {}),
         "scope": payload.get("metrics_scope") or "all_responses",
         "counting": counting,
         "denominators": {"all_answers": len(payload.get("all_responses") or []),
@@ -530,6 +562,7 @@ def compare_runs(slug_a: str, slug_b: str) -> dict:
         "run_b": {**_label(slug_b, pb), "ungrounded_answers": _ungrounded(unb_b)},
         "convention": {
             "server_build": SERVER_BUILD,
+            **({"stale_server": _stale_warning()} if _stale_warning() else {}),
             "scope": "unbranded answers, prompts matched by exact text",
             "brand_forms": forms,
             "counting": "recomputed at query time from raw answers: ONE word-boundary "

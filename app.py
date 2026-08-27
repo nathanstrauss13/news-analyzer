@@ -10415,6 +10415,24 @@ def _capture_inbound_lead(status, problem_statement, ip, email, is_operator, att
         return None
 
 
+@app.route('/mcp/current-build')
+def mcp_current_build():
+    """Reference build stamp for the Signal MCP server: a hash of the MCP
+    code as DEPLOYED. Client-side server processes fetch this on first call
+    and warn in-band when their own loaded-code stamp differs — turning the
+    per-response server_build from provenance into a staleness control."""
+    import hashlib as _h
+    h = _h.sha256()
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'mcp_server')
+    for fn in ('signal_mcp.py', 'conventions.py'):
+        try:
+            with open(os.path.join(base, fn), 'rb') as f:
+                h.update(f.read())
+        except Exception:
+            pass
+    return jsonify({"current_build": h.hexdigest()[:12]})
+
+
 @app.route('/healthz')
 def healthz():
     """Lightweight liveness probe — no DB, no LLM. Surfaces audit concurrency so
