@@ -197,8 +197,10 @@ def get_audit(slug: str) -> dict:
     p = _payload(slug)
     rows, unb, branded = _split_rows(p)
     cc, ev_note = _evidence(slug, p)
-    urls = {c.get("url") for r in rows for c in (r.get("citations") or [])
-            if isinstance(c, dict) and c.get("url")}
+    def _urls(rr):
+        return {c.get("url") for r in rr for c in (r.get("citations") or [])
+                if isinstance(c, dict) and c.get("url")}
+    urls, urls_unb = _urls(rows), _urls(unb)
     loaded = sum(1 for v in cc.values() if v.get("status") == "ok")
     per_llm = [{"agent": x.get("llm"),
                 "answers_mentioning_brand": x.get("mentions"),
@@ -220,9 +222,16 @@ def get_audit(slug: str) -> dict:
                 "cited_only": "the name appears only inside cited link URLs — a reader "
                               "sees it only if they open the links"}},
         "per_agent": per_llm,
-        "citations": {"total_extracted": p.get("total_citations_extracted"),
-                      "distinct_urls": len(urls)},
-        "page_fetch_ratio": {"distinct_cited_urls": len(urls), "fetched": len(cc),
+        "citations": {
+            "extracted_unbranded_scope": p.get("total_citations_extracted"),
+            "distinct_urls_all_answers": len(urls),
+            "distinct_urls_unbranded_answers": len(urls_unb),
+            "scope_note": "extracted_unbranded_scope counts citations in unbranded answers "
+                          "only (the platform's stored metric); the distinct-URL figures are "
+                          "labeled by scope — never compare counts across different scopes"},
+        "page_fetch_ratio": {"scope": "all answers (branded + unbranded) — page checks cover "
+                             "the full citation set",
+                             "distinct_cited_urls": len(urls), "fetched": len(cc),
                              "loaded": loaded, "bot_walled": len(cc) - loaded,
                              "never_fetched": max(0, len(urls) - len(cc)),
                              "evidence_source": ev_note,
@@ -262,10 +271,11 @@ def query_citations(slug: str, domain: str = "", agent: str = "",
     return {**_label(slug, p),
             "filter": {"domain": domain or None, "agent": agent or None,
                        "prompt_contains": prompt_contains or None},
-            "matching_citations": len(answers_with) and sum(1 for _ in hits) or 0,
             "citations_returned": hits,
             "answers_containing_matches": len(answers_with),
-            "of_total_citations_in_audit": total,
+            "of_total_citations_all_answers": total,
+            "scope_note": "this tool searches ALL answers (branded + unbranded); each row "
+                          "carries prompt_class so results can be filtered to one scope",
             "convention": _convention(p)}
 
 
@@ -277,11 +287,14 @@ def outlet_profile(slug: str, domain: str) -> dict:
     p = _payload(slug)
     rows, unb, _ = _split_rows(p)
     root = _root(domain)
-    cites, answers, agents = 0, set(), set()
+    _, unb_, branded_ = _split_rows(p)
+    cites, cites_unb, answers, agents = 0, 0, set(), set()
     for r in rows:
         for c in (r.get("citations") or []):
             if isinstance(c, dict) and _root(c.get("domain") or c.get("url", "")) == root:
                 cites += 1
+                if r.get("prompt") not in branded_:
+                    cites_unb += 1
                 answers.add((r.get("llm"), r.get("prompt")))
                 agents.add(r.get("llm"))
     sov = next((o for o in (p.get("outlet_sov") or []) if _root(o.get("domain", "")) == root), None)
@@ -301,9 +314,14 @@ def outlet_profile(slug: str, domain: str) -> dict:
               **({"checked_date": v["checked_date"]} if v.get("checked_date") else {})}
              for u, v in cc.items() if _root(u.split("//")[-1]) == root]
     return {**_label(slug, p), "domain_root": root,
-            "citations": cites, "answers_citing": len(answers),
+            "citations_all_answers": cites,
+            "citations_unbranded_answers": cites_unb,
+            "answers_citing_all_scopes": len(answers),
             "agents_citing": sorted(a for a in agents if a),
             "share_of_voice": sov_facts,
+            "share_of_voice_scope": "unbranded answers only (the platform's stored SoV "
+                                    "metric) — compare it with citations_unbranded_answers, "
+                                    "never with the all-answers count" if sov_facts else None,
             "page_evidence": pages[:20],
             "page_evidence_source": ev_note,
             "convention": _convention(p)}
@@ -360,7 +378,8 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
              for u, v in cc.items()
              if not (only_missing_brand and (v.get("status") != "ok" or v.get("brand_count")))]
     return {**_label(slug, p),
-            "fetch_ratio": {"distinct_cited_urls": len(urls), "fetched": len(cc),
+            "fetch_ratio": {"scope": "all answers (branded + unbranded)",
+                            "distinct_cited_urls": len(urls), "fetched": len(cc),
                             "loaded": len(loaded), "bot_walled": len(cc) - len(loaded),
                             "never_fetched": max(0, len(urls) - len(cc))},
             "loaded_pages_not_mentioning_brand": len(silent),
