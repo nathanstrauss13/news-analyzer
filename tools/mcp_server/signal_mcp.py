@@ -33,7 +33,22 @@ try:
 except Exception:                       # pragma: no cover
     _SSL_CTX = ssl.create_default_context()
 
-from mcp.server.mcpserver import MCPServer
+import threading
+
+try:
+    from mcp.server.mcpserver import MCPServer
+except ImportError:
+    # Hosted mode: app.py imports this module on a box without the mcp SDK.
+    # The shim preserves the decorator surface; only stdio serving needs the
+    # real SDK (guarded in __main__).
+    class MCPServer:  # type: ignore
+        def __init__(self, name, instructions=None, **kw):
+            self.name, self.instructions = name, instructions
+        def tool(self, *a, **kw):
+            return lambda fn: fn
+        def run(self, *a, **kw):
+            raise RuntimeError("mcp SDK not installed — stdio serving unavailable; "
+                               "hosted dispatch uses TOOLS_REG instead")
 
 # Config keys THIS build understands. _cfg() compares the config against
 # these and injects a loud per-response warning for anything it cannot
@@ -48,19 +63,49 @@ KNOWN_AUDIT_KEYS = {"slug", "label", "run_date", "evidence_file",
 
 CFG_PATH = os.environ.get("SIGNAL_MCP_CONFIG",
                           os.path.expanduser("~/.signal_mcp/config.json"))
-CACHE_DIR = os.path.expanduser("~/.signal_mcp/cache")
 CACHE_TTL = int(os.environ.get("SIGNAL_MCP_CACHE_TTL", 24 * 3600))
-REQUESTS_LOG = os.path.expanduser("~/.signal_mcp/rerun_requests.log")
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _writable_dir(preferred, fallback):
+    try:
+        os.makedirs(preferred, exist_ok=True)
+        return preferred
+    except Exception:
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+
+
+CACHE_DIR = _writable_dir(os.path.expanduser("~/.signal_mcp/cache"),
+                          "/tmp/signal_mcp_cache")
+REQUESTS_LOG = os.path.join(_writable_dir(os.path.expanduser("~/.signal_mcp"),
+                                          "/tmp/signal_mcp"), "rerun_requests.log")
+
+# Hosted mode: a per-request config override (set by the HTTP dispatcher after
+# key->profile resolution) that takes precedence over the config file. Thread-
+# local so concurrent requests for different clients can never see each
+# other's allowlists.
+_CFG_LOCAL = threading.local()
+
+
+def _resolve_path(p):
+    """Supplement paths: ~ expands; relative paths resolve against this
+    module's directory (so repo-shipped data/ files work on any host)."""
+    p = os.path.expanduser(p or "")
+    return p if os.path.isabs(p) else os.path.join(_MODULE_DIR, p)
+
+SERVER_INSTRUCTIONS = (
+    "Every response's convention block carries server_build (the code this "
+    "server process loaded) and, when determinable, a stale_server warning. "
+    "If stale_server or config_features_unsupported is present, or build_check is unavailable, or "
+    "server_build differs from a build named elsewhere in the conversation, "
+    "SAY SO before reporting any figure — the numbers may come from "
+    "outdated logic, or their currency could not be confirmed.")
 
 server = MCPServer(
     "signal-audit",
-    instructions=(
-        "Every response's convention block carries server_build (the code this "
-        "server process loaded) and, when determinable, a stale_server warning. "
-        "If stale_server or config_features_unsupported is present, or build_check is unavailable, or "
-        "server_build differs from a build named elsewhere in the conversation, "
-        "SAY SO before reporting any figure — the numbers may come from "
-        "outdated logic, or their currency could not be confirmed."))
+    instructions=SERVER_INSTRUCTIONS)
+
 
 # Build stamp, computed at process start from the code actually loaded. Every
 # response carries it, so a stale server process is self-identifying: two
@@ -129,6 +174,16 @@ def _cfg():
     careless list_audits — the obvious call fails safe rather than leaking
     the pipeline. Selection is explicit, per server registration, never a
     default."""
+    override = getattr(_CFG_LOCAL, "cfg", None)
+    if override is not None:
+        c = dict(override)
+        c.setdefault("base_url", "https://signal.innatec3.com")
+        c["_by_slug"] = {a["slug"]: a for a in c.get("audits", [])}
+        unknown = set()
+        for a in c.get("audits", []):
+            unknown |= set(a) - KNOWN_AUDIT_KEYS
+        c["_unsupported"] = sorted(unknown)
+        return c
     with open(CFG_PATH) as f:
         c = json.load(f)
     c.setdefault("base_url", "https://signal.innatec3.com")
@@ -158,7 +213,6 @@ def _payload(slug):
     if slug not in cfg["_by_slug"]:
         raise ValueError(f"slug '{slug}' is not in this client's audit list — "
                          f"use list_audits for the slugs available to you")
-    os.makedirs(CACHE_DIR, exist_ok=True)
     fp = os.path.join(CACHE_DIR, hashlib.sha1(slug.encode()).hexdigest() + ".json")
     if os.path.exists(fp) and time.time() - os.path.getmtime(fp) < CACHE_TTL:
         with open(fp) as f:
@@ -210,8 +264,8 @@ def _evidence(slug, payload):
     cc = dict(payload.get("citation_checks") or {})
     meta = _cfg()["_by_slug"].get(slug, {})
     ef = meta.get("evidence_file")
-    if ef and os.path.exists(os.path.expanduser(ef)):
-        with open(os.path.expanduser(ef)) as f:
+    if ef and os.path.exists(_resolve_path(ef)):
+        with open(_resolve_path(ef)) as f:
             sup = json.load(f)
         sup_cc = {k: v for k, v in sup.items() if not k.startswith("_")}
         mode = meta.get("evidence_mode", "extend")
@@ -247,8 +301,8 @@ def _classes(slug, payload):
     dt = dict(payload.get("domain_types") or {})
     meta = _cfg()["_by_slug"].get(slug, {})
     cf = meta.get("classes_file")
-    if cf and os.path.exists(os.path.expanduser(cf)):
-        with open(os.path.expanduser(cf)) as f:
+    if cf and os.path.exists(_resolve_path(cf)):
+        with open(_resolve_path(cf)) as f:
             sup = json.load(f)
         sup_cc = {k: v for k, v in sup.items() if not k.startswith("_")}
         if dt:
@@ -660,7 +714,6 @@ def request_rerun(slug: str, reason: str = "") -> dict:
     cfg = _cfg()
     if slug not in cfg["_by_slug"]:
         raise ValueError("slug not in this client's audit list")
-    os.makedirs(os.path.dirname(REQUESTS_LOG), exist_ok=True)
     with open(REQUESTS_LOG, "a") as f:
         f.write(json.dumps({"ts": time.strftime("%Y-%m-%d %H:%M:%S"),
                             "client": cfg.get("client"), "slug": slug,
@@ -669,6 +722,47 @@ def request_rerun(slug: str, reason: str = "") -> dict:
             "what_happens_next": "The operator reviews the request, runs the same prompt set "
                                  "verbatim, quality-gates the result, and the new run appears "
                                  "in list_audits. Typical turnaround: within 2 business days."}
+
+
+# Tool registry for the hosted HTTP dispatcher (app.py): name -> callable +
+# description + input schema. The callables are the same functions the stdio
+# server exposes; hosted and local can never diverge on behavior.
+def _fn(obj):
+    return getattr(obj, "fn", obj)
+
+
+_S = {"type": "string"}
+_I = {"type": "integer"}
+_B = {"type": "boolean"}
+TOOLS_REG = {
+    "list_audits": (_fn(list_audits), {"type": "object", "properties": {}, "required": []}),
+    "get_audit": (_fn(get_audit),
+                  {"type": "object", "properties": {"slug": _S}, "required": ["slug"]}),
+    "query_citations": (_fn(query_citations),
+                        {"type": "object", "properties": {"slug": _S, "domain": _S, "agent": _S,
+                                                          "prompt_contains": _S, "limit": _I},
+                         "required": ["slug"]}),
+    "outlet_profile": (_fn(outlet_profile),
+                       {"type": "object", "properties": {"slug": _S, "domain": _S},
+                        "required": ["slug", "domain"]}),
+    "get_responses": (_fn(get_responses),
+                      {"type": "object", "properties": {"slug": _S, "prompt_contains": _S,
+                                                        "agent": _S, "max_chars": _I},
+                       "required": ["slug"]}),
+    "get_page_evidence": (_fn(get_page_evidence),
+                          {"type": "object", "properties": {"slug": _S,
+                                                            "only_missing_brand": _B,
+                                                            "limit": _I},
+                           "required": ["slug"]}),
+    "compare_runs": (_fn(compare_runs),
+                     {"type": "object", "properties": {"slug_a": _S, "slug_b": _S},
+                      "required": ["slug_a", "slug_b"]}),
+    "request_rerun": (_fn(request_rerun),
+                      {"type": "object", "properties": {"slug": _S, "reason": _S},
+                       "required": ["slug"]}),
+}
+TOOL_DESCRIPTIONS = {n: (_fn_obj.__doc__ or "").strip()
+                     for n, (_fn_obj, _sch) in TOOLS_REG.items()}
 
 
 if __name__ == "__main__":

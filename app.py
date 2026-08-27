@@ -10415,6 +10415,131 @@ def _capture_inbound_lead(status, problem_statement, ip, email, is_operator, att
         return None
 
 
+# ── Signal MCP hosted connector ───────────────────────────────────────────
+# The same tool implementations the stdio server exposes (tools/mcp_server/
+# signal_mcp.py, imported via TOOLS_REG), served over streamable HTTP so a
+# client pastes ONE URL into Claude (desktop/web/mobile) or ChatGPT custom
+# connectors. Design contract carried over verbatim: facts never conclusions,
+# convention metadata on every response, per-client ALLOWLISTS — enforced
+# server-side here, which is the point: the key maps to a profile the client
+# cannot edit, and revoking the key revokes access.
+#
+# Auth: the key is the URL path segment (every connector UI can carry it;
+# TLS protects it in transit). Keys resolve from:
+#   1. env SIGNAL_MCP_CLIENTS — JSON {key: {client, audits:[{slug,...}]}}
+#   2. a derived demo key (sha256(operator_secret + ":mcp-demo")) exposing
+#      ONLY the public samples — so Nathan has a working connector with no
+#      dashboard setup. Unknown key -> 404, indistinguishable from no route.
+
+_MCP_SM = None
+
+
+def _mcp_signal_module():
+    global _MCP_SM
+    if _MCP_SM is None:
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         'tools', 'mcp_server'))
+        import signal_mcp as _sm
+        _MCP_SM = _sm
+    return _MCP_SM
+
+
+def _mcp_demo_key():
+    secret = os.environ.get('LINK_STATS_KEY') or os.environ.get('OPERATOR_KEY') or ''
+    if not secret:
+        return None
+    import hashlib as _h
+    return _h.sha256((secret + ':mcp-demo').encode()).hexdigest()[:24]
+
+
+_MCP_DEMO_PROFILE = {
+    "client": "innate-demo",
+    "audits": [
+        {"slug": "0a312ac53b",
+         "label": "Lululemon — public sample, external measurement (non-client)",
+         "run_date": "2026-08-27",
+         "evidence_file": "data/lulu_checks_full.json", "evidence_mode": "replace",
+         "classes_file": "data/lulu_host_classes.json"},
+        {"slug": "40a64ba61b",
+         "label": "Liquid Death — earlier public sample, external measurement (non-client)",
+         "run_date": "2026-07",
+         "evidence_file": "data/ld_checks_full.json",
+         "classes_file": "data/ld_classes.json"},
+    ],
+}
+
+
+def _mcp_resolve_client(key):
+    if not key or len(key) < 12:
+        return None
+    try:
+        clients = json.loads(os.environ.get('SIGNAL_MCP_CLIENTS') or '{}')
+    except Exception:
+        clients = {}
+    if key in clients:
+        return clients[key]
+    if key == _mcp_demo_key():
+        return _MCP_DEMO_PROFILE
+    return None
+
+
+@app.route('/mcp/<key>', methods=['POST', 'GET'])
+def mcp_hosted(key):
+    profile = _mcp_resolve_client(key)
+    if profile is None:
+        abort(404)
+    if request.method == 'GET':
+        # No server-initiated stream offered; spec-compliant refusal.
+        return Response("Method Not Allowed", status=405)
+    sm = _mcp_signal_module()
+    try:
+        msg = request.get_json(force=True)
+    except Exception:
+        return jsonify({"jsonrpc": "2.0", "id": None,
+                        "error": {"code": -32700, "message": "parse error"}}), 400
+    if not isinstance(msg, dict):
+        return jsonify({"jsonrpc": "2.0", "id": None,
+                        "error": {"code": -32600, "message": "single JSON-RPC object only"}}), 400
+    method, mid = msg.get('method'), msg.get('id')
+
+    if method == 'initialize':
+        return jsonify({"jsonrpc": "2.0", "id": mid, "result": {
+            "protocolVersion": (msg.get('params') or {}).get('protocolVersion') or "2025-03-26",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "signal-audit", "version": sm.SERVER_BUILD},
+            "instructions": sm.SERVER_INSTRUCTIONS}})
+    if method in ('notifications/initialized', 'notifications/cancelled'):
+        return Response(status=202)
+    if method == 'ping':
+        return jsonify({"jsonrpc": "2.0", "id": mid, "result": {}})
+    if method == 'tools/list':
+        tools = [{"name": n, "description": sm.TOOL_DESCRIPTIONS[n], "inputSchema": sch}
+                 for n, (_f, sch) in sm.TOOLS_REG.items()]
+        return jsonify({"jsonrpc": "2.0", "id": mid, "result": {"tools": tools}})
+    if method == 'tools/call':
+        params = msg.get('params') or {}
+        name = params.get('name')
+        if name not in sm.TOOLS_REG:
+            return jsonify({"jsonrpc": "2.0", "id": mid,
+                            "error": {"code": -32602, "message": f"unknown tool {name}"}})
+        fn, _sch = sm.TOOLS_REG[name]
+        sm._CFG_LOCAL.cfg = profile
+        try:
+            result = fn(**(params.get('arguments') or {}))
+            payload_txt = json.dumps(result, default=str)
+            return jsonify({"jsonrpc": "2.0", "id": mid, "result": {
+                "content": [{"type": "text", "text": payload_txt}], "isError": False}})
+        except Exception as e:
+            return jsonify({"jsonrpc": "2.0", "id": mid, "result": {
+                "content": [{"type": "text", "text": f"tool error: {str(e)[:300]}"}],
+                "isError": True}})
+        finally:
+            sm._CFG_LOCAL.cfg = None
+    return jsonify({"jsonrpc": "2.0", "id": mid,
+                    "error": {"code": -32601, "message": f"method {method} not supported"}})
+
+
 @app.route('/mcp/current-build')
 def mcp_current_build():
     """Reference build stamp for the Signal MCP server: a hash of the MCP
