@@ -430,17 +430,37 @@ def compare_runs(slug_a: str, slug_b: str) -> dict:
     A, B = per_prompt(unb_a, pat_a), per_prompt(unb_b, pat_b)
     shared = sorted(set(A) & set(B))
     only_a, only_b = sorted(set(A) - set(B)), sorted(set(B) - set(A))
+    def _state(agent, d):
+        if agent in d["agents_named_prose"]:
+            return "named_in_prose"
+        if agent in d["agents_mentioning"]:
+            return "cited_links_only"
+        return "absent"
+
     prompts = []
     for q in shared:
         a, b = A[q], B[q]
+        agents = sorted(set(a["agents_mentioning"]) | set(b["agents_mentioning"]) |
+                        set(a["agents_named_prose"]) | set(b["agents_named_prose"]))
+        transitions = []
+        for ag in agents:
+            sa, sb = _state(ag, a), _state(ag, b)
+            if sa != sb:
+                transitions.append({"agent": ag, "run_a": sa, "run_b": sb})
         prompts.append({
             "prompt": q,
             "run_a": {"mentioning": sorted(a["agents_mentioning"]), "of": a["n"],
                       "named_prose": sorted(a["agents_named_prose"])},
             "run_b": {"mentioning": sorted(b["agents_mentioning"]), "of": b["n"],
                       "named_prose": sorted(b["agents_named_prose"])},
-            "agents_changed": sorted(set(a["agents_mentioning"]) ^ set(b["agents_mentioning"])),
+            # Three states per agent: named_in_prose > cited_links_only > absent.
+            # A transition between ANY two states is a change — including
+            # named_in_prose -> cited_links_only, where the mention count holds
+            # steady while the name leaves the answer text (presence decaying
+            # into the citations). Tracking `mentioning` alone is blind to it.
+            "agent_transitions": transitions,
         })
+    n_trans = sum(len(p["agent_transitions"]) for p in prompts)
     tot_a = sum(len(A[q]["agents_mentioning"]) for q in shared)
     tot_b = sum(len(B[q]["agents_mentioning"]) for q in shared)
     den_a = sum(A[q]["n"] for q in shared)
@@ -461,6 +481,10 @@ def compare_runs(slug_a: str, slug_b: str) -> dict:
                              "raw answers are stable, so both runs are recounted under this "
                              "one convention"},
         "shared_prompts": len(shared), "prompts_only_in_a": only_a, "prompts_only_in_b": only_b,
+        "agents_with_state_changes": n_trans,
+        "state_definitions": {"named_in_prose": "brand named in the answer text",
+                              "cited_links_only": "brand appears only inside cited link URLs",
+                              "absent": "no brand presence in the answer"},
         "brand_presence_total": {"run_a": {"answers": tot_a, "of": den_a},
                                  "run_b": {"answers": tot_b, "of": den_b}},
         "per_prompt": prompts,
