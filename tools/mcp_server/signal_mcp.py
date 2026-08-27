@@ -43,6 +43,24 @@ REQUESTS_LOG = os.path.expanduser("~/.signal_mcp/rerun_requests.log")
 
 server = MCPServer("signal-audit")
 
+# Build stamp, computed at process start from the code actually loaded. Every
+# response carries it, so a stale server process is self-identifying: two
+# teammates comparing outputs see differing stamps before they argue about
+# numbers. (Born from a real incident: a bug report filed against a fix that
+# had shipped hours earlier, invisible because the reporting process predated
+# the commit and nothing in its output said so.)
+def _build_stamp():
+    h = hashlib.sha256()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for fn in ("signal_mcp.py", "conventions.py"):
+        try:
+            h.update(open(os.path.join(here, fn), "rb").read())
+        except Exception:
+            pass
+    return h.hexdigest()[:12]
+
+SERVER_BUILD = _build_stamp()
+
 # ── config / fetch / cache ────────────────────────────────────────────────
 
 def _cfg():
@@ -109,6 +127,7 @@ from conventions import (URLISH_RE, GENERIC_TOKENS as _GENERIC_TOKENS,
 def _convention(payload, counting="stored (full-text: name anywhere in the answer, cited links included)"):
     _, unb, branded = _split_rows(payload)
     return {
+        "server_build": SERVER_BUILD,
         "scope": payload.get("metrics_scope") or "all_responses",
         "counting": counting,
         "denominators": {"all_answers": len(payload.get("all_responses") or []),
@@ -510,6 +529,7 @@ def compare_runs(slug_a: str, slug_b: str) -> dict:
         "run_a": {**_label(slug_a, pa), "ungrounded_answers": _ungrounded(unb_a)},
         "run_b": {**_label(slug_b, pb), "ungrounded_answers": _ungrounded(unb_b)},
         "convention": {
+            "server_build": SERVER_BUILD,
             "scope": "unbranded answers, prompts matched by exact text",
             "brand_forms": forms,
             "counting": "recomputed at query time from raw answers: ONE word-boundary "
