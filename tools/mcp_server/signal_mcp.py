@@ -46,9 +46,10 @@ server = MCPServer(
     instructions=(
         "Every response's convention block carries server_build (the code this "
         "server process loaded) and, when determinable, a stale_server warning. "
-        "If stale_server is present, or server_build differs from a build named "
-        "elsewhere in the conversation, SAY SO before reporting any figure — the "
-        "numbers may come from outdated logic."))
+        "If stale_server is present, or build_check is unavailable, or "
+        "server_build differs from a build named elsewhere in the conversation, "
+        "SAY SO before reporting any figure — the numbers may come from "
+        "outdated logic, or their currency could not be confirmed."))
 
 # Build stamp, computed at process start from the code actually loaded. Every
 # response carries it, so a stale server process is self-identifying: two
@@ -67,14 +68,16 @@ def _build_stamp():
     return h.hexdigest()[:12]
 
 SERVER_BUILD = _build_stamp()
-_STALE = {"checked": False, "warning": None}
+_STALE = {"checked": False, "warning": None, "status": None}
 
 
-def _stale_warning():
-    """Self-DETECTING staleness (not merely self-identifying): compare this
-    process's loaded-code stamp against the published reference once per
-    process. Unreachable reference -> no warning (never block on the check);
-    a mismatch -> a warning field injected into every response."""
+def _build_state():
+    """Self-DETECTING staleness with an explicit tri-state — verified /
+    stale / unavailable. Unknown is never rendered as silence: when the
+    reference cannot be fetched the response says "could not confirm"
+    rather than saying nothing (unknown != assumed-fine — the same
+    distinction never_fetched preserves for page checks). Fail-open:
+    serving never blocks on the check. Returns (status, warning_or_None)."""
     if not _STALE["checked"]:
         _STALE["checked"] = True
         try:
@@ -83,14 +86,19 @@ def _stale_warning():
             ref = json.loads(urlopen(Request(url, headers={"User-Agent": "signal-mcp/1.0"}),
                                      timeout=10, context=_SSL_CTX).read().decode())
             cur = ref.get("current_build")
-            if cur and cur != SERVER_BUILD:
+            if not cur:
+                _STALE["status"] = "unavailable — could not confirm this server is current"
+            elif cur != SERVER_BUILD:
+                _STALE["status"] = "stale"
                 _STALE["warning"] = (
                     f"STALE SERVER: this process loaded build {SERVER_BUILD} but the "
                     f"current build is {cur}. Restart the assistant's connection before "
                     f"relying on any figure — reporting logic may have changed.")
+            else:
+                _STALE["status"] = "verified current"
         except Exception:
-            pass
-    return _STALE["warning"]
+            _STALE["status"] = "unavailable — could not confirm this server is current"
+    return _STALE["status"], _STALE["warning"]
 
 # ── config / fetch / cache ────────────────────────────────────────────────
 
@@ -157,9 +165,11 @@ from conventions import (URLISH_RE, GENERIC_TOKENS as _GENERIC_TOKENS,
 
 def _convention(payload, counting="stored (full-text: name anywhere in the answer, cited links included)"):
     _, unb, branded = _split_rows(payload)
+    _bstat, _bwarn = _build_state()
     return {
         "server_build": SERVER_BUILD,
-        **({"stale_server": _stale_warning()} if _stale_warning() else {}),
+        "build_check": _bstat,
+        **({"stale_server": _bwarn} if _bwarn else {}),
         "scope": payload.get("metrics_scope") or "all_responses",
         "counting": counting,
         "denominators": {"all_answers": len(payload.get("all_responses") or []),
@@ -562,7 +572,8 @@ def compare_runs(slug_a: str, slug_b: str) -> dict:
         "run_b": {**_label(slug_b, pb), "ungrounded_answers": _ungrounded(unb_b)},
         "convention": {
             "server_build": SERVER_BUILD,
-            **({"stale_server": _stale_warning()} if _stale_warning() else {}),
+            "build_check": _build_state()[0],
+            **({"stale_server": _build_state()[1]} if _build_state()[1] else {}),
             "scope": "unbranded answers, prompts matched by exact text",
             "brand_forms": forms,
             "counting": "recomputed at query time from raw answers: ONE word-boundary "
