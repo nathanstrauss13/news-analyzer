@@ -158,6 +158,24 @@ def _evidence(slug, payload):
     return {}, "no page-level evidence available for this audit"
 
 
+def _classes(slug, payload):
+    """Domain-root -> source_type map. From the payload's own domain_types
+    when present, else a config-declared classes_file supplement (an offline
+    full-coverage pass with the platform's classifier — one classifier, one
+    taxonomy). Returns (map, source_note)."""
+    dt = payload.get("domain_types") or {}
+    if dt:
+        return dt, "classified at run time"
+    meta = _cfg()["_by_slug"].get(slug, {})
+    cf = meta.get("classes_file")
+    if cf and os.path.exists(os.path.expanduser(cf)):
+        with open(os.path.expanduser(cf)) as f:
+            sup = json.load(f)
+        return ({k: v for k, v in sup.items() if not k.startswith("_")},
+                sup.get("_note") or "offline classification pass")
+    return {}, "no source classification available for this audit"
+
+
 def _label(slug, payload):
     meta = _cfg()["_by_slug"].get(slug, {})
     return {"slug": slug, "brand": payload.get("brand"),
@@ -249,6 +267,7 @@ def query_citations(slug: str, domain: str = "", agent: str = "",
     answers — both units are reported."""
     p = _payload(slug)
     rows, unb, branded = _split_rows(p)
+    _cls_map, _cls_note = _classes(slug, p)
     hits, answers_with = [], set()
     total = 0
     for r in rows:
@@ -267,7 +286,8 @@ def query_citations(slug: str, domain: str = "", agent: str = "",
             if len(hits) < max(1, min(limit, 100)):
                 hits.append({"prompt": r.get("prompt"),
                              "prompt_class": "branded" if r.get("prompt") in branded else "unbranded",
-                             "agent": r.get("llm"), "url": c["url"], "domain_root": root})
+                             "agent": r.get("llm"), "url": c["url"], "domain_root": root,
+                             "source_type": _cls_map.get(root)})
     return {**_label(slug, p),
             "filter": {"domain": domain or None, "agent": agent or None,
                        "prompt_contains": prompt_contains or None},
@@ -276,6 +296,7 @@ def query_citations(slug: str, domain: str = "", agent: str = "",
             "of_total_citations_all_answers": total,
             "scope_note": "this tool searches ALL answers (branded + unbranded); each row "
                           "carries prompt_class so results can be filtered to one scope",
+            "source_type_source": _cls_note,
             "convention": _convention(p)}
 
 
@@ -313,7 +334,10 @@ def outlet_profile(slug: str, domain: str) -> dict:
               "page_title": (v.get("title") or "")[:120],
               **({"checked_date": v["checked_date"]} if v.get("checked_date") else {})}
              for u, v in cc.items() if _root(u.split("//")[-1]) == root]
+    _cls_map, _cls_note = _classes(slug, p)
     return {**_label(slug, p), "domain_root": root,
+            "source_type": _cls_map.get(root),
+            "source_type_source": _cls_note,
             "citations_all_answers": cites,
             "citations_unbranded_answers": cites_unb,
             "answers_citing_all_scopes": len(answers),
@@ -371,9 +395,11 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
             if isinstance(c, dict) and c.get("url")}
     loaded = [(u, v) for u, v in cc.items() if v.get("status") == "ok"]
     silent = [u for u, v in loaded if not v.get("brand_count")]
+    _cls_map, _cls_note = _classes(slug, p)
     items = [{"url": u, "fetch_status": v.get("status"),
               "brand_mentions_on_page": v.get("brand_count") or 0,
               "page_title": (v.get("title") or "")[:120],
+              "source_type": _cls_map.get(_root(u.split("//")[-1])),
               **({"checked_date": v["checked_date"]} if v.get("checked_date") else {})}
              for u, v in cc.items()
              if not (only_missing_brand and (v.get("status") != "ok" or v.get("brand_count")))]
@@ -385,6 +411,7 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
             "loaded_pages_not_mentioning_brand": len(silent),
             "of_loaded_pages": len(loaded),
             "evidence_source": ev_note,
+            "source_type_source": _cls_note,
             "pages": items[:max(1, min(limit, 100))],
             "convention": _convention(p)}
 
