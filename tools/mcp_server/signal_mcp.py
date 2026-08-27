@@ -187,16 +187,25 @@ def _evidence(slug, payload):
     full-corpus grounding pass, run after collection — e.g. for frozen
     public payloads that predate in-run page checks). Returns
     (checks_dict, source_note). Supplement entries carry checked_date."""
-    cc = payload.get("citation_checks") or {}
-    if cc:
-        return cc, "collected at run time (top-cited subset)"
+    cc = dict(payload.get("citation_checks") or {})
     meta = _cfg()["_by_slug"].get(slug, {})
     ef = meta.get("evidence_file")
     if ef and os.path.exists(os.path.expanduser(ef)):
         with open(os.path.expanduser(ef)) as f:
             sup = json.load(f)
-        note = sup.get("_note") or "offline full-corpus grounding pass"
-        return {k: v for k, v in sup.items() if not k.startswith("_")}, note
+        added = 0
+        for k, v in sup.items():
+            if not k.startswith("_") and k not in cc:
+                cc[k] = v
+                added += 1
+        if cc and added:
+            note = (f"run-time checks extended by an offline full-corpus pass "
+                    f"(+{added} URLs; {sup.get('_note') or 'offline pass'})")
+            return cc, note
+        if not payload.get("citation_checks") and cc:
+            return cc, sup.get("_note") or "offline full-corpus grounding pass"
+    if cc:
+        return cc, "collected at run time (top-cited subset)"
     return {}, "no page-level evidence available for this audit"
 
 
