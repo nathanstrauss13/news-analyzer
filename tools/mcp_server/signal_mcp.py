@@ -176,6 +176,14 @@ def _classes(slug, payload):
     return {}, "no source classification available for this audit"
 
 
+def _type_of(host_or_url, cls_map):
+    """Host-first classification with root fallback — a subdomain override
+    (insider.fitt.co -> editorial) wins over its root's class."""
+    h = (host_or_url or "").split("//")[-1].split("/")[0].split(":")[0].lower()
+    h = h[4:] if h.startswith("www.") else h
+    return cls_map.get(h) or cls_map.get(_root(h))
+
+
 def _label(slug, payload):
     meta = _cfg()["_by_slug"].get(slug, {})
     return {"slug": slug, "brand": payload.get("brand"),
@@ -396,10 +404,35 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
     loaded = [(u, v) for u, v in cc.items() if v.get("status") == "ok"]
     silent = [u for u, v in loaded if not v.get("brand_count")]
     _cls_map, _cls_note = _classes(slug, p)
+    # Full-set outlet rollup (never limited by `limit`): the story unit is the
+    # OUTLET; pages are the evidence underneath. An outlet counts as
+    # never_mentioning only when NONE of its loaded pages mentions the brand.
+    _out = {}
+    for u, v in cc.items():
+        if v.get("status") != "ok":
+            continue
+        host = u.split("//")[-1].split("/")[0].split(":")[0].lower()
+        host = host[4:] if host.startswith("www.") else host
+        key = host if host in _cls_map else _root(host)
+        t = _type_of(u, _cls_map) or "unclassified"
+        d = _out.setdefault((t, key), [0, 0])
+        d[0] += 1
+        if v.get("brand_count"):
+            d[1] += 1
+    rollup = {}
+    for (t, key), (n_pages, n_ment) in _out.items():
+        r = rollup.setdefault(t, {"outlets_with_loaded_pages": 0,
+                                  "outlets_never_mentioning_brand": 0,
+                                  "pages_loaded": 0, "pages_mentioning_brand": 0})
+        r["outlets_with_loaded_pages"] += 1
+        r["pages_loaded"] += n_pages
+        r["pages_mentioning_brand"] += n_ment
+        if n_ment == 0:
+            r["outlets_never_mentioning_brand"] += 1
     items = [{"url": u, "fetch_status": v.get("status"),
               "brand_mentions_on_page": v.get("brand_count") or 0,
               "page_title": (v.get("title") or "")[:120],
-              "source_type": _cls_map.get(_root(u.split("//")[-1])),
+              "source_type": _type_of(u, _cls_map),
               **({"checked_date": v["checked_date"]} if v.get("checked_date") else {})}
              for u, v in cc.items()
              if not (only_missing_brand and (v.get("status") != "ok" or v.get("brand_count")))]
@@ -410,9 +443,17 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
                             "never_fetched": max(0, len(urls) - len(cc))},
             "loaded_pages_not_mentioning_brand": len(silent),
             "of_loaded_pages": len(loaded),
+            "outlet_rollup_by_type": rollup,
+            "rollup_scope": "FULL evidence set (never limited by `limit`); classification is "
+                            "host-first with root fallback; an outlet is 'never mentioning' "
+                            "only if none of its loaded pages mentions the brand",
             "evidence_source": ev_note,
             "source_type_source": _cls_note,
             "pages": items[:max(1, min(limit, 100))],
+            "pages_scope": f"first {min(max(1, min(limit, 100)), len(items))} of {len(items)} "
+                           "matching evidence rows — do NOT aggregate from this slice; use "
+                           "outlet_rollup_by_type and the fetch/loaded totals above, which "
+                           "cover the full set",
             "convention": _convention(p)}
 
 
