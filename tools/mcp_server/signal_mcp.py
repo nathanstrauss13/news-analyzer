@@ -244,16 +244,27 @@ def _classes(slug, payload):
     when present, else a config-declared classes_file supplement (an offline
     full-coverage pass with the platform's classifier — one classifier, one
     taxonomy). Returns (map, source_note)."""
-    dt = payload.get("domain_types") or {}
-    if dt:
-        return dt, "classified at run time"
+    dt = dict(payload.get("domain_types") or {})
     meta = _cfg()["_by_slug"].get(slug, {})
     cf = meta.get("classes_file")
     if cf and os.path.exists(os.path.expanduser(cf)):
         with open(os.path.expanduser(cf)) as f:
             sup = json.load(f)
-        return ({k: v for k, v in sup.items() if not k.startswith("_")},
-                sup.get("_note") or "offline classification pass")
+        sup_cc = {k: v for k, v in sup.items() if not k.startswith("_")}
+        if dt:
+            # MERGE, same lesson as _evidence and missed here first: native
+            # run-time classes win on their roots; the supplement fills the
+            # remaining roots and contributes host-grain entries (host-first
+            # lookup makes those override root classes where a subdomain
+            # carries citations). Returning natives alone silently classified
+            # only the top-cited roots and halved the editorial rollup.
+            merged = dict(sup_cc)
+            merged.update(dt)
+            return merged, ("payload-native domain_types + offline supplement "
+                            "(one classifier; host-first, root fallback)")
+        return sup_cc, sup.get("_note") or "offline classification pass"
+    if dt:
+        return dt, "classified at run time"
     return {}, "no source classification available for this audit"
 
 
@@ -484,9 +495,11 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
     for u, v in cc.items():
         if v.get("status") != "ok":
             continue
-        host = u.split("//")[-1].split("/")[0].split(":")[0].lower()
-        host = host[4:] if host.startswith("www.") else host
-        key = host if host in _cls_map else _root(host)
+        # Outlet unit = registrable ROOT (buyer-reproducible: filtering the
+        # shipped per-URL table by source_type and counting distinct
+        # domain_root reproduces these figures exactly). Classification of
+        # each PAGE stays host-first; the outlet key does not split on host.
+        key = _root(u.split("//")[-1])
         t = _type_of(u, _cls_map) or "unclassified"
         d = _out.setdefault((t, key), [0, 0])
         d[0] += 1
