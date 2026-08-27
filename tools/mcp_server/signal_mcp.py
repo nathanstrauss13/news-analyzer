@@ -35,6 +35,17 @@ except Exception:                       # pragma: no cover
 
 from mcp.server.mcpserver import MCPServer
 
+# Config keys THIS build understands. _cfg() compares the config against
+# these and injects a loud per-response warning for anything it cannot
+# honor — an old process reading a newer config must say "I am ignoring
+# evidence_mode" rather than silently serving incomplete output. (Born from
+# two stale sessions agreeing on a wrong figure: correct config, correct
+# data on disk, a confident answer built from neither, no signal.)
+# Confidentiality keys (profiles) fail CLOSED instead — see _cfg().
+KNOWN_TOP_KEYS = {"base_url", "client", "audits", "profiles"}
+KNOWN_AUDIT_KEYS = {"slug", "label", "run_date", "evidence_file",
+                    "evidence_mode", "classes_file"}
+
 CFG_PATH = os.environ.get("SIGNAL_MCP_CONFIG",
                           os.path.expanduser("~/.signal_mcp/config.json"))
 CACHE_DIR = os.path.expanduser("~/.signal_mcp/cache")
@@ -46,7 +57,7 @@ server = MCPServer(
     instructions=(
         "Every response's convention block carries server_build (the code this "
         "server process loaded) and, when determinable, a stale_server warning. "
-        "If stale_server is present, or build_check is unavailable, or "
+        "If stale_server or config_features_unsupported is present, or build_check is unavailable, or "
         "server_build differs from a build named elsewhere in the conversation, "
         "SAY SO before reporting any figure — the numbers may come from "
         "outdated logic, or their currency could not be confirmed."))
@@ -135,6 +146,10 @@ def _cfg():
         c["audits"] = prof.get("audits", [])
         c["client"] = prof.get("client", name)
     c["_by_slug"] = {a["slug"]: a for a in c.get("audits", [])}
+    unknown = {k for k in c if not k.startswith("_")} - KNOWN_TOP_KEYS - {"client"}
+    for a in c.get("audits", []):
+        unknown |= set(a) - KNOWN_AUDIT_KEYS
+    c["_unsupported"] = sorted(unknown)
     return c
 
 
@@ -166,9 +181,14 @@ from conventions import (URLISH_RE, GENERIC_TOKENS as _GENERIC_TOKENS,
 def _convention(payload, counting="stored (full-text: name anywhere in the answer, cited links included)"):
     _, unb, branded = _split_rows(payload)
     _bstat, _bwarn = _build_state()
+    _unsup = _cfg().get("_unsupported") or []
     return {
         "server_build": SERVER_BUILD,
         "build_check": _bstat,
+        **({"config_features_unsupported":
+            f"this server build does not understand config keys {_unsup} — output "
+            f"may be incomplete; restart or update the connector before relying on "
+            f"figures"} if _unsup else {}),
         **({"stale_server": _bwarn} if _bwarn else {}),
         "scope": payload.get("metrics_scope") or "all_responses",
         "counting": counting,
