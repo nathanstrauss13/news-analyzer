@@ -139,6 +139,25 @@ def _convention(payload, counting="stored (full-text: name anywhere in the answe
     }
 
 
+def _evidence(slug, payload):
+    """Page-level evidence for a slug: the payload's own citation_checks
+    when present, else a config-declared supplement file (an offline
+    full-corpus grounding pass, run after collection — e.g. for frozen
+    public payloads that predate in-run page checks). Returns
+    (checks_dict, source_note). Supplement entries carry checked_date."""
+    cc = payload.get("citation_checks") or {}
+    if cc:
+        return cc, "collected at run time (top-cited subset)"
+    meta = _cfg()["_by_slug"].get(slug, {})
+    ef = meta.get("evidence_file")
+    if ef and os.path.exists(os.path.expanduser(ef)):
+        with open(os.path.expanduser(ef)) as f:
+            sup = json.load(f)
+        note = sup.get("_note") or "offline full-corpus grounding pass"
+        return {k: v for k, v in sup.items() if not k.startswith("_")}, note
+    return {}, "no page-level evidence available for this audit"
+
+
 def _label(slug, payload):
     meta = _cfg()["_by_slug"].get(slug, {})
     return {"slug": slug, "brand": payload.get("brand"),
@@ -177,7 +196,7 @@ def get_audit(slug: str) -> dict:
     page-fetch ratio. Numbers come with denominators; no interpretation."""
     p = _payload(slug)
     rows, unb, branded = _split_rows(p)
-    cc = p.get("citation_checks") or {}
+    cc, ev_note = _evidence(slug, p)
     urls = {c.get("url") for r in rows for c in (r.get("citations") or [])
             if isinstance(c, dict) and c.get("url")}
     loaded = sum(1 for v in cc.values() if v.get("status") == "ok")
@@ -206,6 +225,7 @@ def get_audit(slug: str) -> dict:
         "page_fetch_ratio": {"distinct_cited_urls": len(urls), "fetched": len(cc),
                              "loaded": loaded, "bot_walled": len(cc) - loaded,
                              "never_fetched": max(0, len(urls) - len(cc)),
+                             "evidence_source": ev_note,
                              "note": "Page-level evidence exists only for the fetched subset."},
         "convention": _convention(p),
     }
@@ -274,16 +294,18 @@ def outlet_profile(slug: str, domain: str) -> dict:
         sov_facts["competitors_at_outlet"] = [
             {k: c.get(k) for k in ("name", "mentions_at_outlet", "sov_at_outlet", "overall_sov")}
             for c in comp[:6]]
-    cc = p.get("citation_checks") or {}
+    cc, ev_note = _evidence(slug, p)
     pages = [{"url": u, "fetch_status": v.get("status"),
               "brand_mentions_on_page": v.get("brand_count"),
-              "page_title": (v.get("title") or "")[:120]}
+              "page_title": (v.get("title") or "")[:120],
+              **({"checked_date": v["checked_date"]} if v.get("checked_date") else {})}
              for u, v in cc.items() if _root(u.split("//")[-1]) == root]
     return {**_label(slug, p), "domain_root": root,
             "citations": cites, "answers_citing": len(answers),
             "agents_citing": sorted(a for a in agents if a),
             "share_of_voice": sov_facts,
             "page_evidence": pages[:20],
+            "page_evidence_source": ev_note,
             "convention": _convention(p)}
 
 
@@ -326,14 +348,15 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
     evidence exists only for the fetched subset, never the whole citation set."""
     p = _payload(slug)
     rows, _, _ = _split_rows(p)
-    cc = p.get("citation_checks") or {}
+    cc, ev_note = _evidence(slug, p)
     urls = {c.get("url") for r in rows for c in (r.get("citations") or [])
             if isinstance(c, dict) and c.get("url")}
     loaded = [(u, v) for u, v in cc.items() if v.get("status") == "ok"]
     silent = [u for u, v in loaded if not v.get("brand_count")]
     items = [{"url": u, "fetch_status": v.get("status"),
               "brand_mentions_on_page": v.get("brand_count") or 0,
-              "page_title": (v.get("title") or "")[:120]}
+              "page_title": (v.get("title") or "")[:120],
+              **({"checked_date": v["checked_date"]} if v.get("checked_date") else {})}
              for u, v in cc.items()
              if not (only_missing_brand and (v.get("status") != "ok" or v.get("brand_count")))]
     return {**_label(slug, p),
@@ -342,6 +365,7 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
                             "never_fetched": max(0, len(urls) - len(cc))},
             "loaded_pages_not_mentioning_brand": len(silent),
             "of_loaded_pages": len(loaded),
+            "evidence_source": ev_note,
             "pages": items[:max(1, min(limit, 100))],
             "convention": _convention(p)}
 
