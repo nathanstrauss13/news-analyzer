@@ -11,7 +11,23 @@ SECOND_LEVEL = {"co.uk", "ac.uk", "org.uk", "gov.uk", "com.au", "net.au",
                 "org.au", "gov.au", "edu.au", "co.jp", "or.jp", "ne.jp",
                 "co.in", "org.in", "com.br", "org.br", "co.nz", "org.nz",
                 "com.sg", "com.hk", "com.mx", "com.tw", "co.za", "org.za",
-                "com.cn", "org.cn", "co.kr", "or.kr"}
+                "com.cn", "org.cn", "co.kr", "or.kr", "co.id", "or.id",
+                "ac.id", "com.my", "co.th", "com.ar", "com.co", "com.pe",
+                "com.ph", "com.vn", "com.tr", "com.pl", "com.eg", "co.il",
+                "org.il", "com.ng", "co.ke"}
+
+# Curated, not exhaustive — the full Public Suffix List is the paid-exporter
+# ticket. Guard for the silent failure mode a partial list creates:
+_SUFFIX_FIRST_LABELS = {"co", "or", "ac", "com", "org", "net", "gov", "edu", "ne"}
+
+
+def is_bare_suffix(root):
+    """True when a computed 'root' is likely a public suffix rather than a
+    registrable domain (e.g. 'co.id' from a ccTLD missing from SECOND_LEVEL).
+    Consumers should warn on these rather than treat them as an outlet —
+    unrelated organisations would otherwise silently merge into one row."""
+    parts = (root or "").split(".")
+    return len(parts) == 2 and parts[0] in _SUFFIX_FIRST_LABELS and len(parts[1]) == 2
 
 GENERIC_TOKENS = {"company", "companies", "group", "corp", "corporation", "inc",
                   "brands", "foods", "soup", "labs", "systems", "networks",

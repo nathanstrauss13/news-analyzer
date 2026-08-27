@@ -19,8 +19,8 @@ import csv, hashlib, json, os, re, sys
 from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conventions import (URLISH_RE, forms_to_pattern, host_of, root_of,
-                         split_rows, type_of)
+from conventions import (URLISH_RE, forms_to_pattern, host_of, is_bare_suffix,
+                         root_of, split_rows, type_of)
 
 
 def wb(name):
@@ -225,6 +225,37 @@ def export(payload_path, out_dir, host_classes_path=None):
     w("07_page_checks_per_url.csv",
       ["url", "domain_root", "fetch_status", "fetched_ok", "mentions_brand",
        "brand_mentions_on_page", "page_title", "source_type", "checked_date"], per_url)
+
+    # Machine-readable sidecar (biz-dev's builder asserts against row_counts:
+    # a mismatch between manifest and files must fail the build loudly).
+    import datetime as _dt
+    row_counts = {"01_answers.csv": len(answers), "02_citations.csv": len(citations),
+                  "03_sources.csv": len(universe), "04_source_index.csv": len(src_index),
+                  "05_llm_summary.csv": len(per_llm), "06_competitors.csv": len(comp_hits_unb),
+                  "07_page_checks_per_url.csv": len(per_url)}
+    json.dump({
+        "slug": p.get("slug"), "brand": brand,
+        "run_date": run_date or None,
+        "payload_sha256": payload_sha,
+        "agents": sorted({r.get("llm") for r in rows if r.get("llm")}),
+        "answers": {"total": len(rows), "branded": len(rows) - len(unb), "unbranded": len(unb)},
+        "citation_rows": len(citations), "rootable_citations": sum(root_cites_all.values()),
+        "unrootable_retained": len(unrootable),
+        "brand_forms": [brand] + aliases,
+        "row_counts": row_counts,
+        "scopes": {
+            "01_02_07": "all answers; rows carry prompt_class / per-URL grain",
+            "03": "citations_root_all = all answers; citations_root_unbranded = unbranded only",
+            "04_05_06": "unbranded scope per the split-audit contract",
+            "page_check_columns": "full citation set",
+            "citation_grain_rule": "distributions denominate on rootable citations, stated with the row count"},
+    }, open(os.path.join(out_dir, "manifest.json"), "w"), indent=1)
+
+    bare = sorted(r for r in universe if is_bare_suffix(r))
+    if bare:
+        print(f"WARNING: {len(bare)} computed root(s) look like bare public "
+              f"suffixes (ccTLD missing from SECOND_LEVEL?): {bare} — unrelated "
+              f"hosts may be merged; extend conventions.SECOND_LEVEL")
 
     manifest = f"""RAW RUN EXPORT MANIFEST
 slug: {p.get('slug')}
