@@ -73,56 +73,9 @@ def _payload(slug):
 
 # ── conventions (mirrors the platform's read-time rules) ──────────────────
 
-URLISH_RE = re.compile(
-    r"https?://\S+|www\.\S+|\b[a-z0-9][a-z0-9.-]*\.(?:com|net|org|io|ai|co)(?:/\S*)?",
-    re.I)
-
-_SECOND_LEVEL = {"co.uk", "ac.uk", "org.uk", "gov.uk", "com.au", "net.au",
-                 "org.au", "gov.au", "edu.au", "co.jp", "or.jp", "ne.jp",
-                 "co.in", "org.in", "com.br", "org.br", "co.nz", "org.nz",
-                 "com.sg", "com.hk", "com.mx", "com.tw", "co.za", "org.za",
-                 "com.cn", "org.cn", "co.kr", "or.kr"}
-
-
-def _root(host):
-    host = (host or "").lower().split("/")[0].split(":")[0]
-    host = host[4:] if host.startswith("www.") else host
-    parts = host.split(".")
-    if len(parts) >= 3 and ".".join(parts[-2:]) in _SECOND_LEVEL:
-        return ".".join(parts[-3:])
-    return ".".join(parts[-2:]) if len(parts) >= 2 else host
-
-
-_GENERIC_TOKENS = {"company", "companies", "group", "corp", "corporation", "inc",
-                   "brands", "foods", "soup", "labs", "systems", "networks",
-                   "technologies", "holdings", "global", "international"}
-
-
-def _forms_to_pattern(forms):
-    """Word-boundary union with apostrophe tolerance ("Campbell's" also
-    matches "Campbells"), plus the brand's first distinctive token with an
-    optional possessive — mirroring the platform's counting behavior. The
-    token is gated by a generic-word blocklist (the "Soup" lesson: never let
-    a generic mid-name token become a match form)."""
-    parts = []
-    for f in forms:
-        if not f.strip():
-            continue
-        parts.append(r"\b" + re.escape(f).replace(r"\'", "'?") + r"\b")
-    toks = re.findall(r"[A-Za-z][\w'-]*", forms[0] if forms else "")
-    if toks:
-        t = toks[0]
-        if len(t) >= 5 and t.lower() not in _GENERIC_TOKENS:
-            parts.append(r"\b" + re.escape(t) + r"(?:'?s)?\b")
-    return re.compile("|".join(parts), re.I)
-
-
-def _split_rows(payload):
-    ps = payload.get("prompt_sets") or {}
-    branded = set(ps.get("branded") or [])
-    rows = payload.get("all_responses") or []
-    unb = [r for r in rows if r.get("prompt") not in branded] if branded else rows
-    return rows, unb, branded
+from conventions import (URLISH_RE, GENERIC_TOKENS as _GENERIC_TOKENS,
+                         root_of as _root, forms_to_pattern as _forms_to_pattern,
+                         type_of as _type_of, split_rows as _split_rows)
 
 
 def _convention(payload, counting="stored (full-text: name anywhere in the answer, cited links included)"):
@@ -174,14 +127,6 @@ def _classes(slug, payload):
         return ({k: v for k, v in sup.items() if not k.startswith("_")},
                 sup.get("_note") or "offline classification pass")
     return {}, "no source classification available for this audit"
-
-
-def _type_of(host_or_url, cls_map):
-    """Host-first classification with root fallback — a subdomain override
-    (insider.fitt.co -> editorial) wins over its root's class."""
-    h = (host_or_url or "").split("//")[-1].split("/")[0].split(":")[0].lower()
-    h = h[4:] if h.startswith("www.") else h
-    return cls_map.get(h) or cls_map.get(_root(h))
 
 
 def _label(slug, payload):
