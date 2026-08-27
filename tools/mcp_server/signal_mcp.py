@@ -46,9 +46,37 @@ server = MCPServer("signal-audit")
 # ── config / fetch / cache ────────────────────────────────────────────────
 
 def _cfg():
+    """Load config. Two shapes:
+
+    Flat (single-context use, e.g. internal dogfood):
+        {"audits": [{"slug": ...}, ...]}
+
+    Profiled (REQUIRED once audits for more than one client/prospect exist):
+        {"profiles": {"acme-demo": {"audits": [...]}, ...}}
+        + env SIGNAL_MCP_PROFILE naming the active profile.
+
+    FAIL-CLOSED RULE: when profiles exist and no profile is selected, every
+    tool errors instead of enumerating. A config that accumulates prospect
+    audits must never disclose one prospect's presence to another via a
+    careless list_audits — the obvious call fails safe rather than leaking
+    the pipeline. Selection is explicit, per server registration, never a
+    default."""
     with open(CFG_PATH) as f:
         c = json.load(f)
     c.setdefault("base_url", "https://signal.innatec3.com")
+    profiles = c.get("profiles")
+    if profiles:
+        name = os.environ.get("SIGNAL_MCP_PROFILE", "")
+        if not name or name not in profiles:
+            raise ValueError(
+                "This config holds multiple client/prospect profiles and no active "
+                "profile is selected. Set SIGNAL_MCP_PROFILE in the server "
+                "registration to exactly one profile name. Refusing to enumerate "
+                "or serve audits without an explicit selection — the audit list "
+                "itself is confidential across profiles.")
+        prof = profiles[name]
+        c["audits"] = prof.get("audits", [])
+        c["client"] = prof.get("client", name)
     c["_by_slug"] = {a["slug"]: a for a in c.get("audits", [])}
     return c
 
