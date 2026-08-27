@@ -193,9 +193,19 @@ def _evidence(slug, payload):
     if ef and os.path.exists(os.path.expanduser(ef)):
         with open(os.path.expanduser(ef)) as f:
             sup = json.load(f)
+        sup_cc = {k: v for k, v in sup.items() if not k.startswith("_")}
+        mode = meta.get("evidence_mode", "extend")
+        if mode == "replace" and sup_cc:
+            # A full-corpus single-epoch pass REPLACES mixed-epoch run-time
+            # checks: one fetch date, one method, one definition of
+            # "readable" — so every surface (MCP, export bundle, workbook)
+            # reports the identical split. "extend" (default) keeps run-time
+            # values and fills gaps, which mixes epochs; use it only when the
+            # supplement is partial.
+            return sup_cc, (sup.get("_note") or "offline full-corpus pass") +                 " [replaces run-time checks: single fetch epoch]"
         added = 0
-        for k, v in sup.items():
-            if not k.startswith("_") and k not in cc:
+        for k, v in sup_cc.items():
+            if k not in cc:
                 cc[k] = v
                 added += 1
         if cc and added:
