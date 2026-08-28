@@ -118,7 +118,7 @@ Build typically takes 3-5 min (pandas compilation is the slow step). Subsequent 
 - [ ] **Merge [PR #1](https://github.com/nathanstrauss13/news-analyzer/pull/1)** to `main` and switch Render's deploy branch from `feat/pr-signal-finder` to `main`.
 
 ### Cleanup
-- [ ] **Retire `insights.innatec3.com`** CNAME (still points to `ai-citation-audit.onrender.com` — the deprecated typeform-audit tool).
+- [x] **`insights.innatec3.com` RELEASED to marketing** (8/27, Nathan's call) for the GEO practice sub-brand site. The host branch is gone from legacy `web_app.py`; the CNAME still points at the defunct `ai-citation-audit.onrender.com` (503, no TLS cert) until marketing repoints it at their static host — that DNS change happens in the Squarespace panel, not here. A filesystem sweep found the hostname referenced only in internal planning docs; it was never advertised to anyone, so nothing outbound is broken.
 - [ ] **Suspend/delete** the 10 other Manually Suspended Render services from the dashboard (they're $0 but clutter the dashboard).
 - [ ] **`legacy-index` route in `app.py`** — the old media-analyzer index page is still there at `/legacy-index`. Decide whether to keep or remove.
 
