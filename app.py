@@ -6871,7 +6871,8 @@ def _is_specific_article(url):
         return True
 
 
-def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None):
+def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None,
+                             batch_deadline=None):
     """HEAD-check + redirect-resolve a batch of URLs concurrently.
 
     Returns a dict {original_url: final_url_or_None}.
@@ -6940,23 +6941,71 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
 
     completed = 0
     total = len(urls)
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = [ex.submit(check, u) for u in urls]
-        for fut in as_completed(futures):
+    # WHOLE-BATCH DEADLINE. requests' `timeout` is per-socket-read, not per
+    # call: a trickling ("slowloris") server, a long redirect chain under
+    # allow_redirects, or the vertex body-GET can each hold a worker far past
+    # `timeout`. This loop used to be the only unbounded as_completed() in the
+    # file, so ONE such worker stalled the whole audit a few URLs short of
+    # total — the SSE stream kept emitting keepalives while finalize never ran,
+    # and the job died to the 30-minute watchdog with no report and no
+    # exception. (Observed on Citi thought-leadership runs, 2026-09-09: IR/PDF
+    # hosts trickle far more often than consumer pages, so this is
+    # input-dependent and recurs on research-heavy prompt sets.)
+    #
+    # The deadline scales with the work: worst case a worker does HEAD (timeout)
+    # + a 403 GET retry (timeout) + a vertex GET (~4s), so ~3x timeout per URL
+    # per wave, plus headroom. At 855 URLs / 40 workers that is ~195s — a flat
+    # 45s cap would fire on legitimately slow-but-working batches and fail-open
+    # nearly every URL, silently gutting verification instead of fixing it.
+    if batch_deadline is None:
+        _waves = -(-total // max(1, max_workers))      # ceil, no math import needed
+        batch_deadline = max(60.0, _waves * (timeout * 3.0) + 30.0)
+    ex = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        fut_map = {ex.submit(check, u): u for u in urls}
+        try:
+            for fut in as_completed(fut_map, timeout=batch_deadline):
+                try:
+                    orig, final = fut.result()
+                    out[orig] = final
+                except Exception:
+                    pass
+                completed += 1
+                if on_progress:
+                    # Emit progress periodically (every 5 URLs or on completion) so the
+                    # frontend ETA can update smoothly through this step.
+                    if completed % 5 == 0 or completed == total:
+                        try:
+                            on_progress(completed, total)
+                        except Exception:
+                            pass
+        except FuturesTimeoutError:
+            pass
+        # FAIL OPEN on whatever did not finish: keep the URL as-is rather than
+        # dropping it. Matches this function's existing doctrine for 403/5xx/
+        # timeout ("assume real, don't penalize"). A stalled check is evidence
+        # about the server, not about whether the citation exists.
+        _stalled = [u for f, u in fut_map.items() if not f.done()]
+        for u in _stalled:
+            out.setdefault(u, u)
+        if _stalled:
+            print(f"[audit] URL verification hit its {batch_deadline:.0f}s batch deadline; "
+                  f"kept {len(_stalled)} unresolved URL(s) unverified "
+                  f"(resolved {len(urls) - len(_stalled)}/{len(urls)}): "
+                  f"{', '.join(u[:60] for u in _stalled[:5])}")
+        if on_progress and completed < total:
             try:
-                orig, final = fut.result()
-                out[orig] = final
+                on_progress(total, total)   # never leave the bar short of total
             except Exception:
                 pass
-            completed += 1
-            if on_progress:
-                # Emit progress periodically (every 5 URLs or on completion) so the
-                # frontend ETA can update smoothly through this step.
-                if completed % 5 == 0 or completed == total:
-                    try:
-                        on_progress(completed, total)
-                    except Exception:
-                        pass
+    finally:
+        # wait=False is load-bearing: a hung worker cannot be cancelled once
+        # running, so the context-manager form (shutdown(wait=True)) would
+        # block here and reintroduce the exact hang this fix removes.
+        try:
+            ex.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            ex.shutdown(wait=False)         # py<3.9
     return out
 
 
