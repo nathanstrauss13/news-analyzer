@@ -43,6 +43,7 @@ from utils.simple_file_processor import SimpleMediaFileProcessor
 load_dotenv(override=True)
 
 app = Flask(__name__)
+_PROCESS_BOOTED_AT = datetime.utcnow().isoformat(timespec="seconds") + "Z"  # for /healthz
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "your_secret_key_here")
 
 # Cookie/session hardening — kills the basic cross-site CSRF vector on
@@ -10611,11 +10612,18 @@ def mcp_current_build():
 def healthz():
     """Lightweight liveness probe — no DB, no LLM. Surfaces audit concurrency so
     Render alerts and manual checks can watch the launch spike."""
+    # Deployed commit + boot time so a deploy can be VERIFIED from outside
+    # without a paid audit run. Render sets RENDER_GIT_COMMIT; locally it is
+    # absent, so the field reads null rather than lying. Mirrors the MCP
+    # layer's build stamp, which only covers signal_mcp.py/conventions.py and
+    # therefore cannot prove an app.py-only deploy landed.
     return jsonify({
         "status": "ok",
         "audits_inflight": _audit_inflight,
         "max_concurrent": MAX_CONCURRENT_AUDITS,
         "slots_free": max(0, MAX_CONCURRENT_AUDITS - _audit_inflight),
+        "commit": (os.environ.get("RENDER_GIT_COMMIT") or "")[:9] or None,
+        "booted_at": _PROCESS_BOOTED_AT,
     }), 200
 
 
