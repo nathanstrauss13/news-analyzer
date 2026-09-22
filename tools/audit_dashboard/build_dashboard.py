@@ -283,12 +283,23 @@ def load_rows(path):
         d = json.load(f)
     rows = []
     if isinstance(d, dict) and "all_responses" in d:            # production slug JSON
+        _empty = 0
         for r in d.get("all_responses") or []:
             if r.get("error"):
+                continue
+            # An empty response is a delivery failure, not an answer. Counting it
+            # fabricates an absence ("brand not named in N answers") out of a
+            # blank. Azzaro e29906c871 carried 5 empty Gemini rows with
+            # grounded=True and no error; the shipped page correctly read 95.
+            if not (r.get("response") or "").strip():
+                _empty += 1
                 continue
             urls = [norm_url(c.get("url")) for c in (r.get("citations") or []) if c.get("url")]
             rows.append({"query": r.get("prompt") or "", "platform": r.get("llm") or "?",
                          "response": r.get("response") or "", "urls": [u for u in urls if u]})
+        if _empty:
+            print(f"[load_rows] {path}: skipped {_empty} empty-response row(s) (not counted as answers)",
+                  file=sys.stderr)
     elif isinstance(d, dict) and "rows" in d:                    # raw audit kit JSON
         for r in d["rows"]:
             if (r.get("full_response") or "").startswith("ERROR"):
