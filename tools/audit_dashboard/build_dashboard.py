@@ -1446,6 +1446,10 @@ def build(cfg, branded, organic, out_path):
     # headline move + top media targets, framed explicitly as examples of the
     # insight type a consultative engagement develops and validates at depth.
     ap = cfg.get("advisory_preview") or {}
+    _WORDS2 = {5: "five", 6: "six", 8: "eight", 10: "ten", 12: "twelve", 14: "fourteen", 15: "fifteen",
+               16: "sixteen", 20: "twenty", 24: "twenty-four", 25: "twenty-five", 30: "thirty", 40: "forty", 50: "fifty"}
+    _npq = len({r["query"] for lane in (branded, organic) if lane for r in lane["rows"]})
+    _np_word = _WORDS2.get(_npq, str(_npq))
     if cfg.get("automated_sample") and (ap.get("headline_move") or ap.get("media_targets")):
         hm = ap.get("headline_move") or {}
         cards = []
@@ -1479,7 +1483,7 @@ def build(cfg, branded, organic, out_path):
   <div class="gh">Illustrative moves</div>
   <h2>What this sample suggests, as a preview</h2>
   <div class="section-sub" style="color:var(--dim);font-size:13.5px;margin-bottom:16px;max-width:760px">
-  Surfaced automatically from this ten-prompt sample: examples of the insight type a
+  Surfaced automatically from this {_np_word}-prompt sample: examples of the insight type a
   consultative engagement develops, validates against fetched coverage, and expands
   across bespoke prompts, 500 to 1,000 outputs, and human analysis.</div>
   {''.join(cards)}
