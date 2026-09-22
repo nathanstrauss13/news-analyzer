@@ -1220,11 +1220,21 @@ def build(cfg, branded, organic, out_path):
                    'of it; the source tables show the split per source.')
             exec_ps.append(("Page check", p3))
         _n_all = (branded["n"] if branded else 0) + (organic["n"] if organic else 0)
+        # Prompt count and agent count come from the data, never from prose:
+        # this sentence once said "ten-prompt" on a 20-prompt run (Azzaro,
+        # e29906c871) because the number was hardcoded.
+        _queries = {r["query"] for lane in (branded, organic) if lane for r in lane["rows"]}
+        _agents = {r["platform"] for lane in (branded, organic) if lane for r in lane["rows"]}
+        _WORDS = {5: "five", 6: "six", 8: "eight", 10: "ten", 12: "twelve", 14: "fourteen",
+                  15: "fifteen", 16: "sixteen", 20: "twenty", 24: "twenty-four", 25: "twenty-five",
+                  30: "thirty", 40: "forty", 50: "fifty"}
+        _np, _na = len(_queries), len(_agents)
         exec_ps.append((None,
-            f'A ten-prompt sample is directional by design: {_n_all} answers from five AI agents '
-            f'with live web search, counted without human review, every number recomputable from '
-            f'the appendix. Treat it as an illustrative preview of what a consultative engagement '
-            f'develops at depth, with bespoke prompts, 500 to 1,000 outputs, and human analysis.'))
+            f'A {_WORDS.get(_np, str(_np))}-prompt sample is directional by design: {_n_all} answers '
+            f'from {_WORDS.get(_na, str(_na))} AI agents with live web search, counted without human '
+            f'review, every number recomputable from the appendix. Treat it as an illustrative '
+            f'preview of what a consultative engagement develops at depth, with bespoke prompts, '
+            f'500 to 1,000 outputs, and human analysis.'))
     if not exec_ps:
         exec_ps = []
         if branded:
