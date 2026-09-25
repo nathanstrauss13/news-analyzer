@@ -126,10 +126,30 @@ if _db_url.startswith('postgres://'):
 # v3 form SQLAlchemy tries `import psycopg`, which is not installed, and the
 # app dies at boot (every deploy after the env change failed this way on
 # 2026-09-25 while the previous image kept serving).
-for _pfx in ('postgresql+psycopg://', 'postgres+psycopg://', 'postgresql+psycopg2://'):
-    if _db_url.startswith(_pfx):
-        _db_url = 'postgresql://' + _db_url[len(_pfx):]
-        break
+# Parse rather than prefix-match: whatever form the URL arrives in, if
+# SQLAlchemy would resolve it to the psycopg (v3) driver, pin it to the
+# installed psycopg2 driver. Log the redacted scheme so a boot log shows
+# what Render handed us without printing credentials.
+try:
+    from sqlalchemy.engine.url import make_url as _make_url
+    _raw = _db_url.strip()
+    if '://' in _raw:                       # scheme is case-insensitive; SQLAlchemy's plugin lookup is not
+        _sch, _rest = _raw.split('://', 1)
+        _raw = _sch.lower() + '://' + _rest
+    _u = _make_url(_raw)
+    _orig_driver = _u.drivername
+    if _u.get_backend_name() == 'postgresql':
+        try:
+            import psycopg2  # noqa: F401  — the driver in requirements.txt
+            _have_pg2 = True
+        except Exception:
+            _have_pg2 = False
+        if _have_pg2 and _u.drivername != 'postgresql+psycopg2':
+            _u = _u.set(drivername='postgresql+psycopg2')
+    _db_url = _u.render_as_string(hide_password=False)
+    print(f"[db] DATABASE_URL scheme {_orig_driver!r} -> {_u.drivername!r} (host={_u.host})", flush=True)
+except Exception as _dbe:
+    print(f"[db] could not parse DATABASE_URL ({type(_dbe).__name__}); using as-is", flush=True)
 app.config['SQLALCHEMY_DATABASE_URI'] = _db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Postgres-friendly pool settings: recycle stale connections, validate on checkout.
