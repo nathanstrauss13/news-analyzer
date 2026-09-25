@@ -10646,14 +10646,33 @@ def admin_upload_static_report():
         return Response("html body missing or not a page\n", status=400, mimetype='text/plain')
     payload = {'static_html': html_body, 'brand': (request.form.get('brand') or '').strip() or slug,
                'kind': 'static_dashboard'}
+    # Optional per-slug gate: auth_user + auth_pass turn on HTTP basic auth for
+    # this page (confidential client boards). Only a hash is stored. A
+    # republish that omits the fields KEEPS the existing gate, so a monthly
+    # refresh can never accidentally publish a gated page open; pass
+    # auth_clear=1 to remove it deliberately.
+    from werkzeug.security import generate_password_hash
     rec = SharedResult.query.filter_by(slug=slug).first()
+    _prev = {}
+    if rec is not None:
+        try:
+            _prev = json.loads(rec.payload or '{}')
+        except Exception:
+            _prev = {}
+    a_user = (request.form.get('auth_user') or '').strip()
+    a_pass = request.form.get('auth_pass') or ''
+    if a_user and a_pass:
+        payload['access'] = {'user': a_user, 'hash': generate_password_hash(a_pass)}
+    elif _prev.get('access') and request.form.get('auth_clear') != '1':
+        payload['access'] = _prev['access']
     if rec is None:
         rec = SharedResult(slug=slug, payload=json.dumps(payload))
         db.session.add(rec)
     else:
         rec.payload = json.dumps(payload)
     db.session.commit()
-    return Response(f"published /signal/{slug} ({len(html_body)//1024} KB)\n", mimetype='text/plain')
+    gate = " [gated: basic auth]" if payload.get('access') else ""
+    return Response(f"published /signal/{slug} ({len(html_body)//1024} KB){gate}\n", mimetype='text/plain')
 
 
 @app.route('/admin/annotate-scanner-clicks', methods=['POST'])
@@ -11895,6 +11914,23 @@ def view_signal_report(slug):
     # First-party traffic log — count a real report view, not an operator
     # re-render/persist hit (fresh/refresh/save). Bots + operator IPs are
     # skipped inside _log_page_visit.
+    # Gated static pages (confidential client boards): HTTP basic auth against
+    # the per-slug hash set at upload. Checked BEFORE the visit log so a
+    # refused attempt is never counted as a view. Gated responses are also
+    # marked noindex and no-store at the header level, independent of the
+    # page's own meta tags.
+    _access = data.get('access') if data.get('static_html') else None
+    if _access:
+        from werkzeug.security import check_password_hash
+        auth = request.authorization
+        ok = bool(auth and auth.username == _access.get('user')
+                  and check_password_hash(_access.get('hash') or '', auth.password or ''))
+        if not ok:
+            return Response('Authentication required.\n', status=401, mimetype='text/plain',
+                            headers={'WWW-Authenticate': 'Basic realm="innate c3", charset="UTF-8"',
+                                     'X-Robots-Tag': 'noindex, nofollow',
+                                     'Cache-Control': 'private, no-store'})
+
     if not (request.args.get('fresh') or request.args.get('refresh') or request.args.get('save')):
         _log_page_visit('report', slug=slug)
 
@@ -11902,7 +11938,11 @@ def view_signal_report(slug):
     # /admin/upload-static-report) serve verbatim: no rerender, no filters,
     # no enrichment — the artifact IS the payload.
     if data.get('static_html'):
-        return Response(data['static_html'], mimetype='text/html')
+        resp = Response(data['static_html'], mimetype='text/html')
+        if _access:
+            resp.headers['X-Robots-Tag'] = 'noindex, nofollow'
+            resp.headers['Cache-Control'] = 'private, no-store'
+        return resp
 
     data = _apply_display_editorial_filter(data)
 
