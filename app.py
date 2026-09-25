@@ -121,6 +121,15 @@ file_processor = SimpleMediaFileProcessor(os.environ.get("ANTHROPIC_API_KEY"))
 _db_url = os.environ.get('DATABASE_URL', 'sqlite:///waitlist.db')
 if _db_url.startswith('postgres://'):
     _db_url = _db_url.replace('postgres://', 'postgresql://', 1)
+# Render can hand out `postgresql+psycopg://` (psycopg v3 dialect). The
+# installed driver is psycopg2-binary, so pin the dialect to it: with the
+# v3 form SQLAlchemy tries `import psycopg`, which is not installed, and the
+# app dies at boot (every deploy after the env change failed this way on
+# 2026-09-25 while the previous image kept serving).
+for _pfx in ('postgresql+psycopg://', 'postgres+psycopg://', 'postgresql+psycopg2://'):
+    if _db_url.startswith(_pfx):
+        _db_url = 'postgresql://' + _db_url[len(_pfx):]
+        break
 app.config['SQLALCHEMY_DATABASE_URI'] = _db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Postgres-friendly pool settings: recycle stale connections, validate on checkout.
