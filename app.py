@@ -320,6 +320,18 @@ class InboundAudit(db.Model):
     is_operator = db.Column(db.Boolean, nullable=True, default=False, index=True)
 
 
+
+class BoardLiveFeed(db.Model):
+    """Daily server-side pull for a gated static board (first: the Xsight
+    Signal Board). One row per slug; the page fetches /signal/<slug>/live.json
+    at load and overlays it, falling back to its embedded numbers if absent.
+    Written by run_board_live_pull (cron) or /admin/board-live/<slug>/run."""
+    __tablename__ = 'board_live_feeds'
+    slug = db.Column(db.String(32), primary_key=True)
+    payload = db.Column(db.Text, nullable=False)
+    pulled_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    last_error = db.Column(db.Text, nullable=True)
+
 class PageVisit(db.Model):
     """One row per HUMAN visit to a tool page (homepage or a shared report) —
     first-party traffic analytics for the operator /traffic view. Bots and
@@ -3343,6 +3355,15 @@ def run_daily_traffic_digest():
         print("run_daily_traffic_digest error:", e)
 
 
+def run_board_live_pull():
+    """Daily Google pull for gated boards (cron 08:25 UTC). No-op unless
+    GOOGLE_TOKEN_JSON and BOARD_LIVE_SLUGS are set. Late-binds to the impl."""
+    try:
+        _run_board_live_pull()
+    except Exception as e:
+        print("run_board_live_pull error:", e)
+
+
 def run_daily_inbound_digest():
     """Daily self-serve audit (inbound-lead) digest (cron 8:15 UTC). Thin wrapper;
     late-binds to the impl defined later in the file."""
@@ -3370,6 +3391,7 @@ if BackgroundScheduler:
             scheduler.add_job(run_daily_traffic_digest, 'cron', hour=8, minute=10)
             scheduler.add_job(run_daily_inbound_digest, 'cron', hour=8, minute=15)
             scheduler.add_job(run_daily_linkcheck, 'cron', hour=8, minute=20)
+            scheduler.add_job(run_board_live_pull, 'cron', hour=8, minute=25)
             scheduler.start()
             app._alerts_scheduler_started = True
             print("Alert scheduler started.")
@@ -10654,6 +10676,105 @@ def healthz():
         "commit": (os.environ.get("RENDER_GIT_COMMIT") or "")[:9] or None,
         "booted_at": _PROCESS_BOOTED_AT,
     }), 200
+
+
+def _board_live_gate(slug):
+    """Return (data, None) or (None, Response) applying the page's basic-auth
+    gate to a feed request. Feeds are served only for gated static pages."""
+    rec = SharedResult.query.filter_by(slug=slug).first()
+    if not rec:
+        return None, Response('not found\n', status=404, mimetype='text/plain')
+    try:
+        data = json.loads(rec.payload or '{}')
+    except Exception:
+        data = {}
+    access = data.get('access') if data.get('static_html') else None
+    if not access:
+        return None, Response('not found\n', status=404, mimetype='text/plain')
+    from werkzeug.security import check_password_hash
+    auth = request.authorization
+    ok = bool(auth and auth.username == access.get('user')
+              and check_password_hash(access.get('hash') or '', auth.password or ''))
+    if not ok:
+        return None, Response('Authentication required.\n', status=401, mimetype='text/plain',
+                              headers={'WWW-Authenticate': 'Basic realm="innate c3", charset="UTF-8"',
+                                       'X-Robots-Tag': 'noindex, nofollow',
+                                       'Cache-Control': 'private, no-store'})
+    return data, None
+
+
+@app.route('/signal/<slug>/live.json')
+def board_live_json(slug):
+    """Daily feed for a gated static board; same gate as the page, never cached."""
+    _, err = _board_live_gate(slug)
+    if err:
+        return err
+    row = db.session.get(BoardLiveFeed, slug)
+    if row is None:
+        return Response('no feed yet\n', status=404, mimetype='text/plain',
+                        headers={'Cache-Control': 'private, no-store'})
+    return Response(row.payload, mimetype='application/json',
+                    headers={'Cache-Control': 'private, no-store',
+                             'X-Robots-Tag': 'noindex, nofollow',
+                             'X-Pulled-At': row.pulled_at.isoformat(timespec='seconds') + 'Z'})
+
+
+def _run_board_live_pull(slugs=None):
+    """Run tools/board/fetch_google.py --stdout and store the JSON per slug.
+    Credentials come only from the GOOGLE_TOKEN_JSON env var (refresh-only,
+    read-only scopes); nothing is written to disk. Returns {slug: 'ok'|error}."""
+    import subprocess, sys as _sys
+    token = os.environ.get('GOOGLE_TOKEN_JSON')
+    slugs = slugs or [x.strip() for x in (os.environ.get('BOARD_LIVE_SLUGS') or '').split(',') if x.strip()]
+    if not token or not slugs:
+        print(f"[board-live] skipped: token={'set' if token else 'unset'} slugs={slugs or 'none'}")
+        return {}
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'board', 'fetch_google.py')
+    env = dict(os.environ, GOOGLE_TOKEN_JSON=token, OAUTHLIB_RELAX_TOKEN_SCOPE='1')
+    results = {}
+    try:
+        out = subprocess.run([_sys.executable, script, '--stdout'], env=env, capture_output=True,
+                             text=True, timeout=300)
+        if out.returncode != 0:
+            raise RuntimeError((out.stderr or out.stdout or 'fetch failed')[-400:])
+        body = out.stdout.strip()
+        json.loads(body)                       # must be valid JSON before we store it
+    except Exception as e:
+        err = f"{type(e).__name__}: {str(e)[:300]}"
+        print("[board-live] pull failed:", err)
+        with app.app_context():
+            for slug in slugs:
+                row = db.session.get(BoardLiveFeed, slug)
+                if row is not None:            # keep the last good feed, record the error
+                    row.last_error = err
+            db.session.commit()
+        return {s: err for s in slugs}
+    with app.app_context():
+        for slug in slugs:
+            row = db.session.get(BoardLiveFeed, slug)
+            if row is None:
+                row = BoardLiveFeed(slug=slug, payload=body)
+                db.session.add(row)
+            else:
+                row.payload = body
+            row.pulled_at = datetime.utcnow()
+            row.last_error = None
+            results[slug] = 'ok'
+        db.session.commit()
+    print(f"[board-live] stored feed for {slugs} ({len(body)} bytes)")
+    return results
+
+
+@app.route('/admin/board-live/<slug>/run', methods=['POST'])
+def admin_board_live_run(slug):
+    """Operator: pull the Google feed for one gated board now (first pull, tests)."""
+    if not _operator_ok():
+        return Response("forbidden\n", status=403, mimetype='text/plain')
+    res = _run_board_live_pull([slug])
+    row = db.session.get(BoardLiveFeed, slug)
+    return jsonify({"result": res, "pulled_at": (row.pulled_at.isoformat() + 'Z') if row else None,
+                    "last_error": row.last_error if row else None,
+                    "bytes": len(row.payload) if row else 0})
 
 
 @app.route('/admin/upload-static-report', methods=['POST'])

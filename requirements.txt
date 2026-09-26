@@ -25,3 +25,5 @@ itsdangerous>=2.1.0
 truststore>=0.9.0
 psycopg2-binary>=2.9.9
 psycopg[binary]>=3.1
+google-auth>=2.30
+google-api-python-client>=2.140
