@@ -10719,6 +10719,41 @@ def board_live_json(slug):
                              'X-Pulled-At': row.pulled_at.isoformat(timespec='seconds') + 'Z'})
 
 
+def _normalize_token_env(raw):
+    """Turn whatever was pasted into GOOGLE_TOKEN_JSON into the token JSON
+    text, or (None, reason). Accepts: raw JSON; JSON wrapped in one pair of
+    quotes; base64 of the JSON; a path to the token file. Never logs or
+    returns any secret material in the reason string: only shape facts."""
+    import base64
+    v = (raw or '').strip()
+    if not v:
+        return None, "empty"
+    shape = f"len={len(v)} starts={v[:1]!r} ends={v[-1:]!r}"
+    if v[0] in "\"'" and v[-1] == v[0] and len(v) > 2:
+        v = v[1:-1].strip()
+    try:
+        obj = json.loads(v)
+        if isinstance(obj, dict) and ('refresh_token' in obj or 'token' in obj):
+            return v, f"ok as JSON ({shape}, keys={sorted(k for k in obj if k in ('refresh_token','token','client_id','scopes'))})"
+        return None, f"JSON but not a token object ({shape})"
+    except Exception:
+        pass
+    if os.path.isfile(v):
+        try:
+            txt = open(v, encoding='utf-8').read()
+            json.loads(txt)
+            return txt, f"read from path ({shape})"
+        except Exception as e:
+            return None, f"path given but unreadable/invalid ({type(e).__name__})"
+    try:
+        txt = base64.b64decode(v, validate=True).decode('utf-8')
+        json.loads(txt)
+        return txt, f"decoded base64 ({shape})"
+    except Exception:
+        pass
+    return None, f"not JSON, not a readable path, not base64 ({shape})"
+
+
 def _run_board_live_pull(slugs=None):
     """Run tools/board/fetch_google.py --stdout and store the JSON per slug.
     Credentials come only from the GOOGLE_TOKEN_JSON env var (refresh-only,
@@ -10729,6 +10764,18 @@ def _run_board_live_pull(slugs=None):
     if not token or not slugs:
         print(f"[board-live] skipped: token={'set' if token else 'unset'} slugs={slugs or 'none'}")
         return {}
+    token, tok_note = _normalize_token_env(token)
+    if tok_note:
+        print("[board-live] token env:", tok_note)
+    if token is None:
+        err = f"GOOGLE_TOKEN_JSON is not usable: {tok_note}"
+        with app.app_context():
+            for slug in slugs:
+                row = db.session.get(BoardLiveFeed, slug)
+                if row is not None:
+                    row.last_error = err
+            db.session.commit()
+        return {s: err for s in slugs}
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'board', 'fetch_google.py')
     env = dict(os.environ, GOOGLE_TOKEN_JSON=token, OAUTHLIB_RELAX_TOKEN_SCOPE='1')
     results = {}
@@ -10736,7 +10783,7 @@ def _run_board_live_pull(slugs=None):
         out = subprocess.run([_sys.executable, script, '--stdout'], env=env, capture_output=True,
                              text=True, timeout=300)
         if out.returncode != 0:
-            raise RuntimeError((out.stderr or out.stdout or 'fetch failed')[-400:])
+            raise RuntimeError(((out.stderr or out.stdout or 'fetch failed').strip().splitlines() or ['fetch failed'])[-1][:300])
         body = out.stdout.strip()
         json.loads(body)                       # must be valid JSON before we store it
     except Exception as e:
