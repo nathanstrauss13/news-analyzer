@@ -11192,7 +11192,12 @@ def admin_preflight():
     gap) or a silent model downgrade before 50-500 calls are spent. ~5 calls."""
     if not _operator_ok():
         return Response("forbidden\n", status=403, mimetype='text/plain')
-    prompt = ("Which brands are most recommended for this category? Cite sources." + CITATION_SUFFIX)
+    # Concrete and current on purpose: a generic question lets agents answer
+    # from memory even in search mode, which is exactly what preflight must
+    # detect, not provoke (9/28: Claude and Gemini returned grounded=True with
+    # zero searches on a generic prompt).
+    prompt = ("What are the best-reviewed project management tools for small teams this year, "
+              "according to recent reviews? Cite sources." + CITATION_SUFFIX)
     provs = ["Claude", "ChatGPT", "Gemini", "Perplexity", "Grok"]
 
     def one(prov):
@@ -11206,12 +11211,14 @@ def admin_preflight():
                           "path": _LAST_GROK_PATH.get("path") if prov == "Grok" else None,
                           "sources": len(srcs), "queries": len(gm.get("queries") or []),
                           "retrieved": len(gm.get("retrieved") or []),
-                          "supports": len(gm.get("supports") or [])}
+                          "supports": len(gm.get("supports") or []),
+                          # evidence the agent actually retrieved, not just that it ran in search mode
+                          "searched": bool(srcs or gm.get("queries") or gm.get("retrieved"))}
         except Exception as e:
             return prov, {"ok": False, "error": str(e)[:240]}
     with ThreadPoolExecutor(max_workers=5) as ex:
         res = dict(ex.map(one, provs))
-    ready = all(r.get("ok") and r.get("grounded") for r in res.values())
+    ready = all(r.get("ok") and r.get("grounded") and r.get("searched") for r in res.values())
     return jsonify({"ready": ready, "providers": res})
 
 
