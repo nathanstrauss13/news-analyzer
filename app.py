@@ -547,10 +547,23 @@ _MODEL_PRICES = {
     "perplexity:sonar-pro": (
         float(os.environ.get("PERPLEXITY_IN_PER_M", 3.0)),
         float(os.environ.get("PERPLEXITY_OUT_PER_M", 15.0))),
+    # xAI direct (docs.x.ai/developers/models, 2026-09-28): grok-4.7 $2.00 in /
+    # $6.00 out per 1M for prompts <200k tokens (2x above; Grok audit calls
+    # average ~145k input, so the base tier applies). Before this entry the
+    # estimator fell back to $3/$15 and stamped $5.18 for a run xAI billed ~$2.7.
+    "xai:grok-4.7": (
+        float(os.environ.get("XAI_IN_PER_M", 2.00)),
+        float(os.environ.get("XAI_OUT_PER_M", 6.00))),
+    "xai:*": (
+        float(os.environ.get("XAI_IN_PER_M", 2.00)),
+        float(os.environ.get("XAI_OUT_PER_M", 6.00))),
 }
 _PROVIDER_FALLBACK_PRICES = {"anthropic": (3.0, 15.0), "openai": (2.5, 10.0),
                              "openrouter": (3.0, 15.0), "gemini": (0.30, 2.50),
-                             "perplexity": (3.0, 15.0)}
+                             "perplexity": (3.0, 15.0), "xai": (2.00, 6.00)}
+# Cached-input price as a fraction of the input price, per provider
+# (Anthropic ~0.1x; xAI $0.50 vs $2.00 = 0.25x).
+_CACHE_READ_MULT = {"xai": float(os.environ.get("XAI_CACHE_READ_MULT", 0.25))}
 _SEARCH_PER_1K = {
     "anthropic": 10.0,
     "openai": float(os.environ.get("OPENAI_SEARCH_PER_1K", 30.0)),
@@ -559,6 +572,10 @@ _SEARCH_PER_1K = {
     # per-request search fee on top of tokens (tier-dependent — override via env).
     "gemini": float(os.environ.get("GEMINI_SEARCH_PER_1K", 14.0)),
     "perplexity": float(os.environ.get("PERPLEXITY_SEARCH_PER_1K", 5.0)),
+    # xAI server-side web_search/x_search: no separate fee is published, and the
+    # 9/28 console charge is reproduced by token pricing alone. Override if a
+    # per-call tool fee appears on the invoice.
+    "xai": float(os.environ.get("XAI_SEARCH_PER_1K", 0.0)),
 }
 
 
@@ -689,7 +706,7 @@ def _usage_cost(agg):
             or _PROVIDER_FALLBACK_PRICES.get(provider, (3.0, 15.0))
         billable_in = max(0, d.get("in", 0) - d.get("cache_read", 0))
         cost = (billable_in / 1e6 * pin
-                + d.get("cache_read", 0) / 1e6 * pin * 0.1        # cache reads ~0.1x input
+                + d.get("cache_read", 0) / 1e6 * pin * _CACHE_READ_MULT.get(provider, 0.1)
                 + d.get("cache_write", 0) / 1e6 * pin * 1.25      # cache writes ~1.25x input
                 + d.get("out", 0) / 1e6 * pout
                 + d.get("searches", 0) / 1000.0 * _SEARCH_PER_1K.get(provider, 10.0))
@@ -8014,8 +8031,10 @@ def _grok_direct(prompt):
         raise RuntimeError("xAI response carried no output_text")
     try:
         u = data.get("usage") or {}
+        _cached = ((u.get("input_tokens_details") or {}).get("cached_tokens")
+                   or u.get("cached_tokens") or 0)
         _record_usage("xai", data.get("model") or model, u.get("input_tokens", 0) or 0,
-                      u.get("output_tokens", 0) or 0, searches=1)
+                      u.get("output_tokens", 0) or 0, searches=1, cache_read=_cached or 0)
     except Exception:
         pass
     _LAST_GROK_PATH["path"] = "xai-direct:" + "+".join(t["type"] for t in tools)
