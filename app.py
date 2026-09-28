@@ -10703,6 +10703,27 @@ def _board_live_gate(slug):
     return data, None
 
 
+# Friendly top-level addresses for gated static boards. Alias -> slug. The
+# alias route checks the SAME basic-auth gate first and only then 302s to
+# /signal/<slug>, so an unauthenticated visitor never learns the slug, and the
+# page's live.json fetch (location.pathname + '/live.json') keeps resolving.
+_STATIC_ALIASES = {'xsight': 'e9ea20b741'}
+
+
+def _make_alias_view(alias, slug):
+    def _view():
+        _, err = _board_live_gate(slug)
+        if err:
+            return err
+        return redirect(f'/signal/{slug}', code=302)
+    _view.__name__ = f'static_alias_{alias}'
+    return _view
+
+
+for _alias, _slug in _STATIC_ALIASES.items():
+    app.add_url_rule(f'/{_alias}', view_func=_make_alias_view(_alias, _slug), strict_slashes=False)
+
+
 @app.route('/signal/<slug>/live.json')
 def board_live_json(slug):
     """Daily feed for a gated static board; same gate as the page, never cached."""
