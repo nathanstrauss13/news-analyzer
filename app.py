@@ -6847,10 +6847,36 @@ def _resolve_vertex_redirect(url, timeout=4):
 
     Fetches the redirector body and extracts the real target URL. Returns
     None if the redirector itself returns an error or no target can be parsed.
+
+    2026-09-28: the redirectors now answer with a plain HTTP 302 + Location.
+    Following redirects lands on the real page, whose body has no refresh tag,
+    so the old body-only path returned None and the citation was DROPPED
+    (Kilian 36064d76d3: 149 Gemini URLs lost; sample test 3/20 recovered by the
+    body parse vs 19/20 by reading Location). Read Location first, without
+    following; keep the body parse as the fallback for the legacy form.
     """
+    from urllib.parse import urljoin
     try:
         if not _is_safe_url(url):
             return None
+        for _m in ('head', 'get'):
+            try:
+                _kw = {'stream': True} if _m == 'get' else {}
+                h = getattr(requests, _m)(url, timeout=timeout, allow_redirects=False,
+                                          headers=_URL_VALIDATION_HEADERS, **_kw)
+                try:
+                    h.close()
+                except Exception:
+                    pass
+            except Exception:
+                continue
+            loc = h.headers.get('Location') if 300 <= h.status_code < 400 else None
+            if loc:
+                loc = urljoin(url, loc)
+                if 'vertexaisearch.cloud.google.com' not in loc.lower():
+                    return loc
+            if h.status_code not in (405, 501):   # HEAD answered; no need to retry with GET
+                break
         r = requests.get(url, timeout=timeout, allow_redirects=True,
                          headers=_URL_VALIDATION_HEADERS)
         if r.status_code >= 400:
