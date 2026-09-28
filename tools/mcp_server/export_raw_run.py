@@ -27,6 +27,23 @@ def wb(name):
     return re.compile(r"\b" + re.escape(name).replace(r"\'", "'?") + r"\b", re.I)
 
 
+def _canon_differs(url, canon):
+    """'domain' when the page's canonical points to another registrable domain
+    (a syndicated or mirrored copy: credit the original publisher), 'path' for
+    the same domain but another URL (AMP/mobile/tracking variant), '' if same
+    or unknown."""
+    if not canon:
+        return ""
+    try:
+        a, b = root_of(host_of(url)), root_of(host_of(canon))
+        if a and b and a != b:
+            return "domain"
+        norm = lambda x: x.split("#")[0].split("?")[0].rstrip("/").replace("://www.", "://")
+        return "path" if norm(url) != norm(canon) else ""
+    except Exception:
+        return ""
+
+
 def _searched(r, cits):
     """Evidence the agent actually retrieved (not just ran in search mode):
     citations, recorded search queries, or retrieved pages. Payloads from
@@ -153,6 +170,9 @@ def export(payload_path, out_dir, host_classes_path=None):
                         "fetched_ok": ok, "mentions_brand": bool(ok and v.get("brand_count")),
                         "brand_mentions_on_page": v.get("brand_count") or 0,
                         "page_title": (v.get("title") or "")[:160],
+                        "published": v.get("published") or "",
+                        "canonical_url": v.get("canonical") or "",
+                        "canonical_differs": _canon_differs(u, v.get("canonical")),
                         "source_type": type_of(u, cls_map) or "",
                         "checked_date": v.get("checked_date") or run_date})
     for c in citations:
@@ -258,7 +278,8 @@ def export(payload_path, out_dir, host_classes_path=None):
     per_url.sort(key=lambda x: (-x["brand_mentions_on_page"], x["domain_root"]))
     w("07_page_checks_per_url.csv",
       ["url", "domain_root", "fetch_status", "fetched_ok", "mentions_brand",
-       "brand_mentions_on_page", "page_title", "source_type", "checked_date"], per_url)
+       "brand_mentions_on_page", "page_title", "published", "canonical_url", "canonical_differs",
+       "source_type", "checked_date"], per_url)
 
     # Grounding files (payloads from 2026-09-28 on): which sentence each source
     # supports, every page the agent retrieved (cited or not), and the searches
@@ -270,6 +291,9 @@ def export(payload_path, out_dir, host_classes_path=None):
     w("13_retrieved_pages.csv",
       ["answer_id", "llm", "prompt_class", "url", "title", "page_age_or_date", "cited_in_answer",
        "grounding_source"], retrieved_rows)
+    dropped_rows = [{"llm": d.get("llm"), "prompt": d.get("prompt"), "citation_url_raw": d.get("url"),
+                     "drop_reason": d.get("reason")} for d in (p.get("dropped_citations") or [])]
+    w("11_dropped_citations.csv", ["llm", "prompt", "citation_url_raw", "drop_reason"], dropped_rows)
     w("14_search_queries.csv",
       ["answer_id", "llm", "prompt_class", "query_order", "query", "grounding_source"], query_rows)
 
@@ -282,7 +306,8 @@ def export(payload_path, out_dir, host_classes_path=None):
                   "07_page_checks_per_url.csv": len(per_url),
                   "12_answer_supports.csv": len(supports_rows),
                   "13_retrieved_pages.csv": len(retrieved_rows),
-                  "14_search_queries.csv": len(query_rows)}
+                  "14_search_queries.csv": len(query_rows),
+                  "11_dropped_citations.csv": len(dropped_rows)}
     json.dump({
         "slug": p.get("slug"), "brand": brand,
         "run_date": run_date or None,

@@ -3444,7 +3444,9 @@ def _time_aware_note():
         f"Do NOT default to older years like 2023 or 2024 when more recent content exists."
     )
 
-URL_PATTERN = re.compile(r'https?://[^\s<>"\'`\)\]\},]+')
+# ')' and ']' are allowed inside the match; _strip_url_tail drops them only when
+# unbalanced, so Wikipedia '_(fragrance)' survives and markdown '(url)' does not leak.
+URL_PATTERN = re.compile(r'https?://[^\s<>"\'`\},]+')
 DOMAIN_BLACKLIST = {'example.com', 'placeholder.com', 'website.com', 'source.com', 'google.com', 'schema.org', 'w3.org', 'googleapis.com'}
 
 INSTITUTIONAL_TLDS = ('.gov', '.gov.uk', '.gov.au', '.gov.ca', '.mil', '.edu', '.ac.uk', '.ac.jp', '.edu.au')
@@ -4034,15 +4036,43 @@ def verify_editorial_domains(editorial_domains, brand, category):
         return editorial_domains, []
 
 
+def _strip_url_tail(u):
+    """Trim trailing punctuation, but keep a closing bracket the URL itself
+    opened: Wikipedia-style '..._(fragrance)' is a real URL. Stripping every
+    trailing ')' truncated it to '..._(fragrance', which 404s and was then
+    recorded as a confabulated citation (Kilian 36064d76d3: 1 of 25 '404s')."""
+    pairs = {')': '(', ']': '[', '}': '{'}
+    depth = {'(': 0, '[': 0}
+    for i, ch in enumerate(u):          # cut at the first closer the URL never opened
+        if ch in depth:
+            depth[ch] += 1
+        elif ch in (')', ']'):
+            if depth[pairs[ch]] == 0:
+                u = u[:i]
+                break
+            depth[pairs[ch]] -= 1
+    while u:
+        ch = u[-1]
+        if ch in '.,;:!?\'"':
+            u = u[:-1]
+            continue
+        if ch in pairs and u.count(ch) > u.count(pairs[ch]):
+            u = u[:-1]
+            continue
+        break
+    return u
+
+
 def extract_urls(text):
     """Extract URLs from a block of text, clean trailing punctuation, filter blacklisted domains."""
     if not text:
         return []
-    urls = URL_PATTERN.findall(text)
+    # Break markdown-link joints so '[a](u1)[b](u2)' can't match as one URL.
+    urls = URL_PATTERN.findall(text.replace('](', '] ('))
     out = []
     seen = set()
     for u in urls:
-        u = u.rstrip('.,;:!?\'")]}')
+        u = _strip_url_tail(u)
         try:
             host = u.split('/')[2].lower()
         except Exception:
@@ -6856,6 +6886,38 @@ _JS_LOCATION_RE = re.compile(
 )
 
 
+def _unwrap_wrapper_url(u):
+    """Parse-only unwrap of click/redirect wrappers whose real destination is a
+    query parameter: Google /url?q= (often an interstitial 200, not a redirect,
+    so HEAD-following never reaches the page), Bing /ck/a?u=a1<base64url>, and
+    Facebook l.php?u=. Unknown shapes pass through unchanged; t.co / lnkd.in
+    are real HTTP redirects and are followed by the normal HEAD path."""
+    try:
+        from urllib.parse import urlparse, parse_qs, unquote
+        import base64
+        pu = urlparse(u)
+        host = (pu.netloc or '').lower()
+        q = parse_qs(pu.query)
+        if re.search(r'(^|\.)google\.[a-z.]+$', host) and pu.path == '/url':
+            t = (q.get('q') or q.get('url') or [None])[0]
+            if t and t.startswith(('http://', 'https://')):
+                return unquote(t)
+        if host.endswith('bing.com') and pu.path.startswith('/ck/'):
+            t = (q.get('u') or [None])[0]
+            if t and t.startswith('a1'):
+                b = t[2:] + '=' * (-len(t[2:]) % 4)
+                d = base64.urlsafe_b64decode(b).decode('utf-8', 'ignore')
+                if d.startswith(('http://', 'https://')):
+                    return d
+        if host in ('l.facebook.com', 'lm.facebook.com') and pu.path.startswith('/l.php'):
+            t = (q.get('u') or [None])[0]
+            if t and t.startswith(('http://', 'https://')):
+                return unquote(t)
+    except Exception:
+        pass
+    return u
+
+
 def _resolve_vertex_redirect(url, timeout=4):
     """Gemini grounding URLs (vertexaisearch.cloud.google.com/...) redirect via
     a <meta http-equiv="refresh"> tag or JS location-assignment — NOT via an
@@ -6998,6 +7060,9 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
         # source, drop the URL entirely (the redirector itself is not a
         # citable source).
         original_u = u
+        u = _unwrap_wrapper_url(u)
+        if u != original_u and not _is_safe_url(u):
+            return (original_u, None)
         if 'vertexaisearch.cloud.google.com' in u.lower():
             real = _resolve_vertex_redirect(u)
             if not real:
@@ -7335,7 +7400,11 @@ def _extract_page_meta(raw):
                 return (m.group(1) or '').strip()[:255]
         return ''
     title_m = re.search(r'<title[^>]*>([^<]+)</title>', raw, re.IGNORECASE)
+    canon = (_meta(r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)',
+                   r'<link[^>]+href=["\']([^"\']+)["\'][^>]+rel=["\']canonical["\']',
+                   r'<meta\s+property=["\']og:url["\']\s+content=["\']([^"\']+)'))
     return {
+        'canonical': canon if canon.startswith(('http://', 'https://')) else '',
         'title': (title_m.group(1).strip()[:300] if title_m else ''),
         'author': _meta(
             r'<meta\s+name=["\']author["\']\s+content=["\']([^"\']+)',
@@ -7352,7 +7421,7 @@ def _extract_page_meta(raw):
 _HUSK_CHARS = 400   # visible text below this on a 200 = challenge / JS-only husk
 
 
-def _scrape_cited_page(url, names, timeout=10):
+def _scrape_cited_page(url, names, timeout=10, keep_text=False):
     """Fetch one cited page (direct first, reader-proxy fallback for
     bot-blocked sites) and count every tracked name on it. Returns a dict
     shaped like a CitedPage row, never raises."""
@@ -7394,6 +7463,8 @@ def _scrape_cited_page(url, names, timeout=10):
                 tm = re.match(r'\s*Title:\s*(.+)', text)
                 if tm:
                     result['title'] = tm.group(1).strip()[:300]
+                if keep_text:
+                    result['text'] = text[:60000]
                 return result
         except Exception:
             pass
@@ -7416,6 +7487,8 @@ def _scrape_cited_page(url, names, timeout=10):
                 rtext = rtext[:3_000_000]
                 result.update(status='ok', via='reader', content_len=len(rtext),
                               counts=_count_names_in_text(rtext, names))
+                if keep_text:
+                    result['text'] = rtext[:60000]
                 tm = re.match(r'\s*Title:\s*(.+)', rtext)
                 result['title'] = tm.group(1).strip()[:300] if tm else meta.get('title', '')
                 return result
@@ -7427,6 +7500,8 @@ def _scrape_cited_page(url, names, timeout=10):
     text = meta['title'] + ' ' + visible
     result.update(status='ok', content_len=len(raw),
                   counts=_count_names_in_text(text, names), **meta)
+    if keep_text:
+        result['text'] = visible[:60000]
     return result
 
 
@@ -7838,26 +7913,35 @@ def _category_keywords(category):
     return result[:10]
 
 
-def _apply_url_resolution(all_responses, url_map):
+def _apply_url_resolution(all_responses, url_map, dropped_out=None):
     """Rewrite each citation in-place: drop unverified, re-key valid ones under
-    their final (post-redirect) URL + domain. Returns count of dropped URLs."""
+    their final (post-redirect) URL + domain. Returns count of dropped URLs.
+    dropped_out (a list) receives one record per dropped citation so the
+    payload keeps them, with the reason, instead of silently discarding them."""
     dropped = 0
+    def _drop(r, c, reason):
+        if dropped_out is not None and len(dropped_out) < 5000:
+            dropped_out.append({'llm': r.get('llm'), 'prompt': r.get('prompt'),
+                                'url': c.get('url'), 'reason': reason})
     for r in all_responses:
         new_cits = []
         for c in r.get('citations', []) or []:
             final = url_map.get(c['url'])
             if not final:
                 dropped += 1
+                _drop(r, c, 'unverified: 404/410, DNS or connection failure, unsafe host, or unresolvable redirector')
                 continue
             try:
                 host = final.split('/')[2].lower().split(':', 1)[0]
                 host = host[4:] if host.startswith('www.') else host
                 if host in DOMAIN_BLACKLIST:
                     dropped += 1
+                    _drop(r, c, f'blacklisted domain: {host}')
                     continue
                 new_cits.append({'url': final, 'domain': host})
             except Exception:
                 dropped += 1
+                _drop(r, c, 'unparseable final URL')
                 continue
         r['citations'] = new_cits
     return dropped
@@ -9785,7 +9869,8 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         def url_progress(done, total):
             emit("extract", f"Verifying URLs ({done}/{total})...", done, extract_total)
         url_map = _resolve_and_verify_urls(all_urls, on_progress=url_progress)
-        dropped = _apply_url_resolution(all_responses, url_map)
+        _dropped_records = []
+        dropped = _apply_url_resolution(all_responses, url_map, dropped_out=_dropped_records)
         _remap_grounding_urls(all_responses, url_map)
         emit("extract", f"Verified {url_total - dropped} of {url_total} URLs (dropped {dropped} dead/confabulated)", url_total, extract_total)
     else:
@@ -10322,6 +10407,7 @@ Respond with ONLY valid JSON:
     # responses only (metrics_scope records this for QA recounts); the payload's
     # all_responses below still carries BOTH halves for the dashboard.
     analysis["prompt_sets"] = prompt_sets
+    analysis["dropped_citations"] = locals().get('_dropped_records') or []
     analysis["metrics_scope"] = ("unbranded_only" if prompt_sets and prompt_sets.get("branded")
                                  else "all_prompts")
     # Full ranked domains list (no cap). Each dict already carries:
@@ -15422,7 +15508,7 @@ def _citation_checks_for_report(data, deadline_seconds=30, max_urls=250):
                 continue  # cached by a different audit's name set; refetch
             out[c.url] = {'status': c.status,
                           'brand_count': max((counts.get(n, 0) for n in names), default=0),
-                          'title': c.title or ''}
+                          'title': c.title or '', 'published': c.published or ''}
     except Exception as e:
         print("citation-check cache read failed (continuing):", str(e)[:120])
     to_fetch = [u for u in urls if u not in out]
@@ -15437,7 +15523,9 @@ def _citation_checks_for_report(data, deadline_seconds=30, max_urls=250):
                     full[u] = res
                     out[u] = {'status': res['status'],
                               'brand_count': max((res['counts'].get(n, 0) for n in names), default=0),
-                              'title': res.get('title') or ''}
+                              'title': res.get('title') or '',
+                              'published': res.get('published') or '',
+                              'canonical': res.get('canonical') or ''}
                 except Exception:
                     pass
         except FuturesTimeoutError:
