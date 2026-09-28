@@ -7929,6 +7929,111 @@ def _annotation_urls(msg):
     return urls
 
 
+# Per-call grounding metadata side channel. Each provider path records what its
+# API returned beyond the answer text: the searches it ran, the pages it
+# retrieved (with dates where given), which span of the answer each source
+# supports, and the exact model version. run_one attaches it to the answer row
+# as row["grounding"] / row["model_id"]. Thread-local: answers run in a pool.
+_GROUNDING_TLS = threading.local()
+
+
+def _gmeta_reset():
+    _GROUNDING_TLS.meta = {}
+
+
+def _gmeta():
+    m = getattr(_GROUNDING_TLS, 'meta', None)
+    if m is None:
+        m = _GROUNDING_TLS.meta = {}
+    return m
+
+
+def _gget(o, k, default=None):
+    if o is None:
+        return default
+    if isinstance(o, dict):
+        return o.get(k, default)
+    return getattr(o, k, default)
+
+
+def _gmeta_put(provider, model_id=None, queries=None, retrieved=None, supports=None):
+    """Record bounded grounding metadata for the current call. Never raises."""
+    try:
+        m = _gmeta()
+        m['source'] = provider
+        if model_id:
+            m['model_id'] = str(model_id)[:80]
+        if queries:
+            m['queries'] = [str(q)[:200] for q in dict.fromkeys(q for q in queries if q)][:12]
+        if retrieved:
+            seen, out = set(), []
+            for r in retrieved:
+                u = r.get('url') if isinstance(r, dict) else None
+                if not u or u in seen:
+                    continue
+                seen.add(u)
+                out.append({k: str(v)[:300] for k, v in r.items() if v not in (None, '')})
+            m['retrieved'] = out[:80]
+        if supports:
+            m['supports'] = [{k: (str(v)[:600] if isinstance(v, str) else v)
+                              for k, v in sp.items() if v not in (None, '', [])} for sp in supports][:120]
+    except Exception:
+        pass
+
+
+def _remap_grounding_urls(rows, url_map):
+    """Point grounding metadata at resolved destinations (Gemini's chunk URIs
+    are vertex redirectors; the verification pass resolves them). A URL the
+    verifier dropped (None) is removed from supports and retrieved."""
+    for r in rows or []:
+        g = r.get('grounding') or {}
+        for sp in g.get('supports') or []:
+            urls = []
+            for u in sp.get('urls') or []:
+                v = url_map.get(u, u) if url_map else u
+                if v:
+                    urls.append(v)
+            sp['urls'] = urls
+        if g.get('retrieved'):
+            keep = []
+            for it in g['retrieved']:
+                v = url_map.get(it.get('url'), it.get('url')) if url_map else it.get('url')
+                if v:
+                    it['url'] = v
+                    keep.append(it)
+            g['retrieved'] = keep
+
+
+def _annotation_supports(text, annotations):
+    """url_citation annotations -> [{text, urls, title, start, end}]. Accepts the
+    OpenAI shape ({type, url_citation:{url,title,start_index,end_index}}) and the
+    flat xAI shape ({type, url, title, start_index, end_index})."""
+    out = []
+    for a in (annotations or []):
+        if _gget(a, 'type') != 'url_citation':
+            continue
+        uc = _gget(a, 'url_citation') or a
+        u = _gget(uc, 'url')
+        if not u:
+            continue
+        st, en = _gget(uc, 'start_index'), _gget(uc, 'end_index')
+        span = text[st:en] if isinstance(st, int) and isinstance(en, int) and 0 <= st < en <= len(text or '') else None
+        claim = None
+        if isinstance(st, int) and 0 < st <= len(text or ''):
+            # the sentence the citation belongs to: back from the span to the
+            # previous sentence/line boundary (the span itself is usually just
+            # the link or the [n] marker)
+            pre = (text or '')[:st].rstrip(' ([')
+            cut = max(pre.rfind('. ', 0, max(0, len(pre) - 1)), pre.rfind('\n'), pre.rfind('? '), pre.rfind('! '))
+            claim = pre[cut + 1:].strip() if cut >= 0 else pre.strip()
+            if len(claim) > 400:                       # trim at a word boundary, never mid-word
+                claim = claim[-400:]
+                claim = claim[claim.find(' ') + 1:] if ' ' in claim else claim
+            claim = claim or None
+        out.append({'claim': claim, 'text': span, 'urls': [u], 'title': _gget(uc, 'title'), 'start': st, 'end': en})
+    return out
+
+
 def _claude_grounded(prompt):
     """Claude Sonnet 4 with the native web_search tool, bounded to 3 searches
     (the bound is what keeps latency/memory sane — the reverted version ran
@@ -7941,19 +8046,27 @@ def _claude_grounded(prompt):
         tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
     )
     parts, urls = [], []
+    _q, _ret, _sup = [], [], []
     for block in (resp.content or []):
         btype = getattr(block, 'type', None)
         if btype == 'text':
-            parts.append(getattr(block, 'text', '') or '')
+            _t = getattr(block, 'text', '') or ''
+            parts.append(_t)
             for cit in (getattr(block, 'citations', None) or []):
                 u = getattr(cit, 'url', None)
                 if u:
                     urls.append(u)
+                    _sup.append({'text': _t.strip(), 'cited_text': _gget(cit, 'cited_text'),
+                                 'urls': [u], 'title': _gget(cit, 'title')})
+        elif btype == 'server_tool_use':
+            _q.append(_gget(_gget(block, 'input') or {}, 'query'))
         elif btype == 'web_search_tool_result':
             for item in (getattr(block, 'content', None) or []):
                 u = getattr(item, 'url', None)
                 if u:
                     urls.append(u)
+                    _ret.append({'url': u, 'title': _gget(item, 'title'), 'page_age': _gget(item, 'page_age')})
+    _gmeta_put('anthropic', model_id=getattr(resp, 'model', None), queries=_q, retrieved=_ret, supports=_sup)
     return _append_sources("".join(parts), urls)
 
 
@@ -7985,6 +8098,8 @@ def _chatgpt_grounded(prompt):
     # the search model does one web-search pass per call
     _record_oai_usage("openai", resp, model, searches=1)
     msg = resp.choices[0].message
+    _gmeta_put('openai', model_id=getattr(resp, 'model', None),
+               supports=_annotation_supports(msg.content or '', getattr(msg, 'annotations', None)))
     return _append_sources(msg.content or '', _annotation_urls(msg))
 
 
@@ -8017,12 +8132,17 @@ def _grok_direct(prompt):
     r.raise_for_status()
     data = r.json()
     texts, urls = [], list(data.get("citations") or [])
+    _q, _sup = [], []
     for item in (data.get("output") or []):
+        if str(item.get("type", "")).endswith("_call"):
+            _act = item.get("action") or {}
+            _q.append(_act.get("query") or item.get("query"))
         if item.get("type") != "message":
             continue
         for c in (item.get("content") or []):
             if c.get("type") == "output_text":
                 texts.append(c.get("text") or "")
+                _sup.extend(_annotation_supports(c.get("text") or "", c.get("annotations")))
                 for a in (c.get("annotations") or []):
                     if a.get("type") == "url_citation" and a.get("url"):
                         urls.append(a["url"])
@@ -8038,6 +8158,8 @@ def _grok_direct(prompt):
     except Exception:
         pass
     _LAST_GROK_PATH["path"] = "xai-direct:" + "+".join(t["type"] for t in tools)
+    _gmeta_put('xai', model_id=data.get("model") or model, queries=_q,
+               retrieved=[{'url': u} for u in (data.get("citations") or []) if isinstance(u, str)], supports=_sup)
     return _append_sources(text, [x for x in urls if isinstance(x, str)])
 
 
@@ -8058,6 +8180,8 @@ def _grok_grounded(prompt):
     _record_oai_usage("openrouter", resp, model, searches=1)
     msg = resp.choices[0].message
     _LAST_GROK_PATH["path"] = "openrouter:online"
+    _gmeta_put('openrouter', model_id=getattr(resp, 'model', None),
+               supports=_annotation_supports(msg.content or '', getattr(msg, 'annotations', None)))
     return _append_sources(msg.content or '', _annotation_urls(msg))
 
 
@@ -8139,6 +8263,32 @@ def _call_llm(provider, enriched_prompt):
             )
             _record_gemini_usage("gemini-2.5-flash", resp)
             text = resp.text or ""
+            try:
+                _gq, _gret, _gsup = [], [], []
+                for _cand in (resp.candidates or []):
+                    _gm = getattr(_cand, 'grounding_metadata', None)
+                    if not _gm:
+                        continue
+                    _gq += list(getattr(_gm, 'web_search_queries', None) or [])
+                    _chunks = list(getattr(_gm, 'grounding_chunks', None) or [])
+                    _cu = []
+                    for _ch in _chunks:
+                        _w = getattr(_ch, 'web', None)
+                        _u = _gget(_w, 'uri')
+                        _cu.append(_u)
+                        if _u:
+                            _gret.append({'url': _u, 'title': _gget(_w, 'title'), 'domain': _gget(_w, 'domain')})
+                    for _sp in (getattr(_gm, 'grounding_supports', None) or []):
+                        _seg = getattr(_sp, 'segment', None)
+                        _idx = list(getattr(_sp, 'grounding_chunk_indices', None) or [])
+                        _gsup.append({'text': _gget(_seg, 'text'), 'start': _gget(_seg, 'start_index'),
+                                      'end': _gget(_seg, 'end_index'),
+                                      'urls': [_cu[i] for i in _idx if isinstance(i, int) and i < len(_cu) and _cu[i]],
+                                      'confidence': [round(float(x), 3) for x in (getattr(_sp, 'confidence_scores', None) or [])]})
+                _gmeta_put('gemini', model_id=getattr(resp, 'model_version', None) or 'gemini-2.5-flash',
+                           queries=_gq, retrieved=_gret, supports=_gsup)
+            except Exception:
+                pass
             # Append grounding URIs so extract_urls() picks them up. The chunk
             # `.web.uri` is almost always a vertexaisearch.cloud.google.com
             # redirector — useless as a domain. Prefer any real source signal
@@ -8203,6 +8353,21 @@ def _call_llm(provider, enriched_prompt):
         # sonar-pro is search-native: every call bills a request fee on top of tokens
         _record_oai_usage("perplexity", resp, "sonar-pro", searches=1)
         text = resp.choices[0].message.content or ''
+        try:
+            _pret = []
+            for _r in (getattr(resp, 'search_results', None) or []):
+                _pret.append({'url': _gget(_r, 'url'), 'title': _gget(_r, 'title'),
+                              'date': _gget(_r, 'date'), 'last_updated': _gget(_r, 'last_updated')})
+            _pc = [c if isinstance(c, str) else _gget(c, 'url') for c in (getattr(resp, 'citations', None) or [])]
+            _psup = []
+            for _m in re.finditer(r'([^.\n\[\]]{1,300})((?:\[\d+\])+)', text):
+                _ns = [int(x) for x in re.findall(r'\[(\d+)\]', _m.group(2))]
+                _us = [_pc[n - 1] for n in _ns if 0 < n <= len(_pc) and _pc[n - 1]]
+                if _us:
+                    _psup.append({'text': _m.group(1).strip(), 'urls': _us})
+            _gmeta_put('perplexity', model_id=getattr(resp, 'model', None), retrieved=_pret, supports=_psup)
+        except Exception:
+            pass
         # Perplexity returns a `citations` array on the top-level response
         # object (NOT on the message). These are the actual sources Perplexity
         # retrieved, so they're structurally non-hallucinated. Append as a
@@ -9497,8 +9662,14 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     def run_one(provider, pi, prompt_text):
         enriched = prompt_text + CITATION_SUFFIX + time_note
         try:
+            _gmeta_reset()
             resp_text, grounded = _call_llm(provider, enriched)
-            return {"llm": provider, "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text), "grounded": grounded, "error": None}
+            _gm = dict(_gmeta())
+            row = {"llm": provider, "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text), "grounded": grounded, "error": None}
+            if _gm:
+                row["model_id"] = _gm.pop("model_id", None)
+                row["grounding"] = _gm
+            return row
         except Exception as e:
             return {"llm": provider, "prompt": prompt_text, "response": f"[Error: {e}]", "citations": [], "grounded": False, "error": str(e)[:120]}
 
@@ -9615,6 +9786,7 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
             emit("extract", f"Verifying URLs ({done}/{total})...", done, extract_total)
         url_map = _resolve_and_verify_urls(all_urls, on_progress=url_progress)
         dropped = _apply_url_resolution(all_responses, url_map)
+        _remap_grounding_urls(all_responses, url_map)
         emit("extract", f"Verified {url_total - dropped} of {url_total} URLs (dropped {dropped} dead/confabulated)", url_total, extract_total)
     else:
         emit("extract", "No URLs to verify", 0, extract_total)
@@ -11011,6 +11183,38 @@ def admin_board_live_run(slug):
                     "bytes": len(row.payload) if row else 0})
 
 
+@app.route('/admin/preflight', methods=['POST'])
+def admin_preflight():
+    """Operator: before a paid run, one grounded call per audit provider in
+    parallel. Reports ok / grounded / exact model version / Grok path /
+    grounding counts / error per provider, and overall ready=True only when
+    all five answered grounded. Catches a dry account (the 9/28 Perplexity
+    gap) or a silent model downgrade before 50-500 calls are spent. ~5 calls."""
+    if not _operator_ok():
+        return Response("forbidden\n", status=403, mimetype='text/plain')
+    prompt = ("Which brands are most recommended for this category? Cite sources." + CITATION_SUFFIX)
+    provs = ["Claude", "ChatGPT", "Gemini", "Perplexity", "Grok"]
+
+    def one(prov):
+        _gmeta_reset()
+        _LAST_GROK_PATH["path"] = None
+        try:
+            text, grounded = _call_llm(prov, prompt)
+            gm = dict(_gmeta())
+            srcs = [u.get('url') if isinstance(u, dict) else u for u in extract_urls(text)]
+            return prov, {"ok": True, "grounded": grounded, "model_id": gm.get("model_id"),
+                          "path": _LAST_GROK_PATH.get("path") if prov == "Grok" else None,
+                          "sources": len(srcs), "queries": len(gm.get("queries") or []),
+                          "retrieved": len(gm.get("retrieved") or []),
+                          "supports": len(gm.get("supports") or [])}
+        except Exception as e:
+            return prov, {"ok": False, "error": str(e)[:240]}
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        res = dict(ex.map(one, provs))
+    ready = all(r.get("ok") and r.get("grounded") for r in res.values())
+    return jsonify({"ready": ready, "providers": res})
+
+
 @app.route('/admin/llm-smoke', methods=['POST'])
 def admin_llm_smoke():
     """Operator: one grounded call to one provider; reports the path used,
@@ -11020,15 +11224,23 @@ def admin_llm_smoke():
     prov = request.args.get('provider', 'Grok')
     prompt = request.args.get('prompt') or "Which niche perfume houses are best known for long-lasting evening fragrances? Cite sources."
     _LAST_GROK_PATH["path"] = None
+    _gmeta_reset()
     try:
         text, grounded = _call_llm(prov, prompt + CITATION_SUFFIX)
     except Exception as e:
         return jsonify({"provider": prov, "error": str(e)[:300]}), 502
+    _gm = dict(_gmeta())
     urls = [u.get('url') if isinstance(u, dict) else u for u in extract_urls(text)]
     return jsonify({"provider": prov, "path": _LAST_GROK_PATH.get("path") if prov == "Grok" else prov,
                     "grounded": grounded, "chars": len(text or ''), "sources": len(urls),
                     "x_com_sources": sum(1 for u in urls if u and ('x.com/' in u or 'twitter.com/' in u)),
-                    "sample_sources": urls[:6]})
+                    "sample_sources": urls[:6],
+                    "model_id": _gm.get("model_id"),
+                    "grounding": {"queries": len(_gm.get("queries") or []),
+                                  "retrieved": len(_gm.get("retrieved") or []),
+                                  "supports": len(_gm.get("supports") or []),
+                                  "sample_query": (_gm.get("queries") or [None])[0],
+                                  "sample_support": (_gm.get("supports") or [None])[0]}})
 
 
 @app.route('/admin/upload-static-report', methods=['POST'])
