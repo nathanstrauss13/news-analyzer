@@ -27,6 +27,14 @@ def wb(name):
     return re.compile(r"\b" + re.escape(name).replace(r"\'", "'?") + r"\b", re.I)
 
 
+def _searched(r, cits):
+    """Evidence the agent actually retrieved (not just ran in search mode):
+    citations, recorded search queries, or retrieved pages. Payloads from
+    before 2026-09-28 carry no grounding, so they fall back to citations."""
+    g = r.get("grounding") or {}
+    return bool(cits or g.get("queries") or g.get("retrieved"))
+
+
 def export(payload_path, out_dir, host_classes_path=None):
     raw_bytes = open(payload_path, "rb").read()
     payload_sha = hashlib.sha256(raw_bytes).hexdigest()
@@ -51,6 +59,7 @@ def export(payload_path, out_dir, host_classes_path=None):
 
     # ---- per-answer + per-citation scaffolding ------------------------------
     answers, citations = [], []
+    supports_rows, retrieved_rows, query_rows = [], [], []
     root_cites_all, root_cites_unb = Counter(), Counter()
     root_answers, root_llms = defaultdict(set), defaultdict(set)
     root_sample = {}
@@ -79,8 +88,33 @@ def export(payload_path, out_dir, host_classes_path=None):
             "named_before_all_competitors": before_all if (first and comp_first) else "",
             "competitors_named": "; ".join(comp_present),
             "citation_count": len(cits),
+            "model_id": r.get("model_id") or "",
+            "searched": _searched(r, cits),
             "response_full_text": t,
         })
+        _g = r.get("grounding") or {}
+        _pc = "branded" if r.get("prompt") in branded else "unbranded"
+        _cited = {c.get("url") for c in cits}
+        for _k, _sp in enumerate(_g.get("supports") or []):
+            for _u in (_sp.get("urls") or [None]):
+                supports_rows.append({
+                    "answer_id": aid, "llm": r.get("llm"), "prompt_class": _pc, "support_index": _k,
+                    "claim": _sp.get("claim") or _sp.get("text") or "",
+                    "span_text": _sp.get("cited_text") or (_sp.get("text") if _sp.get("claim") else "") or "",
+                    "source_url": _u or "", "source_title": _sp.get("title") or "",
+                    "confidence": "; ".join(str(x) for x in (_sp.get("confidence") or [])),
+                    "grounding_source": _g.get("source") or ""})
+        for _it in (_g.get("retrieved") or []):
+            retrieved_rows.append({
+                "answer_id": aid, "llm": r.get("llm"), "prompt_class": _pc,
+                "url": _it.get("url") or "", "title": _it.get("title") or "",
+                "page_age_or_date": _it.get("page_age") or _it.get("date") or _it.get("last_updated") or "",
+                "cited_in_answer": "yes" if _it.get("url") in _cited else "no",
+                "grounding_source": _g.get("source") or ""})
+        for _j, _q in enumerate(_g.get("queries") or []):
+            query_rows.append({"answer_id": aid, "llm": r.get("llm"), "prompt_class": _pc,
+                               "query_order": _j + 1, "query": _q,
+                               "grounding_source": _g.get("source") or ""})
         for c in cits:
             u = c["url"]
             root = root_of(u)
@@ -178,7 +212,7 @@ def export(payload_path, out_dir, host_classes_path=None):
       ["answer_id", "llm", "prompt_class", "prompt", "grounded", "error", "response_chars",
        "brand_mentioned", "brand_mention_count", "brand_first_mention_pct",
        "named_before_all_competitors", "competitors_named", "citation_count",
-       "response_full_text"], answers)
+       "model_id", "searched", "response_full_text"], answers)
     w("02_citations.csv",
       ["answer_id", "llm", "prompt_class", "prompt", "citation_url", "domain", "domain_root",
        "source_type", "domain_pages_checked", "domain_pages_ok",
@@ -226,13 +260,29 @@ def export(payload_path, out_dir, host_classes_path=None):
       ["url", "domain_root", "fetch_status", "fetched_ok", "mentions_brand",
        "brand_mentions_on_page", "page_title", "source_type", "checked_date"], per_url)
 
+    # Grounding files (payloads from 2026-09-28 on): which sentence each source
+    # supports, every page the agent retrieved (cited or not), and the searches
+    # it ran. Written with headers even when empty, so a pre-grounding payload
+    # yields an explicit zero rather than a missing file.
+    w("12_answer_supports.csv",
+      ["answer_id", "llm", "prompt_class", "support_index", "claim", "span_text", "source_url",
+       "source_title", "confidence", "grounding_source"], supports_rows)
+    w("13_retrieved_pages.csv",
+      ["answer_id", "llm", "prompt_class", "url", "title", "page_age_or_date", "cited_in_answer",
+       "grounding_source"], retrieved_rows)
+    w("14_search_queries.csv",
+      ["answer_id", "llm", "prompt_class", "query_order", "query", "grounding_source"], query_rows)
+
     # Machine-readable sidecar (biz-dev's builder asserts against row_counts:
     # a mismatch between manifest and files must fail the build loudly).
     import datetime as _dt
     row_counts = {"01_answers.csv": len(answers), "02_citations.csv": len(citations),
                   "03_sources.csv": len(universe), "04_source_index.csv": len(src_index),
                   "05_llm_summary.csv": len(per_llm), "06_competitors.csv": len(comp_hits_unb),
-                  "07_page_checks_per_url.csv": len(per_url)}
+                  "07_page_checks_per_url.csv": len(per_url),
+                  "12_answer_supports.csv": len(supports_rows),
+                  "13_retrieved_pages.csv": len(retrieved_rows),
+                  "14_search_queries.csv": len(query_rows)}
     json.dump({
         "slug": p.get("slug"), "brand": brand,
         "run_date": run_date or None,
@@ -243,6 +293,8 @@ def export(payload_path, out_dir, host_classes_path=None):
         "unrootable_retained": len(unrootable),
         "brand_forms": [brand] + aliases,
         "row_counts": row_counts,
+        "grounding_available": any(r.get("grounding") for r in rows),
+        "answers_without_retrieval": sum(1 for a in answers if not a["searched"]),
         "scopes": {
             "01_02_07": "all answers; rows carry prompt_class / per-URL grain",
             "03": "citations_root_all = all answers; citations_root_unbranded = unbranded only",
