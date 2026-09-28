@@ -1,4 +1,5 @@
 import os
+import time
 import json
 import re
 import random
@@ -7324,6 +7325,9 @@ def _extract_page_meta(raw):
     }
 
 
+_HUSK_CHARS = 400   # visible text below this on a 200 = challenge / JS-only husk
+
+
 def _scrape_cited_page(url, names, timeout=10):
     """Fetch one cited page (direct first, reader-proxy fallback for
     bot-blocked sites) and count every tracked name on it. Returns a dict
@@ -7335,6 +7339,19 @@ def _scrape_cited_page(url, names, timeout=10):
         if _is_safe_url(url):
             r = requests.get(url, timeout=timeout, allow_redirects=True,
                              headers=_TOPIC_CHECK_HEADERS, stream=False)
+            # 429 = the site throttling US, not a wall. Back off once (honour a
+            # short Retry-After) and retry before falling through; otherwise our
+            # own fetch rate gets recorded as a bot wall (Kilian: 1 of 480).
+            if r.status_code == 429:
+                try:
+                    _ra = float(r.headers.get('Retry-After') or 0)
+                except Exception:
+                    _ra = 0
+                time.sleep(min(max(_ra, 2.0), 8.0))
+                r = requests.get(url, timeout=timeout, allow_redirects=True,
+                                 headers=_TOPIC_CHECK_HEADERS, stream=False)
+                result['retried_429'] = True
+            result['http_code'] = r.status_code
             if r.status_code < 400 and (r.text or '').strip():
                 raw = r.text[:3_000_000]
     except Exception:
@@ -7360,8 +7377,30 @@ def _scrape_cited_page(url, names, timeout=10):
         result['status'] = 'blocked'
         return result
     meta = _extract_page_meta(raw)
-    body = re.sub(r'(?is)<(script|style)\b[^>]*>.*?</\1>', ' ', raw)
-    text = meta['title'] + ' ' + re.sub(r'<[^>]+>', ' ', body)
+    body = re.sub(r'(?is)<(script|style|noscript)\b[^>]*>.*?</\1>', ' ', raw)
+    visible = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', body)).strip()
+    # HUSK CHECK: a 200 whose visible text is almost empty is a bot challenge
+    # or a JS-only shell, not content. Counting it "ok" with zero brand
+    # mentions overstated readable pages (Kilian: ~40 of 480). Retry through
+    # the reader proxy once; if that still yields nothing, report blocked.
+    if len(visible) < _HUSK_CHARS:
+        try:
+            rr = requests.get(_READER_PREFIX + url, timeout=timeout + 10,
+                              headers={'User-Agent': _TOPIC_CHECK_HEADERS.get('User-Agent', '')})
+            rtext = rr.text or ''
+            if rr.status_code < 400 and len(rtext) > len(visible) + _HUSK_CHARS:
+                rtext = rtext[:3_000_000]
+                result.update(status='ok', via='reader', content_len=len(rtext),
+                              counts=_count_names_in_text(rtext, names))
+                tm = re.match(r'\s*Title:\s*(.+)', rtext)
+                result['title'] = tm.group(1).strip()[:300] if tm else meta.get('title', '')
+                return result
+        except Exception:
+            pass
+        result.update(status='blocked', content_len=len(raw), title=meta.get('title', ''),
+                      husk=True)
+        return result
+    text = meta['title'] + ' ' + visible
     result.update(status='ok', content_len=len(raw),
                   counts=_count_names_in_text(text, names), **meta)
     return result
