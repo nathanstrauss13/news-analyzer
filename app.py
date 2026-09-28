@@ -8901,6 +8901,16 @@ def _count_alias_verdict(alias, all_responses):
     return True, ''
 
 
+_BRAND_PLACE_DESCRIPTOR_TOKENS = {
+    'paris', 'london', 'milan', 'milano', 'rome', 'roma', 'tokyo', 'france', 'italia', 'italy',
+    'new', 'york', 'beauty', 'parfums', 'parfum', 'fragrances', 'fragrance', 'perfumes', 'perfume',
+    'cosmetics', 'skincare', 'group', 'labs', 'company', 'corp', 'inc', 'llc', 'usa', 'global',
+    # US place words that appear as a brand's first token (Carolina Herrera):
+    # 'North Carolina' / 'South Carolina' must not count as the house.
+    'carolina', 'north', 'south', 'east', 'west', 'virginia', 'dakota', 'jersey',
+}
+
+
 def _brand_count_forms(brand, aliases, all_responses, gate_responses=None):
     """Corpus-aware match forms for the brand MENTION COUNT — the single
     source of truth shared by the audit pipeline, the per-LLM visibility
@@ -8940,9 +8950,17 @@ def _brand_count_forms(brand, aliases, all_responses, gate_responses=None):
     # Zales…)" must not turn a PARENT/sibling name into a match form (Zendesk
     # is not Ultimate); the paren contents arrive as verified aliases instead.
     brand_main = re.sub(r'\(.*?\)', ' ', brand or '')
-    for t in re.findall(r"[A-Za-z][\w&'-]*", brand_main):
+    _btoks = re.findall(r"[A-Za-z][\w&'-]*", brand_main)
+    for t in _btoks:
         tl = t.lower()
         if len(t) < 3 or tl in _GENERIC_ALIAS_WORDS or tl in _BRAND_GENERIC_TOKENS:
+            continue
+        # Place names and house descriptors are never a brand on their own.
+        # The lowercase-usage gate below cannot reject them (nobody writes
+        # "paris"), so "Kilian Paris" counted every "Mancera Paris", "Memo
+        # Paris" and "Founded in Paris" as Kilian (36064d76d3: stored 19 vs
+        # true 13), and _qa_audit, sharing this function, agreed with itself.
+        if tl in _BRAND_PLACE_DESCRIPTOR_TOKENS:
             continue
         camel = re.search(r'[a-z][A-Z]', t) or (t.isupper() and len(t) >= 3)
         # Titlecase tokens (Lumen, Signet) count too — the corpus gate below is
