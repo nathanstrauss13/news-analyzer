@@ -2650,6 +2650,16 @@
                             }).join('')}
                         </div>
                         ${data.per_llm_read ? `<div class="ai-visibility-read">${esc(data.per_llm_read)}</div>` : ''}
+                        ${data.per_llm_visibility.some(x => x.model_id || x.searched_of) ? (() => {
+                            const withModel = data.per_llm_visibility.filter(x => x.model_id);
+                            const unsearched = data.per_llm_visibility.filter(x => x.searched_of && x.searched < x.searched_of);
+                            return `<div class="ai-visibility-read" style="opacity:.7;font-size:.85em;margin-top:8px;">`
+                                + (withModel.length ? `Models answering: ${withModel.map(x => `${esc(x.llm)} ${esc((x.model_ids || [x.model_id]).join(', '))}`).join(' · ')}.` : '')
+                                + (unsearched.length
+                                    ? ` Answered at least once without searching the web: ${unsearched.map(x => `${esc(x.llm)} (${x.searched_of - x.searched} of ${x.searched_of})`).join(' · ')}. Those answers come from the model's training data, not current sources.`
+                                    : (withModel.length ? ' Every answer searched the web before responding.' : ''))
+                                + `</div>`;
+                        })() : ''}
                     </div>
                 ` : ''}
                 ${data.headline_move ? `

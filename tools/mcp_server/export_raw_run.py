@@ -44,6 +44,59 @@ def _canon_differs(url, canon):
         return ""
 
 
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+_ISO_RE = re.compile(r"\b((?:19|20)\d\d)[-/.](\d{1,2})(?:[-/.](\d{1,2}))?")
+_MDY_RE = re.compile(r"\b([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+((?:19|20)\d\d)\b")
+_DMY_RE = re.compile(r"\b(\d{1,2})\s+([A-Za-z]{3})[a-z]*\.?,?\s+((?:19|20)\d\d)\b")
+_MY_RE = re.compile(r"\b([A-Za-z]{3})[a-z]*\.?\s+((?:19|20)\d\d)\b")
+
+
+def _parse_date(s):
+    """Date in a page's published / page-age string -> date, or None.
+    Handles ISO (2026-03-20T..), 'March 20, 2026', '20 March 2026' and
+    'March 2026' (-> the 1st). A bare year or a relative age ('3 days ago')
+    is too coarse to age a source and returns None. Future dates rejected."""
+    import datetime as _d
+    s = str(s or "")
+    y = mo = dd = None
+    m = _ISO_RE.search(s)
+    if m:
+        y, mo, dd = int(m.group(1)), int(m.group(2)), int(m.group(3) or 1)
+    else:
+        m = _MDY_RE.search(s)
+        if m and m.group(1).lower() in _MONTHS:
+            y, mo, dd = int(m.group(3)), _MONTHS[m.group(1).lower()], int(m.group(2))
+        else:
+            m = _DMY_RE.search(s)
+            if m and m.group(2).lower() in _MONTHS:
+                y, mo, dd = int(m.group(3)), _MONTHS[m.group(2).lower()], int(m.group(1))
+            else:
+                m = _MY_RE.search(s)
+                if m and m.group(1).lower() in _MONTHS:
+                    y, mo, dd = int(m.group(2)), _MONTHS[m.group(1).lower()], 1
+    if not y:
+        return None
+    try:
+        v = _d.date(y, mo, dd)
+    except ValueError:
+        return None
+    return v if v <= _d.date.today() else None
+
+
+def page_key(url, canon=""):
+    """One key per page: the canonical URL when the page declared one, else the
+    cited URL with tracking parameters, fragment, www and trailing slash
+    removed. Two citations with the same key are the same page."""
+    u = canon or url or ""
+    u = u.split("#")[0]
+    base, _, q = u.partition("?")
+    keep = [kv for kv in q.split("&") if kv and not re.match(
+        r"(utm_[a-z]+|ref|ref_src|fbclid|gclid|mc_[a-z]+|igshid|srsltid)=", kv, re.I)]
+    base = re.sub(r"^https?://(www\.)?", "", base, flags=re.I).rstrip("/").lower()
+    return base + ("?" + "&".join(sorted(keep)) if keep else "")
+
+
 def _searched(r, cits):
     """Evidence the agent actually retrieved (not just ran in search mode):
     citations, recorded search queries, or retrieved pages. Payloads from
@@ -80,7 +133,16 @@ def export(payload_path, out_dir, host_classes_path=None):
     root_cites_all, root_cites_unb = Counter(), Counter()
     root_answers, root_llms = defaultdict(set), defaultdict(set)
     root_sample = {}
+    root_pages = defaultdict(set)
     unrootable = []
+    # Page dates from the agents' own retrieval metadata (Perplexity, Grok
+    # page_age) fill in where the page check found no published date.
+    _ret_date = {}
+    for _r in rows:
+        for _it in ((_r.get("grounding") or {}).get("retrieved") or []):
+            _dv = _it.get("page_age") or _it.get("date") or _it.get("last_updated")
+            if _it.get("url") and _dv:
+                _ret_date.setdefault(_it["url"], str(_dv))
     for i, r in enumerate(rows):
         aid = f"{p.get('slug','run')[:6]}-{i:03d}"
         t = r.get("response") or ""
@@ -145,13 +207,20 @@ def export(payload_path, out_dir, host_classes_path=None):
                 root_answers[root].add(aid)
                 root_llms[root].add(r.get("llm"))
                 root_sample.setdefault(root, u)
+            _chk = checks.get(u) or {}
+            _canon = _chk.get("canonical") or ""
+            _cd = _canon_differs(u, _canon)
             citations.append({
                 "answer_id": aid, "llm": r.get("llm"),
                 "prompt_class": "branded" if r.get("prompt") in branded else "unbranded",
                 "prompt": r.get("prompt"), "citation_url": u,
                 "domain": host_of(u), "domain_root": root,
                 "source_type": type_of(u, cls_map) or "",
+                "page_key": page_key(u, _canon if _cd != "domain" else ""),
+                "original_publisher_root": root_of(_canon) if _cd == "domain" else "",
+                "published": _chk.get("published") or _ret_date.get(u, ""),
             })
+            root_pages[root].add(citations[-1]["page_key"]) if root else None
 
     # ---- page-check rollups (full citation set) -----------------------------
     page_by_root = defaultdict(lambda: [0, 0, 0, 0])   # checked, ok, mentioning, mentions
@@ -236,13 +305,15 @@ def export(payload_path, out_dir, host_classes_path=None):
     w("02_citations.csv",
       ["answer_id", "llm", "prompt_class", "prompt", "citation_url", "domain", "domain_root",
        "source_type", "domain_pages_checked", "domain_pages_ok",
-       "domain_pages_mentioning_brand"], citations)
+       "domain_pages_mentioning_brand", "page_key", "original_publisher_root", "published"],
+      citations)
     w("03_sources.csv",
-      ["domain", "citations_root_all", "citations_root_unbranded", "answers_citing",
+      ["domain", "citations_root_all", "citations_root_unbranded", "distinct_pages", "answers_citing",
        "llms_citing", "source_type", "pages_checked", "pages_ok",
        "pages_mentioning_brand", "brand_mentions_on_pages", "sample_url", "checked_date"],
       [{"domain": root, "citations_root_all": root_cites_all.get(root, 0),
         "citations_root_unbranded": root_cites_unb.get(root, 0),
+        "distinct_pages": len(root_pages.get(root, ())),
         "answers_citing": len(root_answers.get(root, ())),
         "llms_citing": "; ".join(sorted(x for x in root_llms.get(root, ()) if x)),
         "source_type": cls_map.get(root) or "",
@@ -257,7 +328,8 @@ def export(payload_path, out_dir, host_classes_path=None):
        "differential", "brand_mentions_at_source", "top_competitor",
        "top_competitor_presence_at_source", "top_competitor_baseline",
        "top_competitor_differential", "pages_checked", "pages_mentioning_brand"], src_index)
-    per_llm = defaultdict(lambda: [0, 0, 0])
+    per_llm = defaultdict(lambda: [0, 0, 0, 0])
+    aid_row = {a["answer_id"]: a for a in answers}
     for aid, r in unb_by_aid.items():
         d = per_llm[r.get("llm")]
         d[1] += 1
@@ -265,11 +337,56 @@ def export(payload_path, out_dir, host_classes_path=None):
             d[0] += 1
         if r.get("grounded"):
             d[2] += 1
+        if aid_row[aid]["searched"]:
+            d[3] += 1
+    models = defaultdict(Counter)
+    for a in answers:
+        if a["model_id"]:
+            models[a["llm"]][a["model_id"]] += 1
+
+    # Source age, per agent, over the FULL citation set (unique pages), dated
+    # from the page check or the agent's own retrieval metadata. Reference
+    # date = run date when the payload carries one, else export date.
+    import datetime as _dt0
+    ref = _parse_date(run_date) or _dt0.date.today()
+    age_rows, fresh = [], {}
+    seen_pg = set()
+    llm_ages = defaultdict(list)
+    llm_pages = Counter()
+    for c in citations:
+        k = (c["llm"], c["page_key"])
+        if k in seen_pg:
+            continue
+        seen_pg.add(k)
+        llm_pages[c["llm"]] += 1
+        dt = _parse_date(c["published"])
+        if dt:
+            llm_ages[c["llm"]].append((ref - dt).days)
+    def _med(v):
+        v = sorted(v); n = len(v)
+        return "" if not n else (v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) // 2)
+    for llm_ in sorted(llm_pages):
+        ag = llm_ages.get(llm_, [])
+        fresh[llm_] = {"pages": llm_pages[llm_], "dated": len(ag), "median": _med(ag),
+                       "le90": sum(1 for x in ag if x <= 90), "le365": sum(1 for x in ag if x <= 365),
+                       "gt730": sum(1 for x in ag if x > 730)}
     w("05_llm_summary.csv",
-      ["llm", "answers_mentioning_brand", "answers_total", "mention_rate", "grounded_answers"],
-      [{"llm": k, "answers_mentioning_brand": v[0], "answers_total": v[1],
-        "mention_rate": round(v[0] / max(1, v[1]), 3), "grounded_answers": v[2]}
+      ["llm", "model_ids", "answers_mentioning_brand", "answers_total", "mention_rate",
+       "grounded_answers", "answers_with_retrieval", "retrieval_rate"],
+      [{"llm": k, "model_ids": "; ".join(f"{m} ({n})" for m, n in models.get(k, Counter()).most_common()),
+        "answers_mentioning_brand": v[0], "answers_total": v[1],
+        "mention_rate": round(v[0] / max(1, v[1]), 3), "grounded_answers": v[2],
+        "answers_with_retrieval": v[3], "retrieval_rate": round(v[3] / max(1, v[1]), 3)}
        for k, v in sorted(per_llm.items())])
+    age_rows = [{"llm": k, "unique_pages_cited": f["pages"], "pages_with_date": f["dated"],
+                 "date_coverage": round(f["dated"] / max(1, f["pages"]), 3),
+                 "median_age_days": f["median"],
+                 "dated_pages_le_90d": f["le90"], "dated_pages_le_1y": f["le365"],
+                 "dated_pages_gt_2y": f["gt730"], "reference_date": ref.isoformat()}
+                for k, f in fresh.items()]
+    w("15_source_age.csv", ["llm", "unique_pages_cited", "pages_with_date", "date_coverage",
+      "median_age_days", "dated_pages_le_90d", "dated_pages_le_1y", "dated_pages_gt_2y",
+      "reference_date"], age_rows)
     w("06_competitors.csv",
       ["name", "answers_mentioning", "cited_by_llms"],
       [{"name": n, "answers_mentioning": len(hits),
@@ -307,7 +424,8 @@ def export(payload_path, out_dir, host_classes_path=None):
                   "12_answer_supports.csv": len(supports_rows),
                   "13_retrieved_pages.csv": len(retrieved_rows),
                   "14_search_queries.csv": len(query_rows),
-                  "11_dropped_citations.csv": len(dropped_rows)}
+                  "11_dropped_citations.csv": len(dropped_rows),
+                  "15_source_age.csv": len(age_rows)}
     json.dump({
         "slug": p.get("slug"), "brand": brand,
         "run_date": run_date or None,
@@ -320,6 +438,8 @@ def export(payload_path, out_dir, host_classes_path=None):
         "row_counts": row_counts,
         "grounding_available": any(r.get("grounding") for r in rows),
         "answers_without_retrieval": sum(1 for a in answers if not a["searched"]),
+        "model_ids": {k: dict(v) for k, v in models.items()},
+        "distinct_pages": len({c["page_key"] for c in citations}),
         "scopes": {
             "01_02_07": "all answers; rows carry prompt_class / per-URL grain",
             "03": "citations_root_all = all answers; citations_root_unbranded = unbranded only",
@@ -351,6 +471,12 @@ SCOPES — read before quoting any number:
   Page-check columns everywhere: full citation set.
   Universe rule: every shipped root has a class; plumbing/name-mention roots carry 0 counts.
   Citation-grain distributions denominate on rootable citations, stated with the row count.
+  05 retrieval_rate: share of answers with evidence the agent actually searched
+     (citations, logged queries or retrieved pages). Search mode alone is not evidence.
+  03 distinct_pages / 02 page_key: citations collapsed to one key per page
+     (canonical URL, else tracking parameters stripped).
+  15 source age: full citation set, unique pages per agent, dated pages only;
+     date_coverage says how many pages carried a date. Undated pages are not assumed old.
 """
     open(os.path.join(out_dir, "MANIFEST.txt"), "w").write(manifest)
     return {"sha": payload_sha, "answers": len(rows), "citations": len(citations),

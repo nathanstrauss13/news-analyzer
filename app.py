@@ -6639,6 +6639,21 @@ def _compute_per_llm_visibility(brand, all_responses, aliases=None, gate_respons
             'rate': round(m / n, 3) if n else 0.0,
             'grounded': grounded,
         })
+        # Model version + retrieval evidence: only for answers that carry the
+        # grounding side channel (runs from 2026-09-28). Older payloads get no
+        # new keys, so shipped reports render exactly as before. 'searched' =
+        # the agent actually retrieved (citations, logged queries or retrieved
+        # pages); search MODE alone ('grounded') is not evidence.
+        gsub = [r for r in subset if 'grounding' in r or r.get('model_id')]
+        if gsub:
+            _mc = Counter(r.get('model_id') for r in gsub if r.get('model_id'))
+            out[-1]['model_id'] = _mc.most_common(1)[0][0] if _mc else None
+            out[-1]['model_ids'] = sorted(_mc)
+            out[-1]['searched'] = sum(
+                1 for r in gsub
+                if r.get('citations') or (r.get('grounding') or {}).get('queries')
+                or (r.get('grounding') or {}).get('retrieved'))
+            out[-1]['searched_of'] = len(gsub)
     out.sort(key=lambda x: x['rate'], reverse=True)
     return out
 
