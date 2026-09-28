@@ -7964,6 +7964,57 @@ def _chatgpt_grounded(prompt):
     return _append_sources(msg.content or '', _annotation_urls(msg))
 
 
+XAI_API_KEY = os.environ.get("XAI_API_KEY")
+_LAST_GROK_PATH = {"path": None}
+
+
+def _grok_direct(prompt):
+    """Grok via xAI's own API (Responses endpoint) with xAI's native search
+    tools, i.e. what a person asking Grok actually gets: web_search plus
+    x_search (X posts), which the OpenRouter ':online' plugin does not use.
+    Sources come from the flat `citations` list and from output_text
+    url_citation annotations. If the API rejects x_search, retry with
+    web_search only. Raises on failure so the caller can fall back."""
+    model = os.environ.get("XAI_MODEL", "grok-4.7")
+    tools = [{"type": "web_search"}]
+    if os.environ.get("XAI_X_SEARCH", "1") != "0":
+        tools.append({"type": "x_search"})
+    def _post(tl):
+        return requests.post("https://api.x.ai/v1/responses", timeout=120,
+                             headers={"Authorization": f"Bearer {XAI_API_KEY}",
+                                      "Content-Type": "application/json"},
+                             json={"model": model, "tools": tl,
+                                   "input": [{"role": "system", "content": CITATION_SYSTEM_PROMPT},
+                                             {"role": "user", "content": prompt}]})
+    r = _post(tools)
+    if r.status_code in (400, 422) and len(tools) > 1 and 'x_search' in (r.text or ''):
+        tools = [{"type": "web_search"}]
+        r = _post(tools)
+    r.raise_for_status()
+    data = r.json()
+    texts, urls = [], list(data.get("citations") or [])
+    for item in (data.get("output") or []):
+        if item.get("type") != "message":
+            continue
+        for c in (item.get("content") or []):
+            if c.get("type") == "output_text":
+                texts.append(c.get("text") or "")
+                for a in (c.get("annotations") or []):
+                    if a.get("type") == "url_citation" and a.get("url"):
+                        urls.append(a["url"])
+    text = "\n".join(t for t in texts if t)
+    if not text.strip():
+        raise RuntimeError("xAI response carried no output_text")
+    try:
+        u = data.get("usage") or {}
+        _record_usage("xai", data.get("model") or model, u.get("input_tokens", 0) or 0,
+                      u.get("output_tokens", 0) or 0, searches=1)
+    except Exception:
+        pass
+    _LAST_GROK_PATH["path"] = "xai-direct:" + "+".join(t["type"] for t in tools)
+    return _append_sources(text, [x for x in urls if isinstance(x, str)])
+
+
 def _grok_grounded(prompt):
     """Grok via OpenRouter's ":online" web plugin — adds live web search to the
     model with no separate xAI key. Cited URLs come from message.annotations."""
@@ -7980,6 +8031,7 @@ def _grok_grounded(prompt):
     # :online web plugin bills per request
     _record_oai_usage("openrouter", resp, model, searches=1)
     msg = resp.choices[0].message
+    _LAST_GROK_PATH["path"] = "openrouter:online"
     return _append_sources(msg.content or '', _annotation_urls(msg))
 
 
@@ -8151,6 +8203,11 @@ def _call_llm(provider, enriched_prompt):
             text = (text or '').rstrip() + "\n\nSources:\n" + "\n".join(f"- {u}" for u in unique_urls)
         return (text, True)
     if provider == "Grok":
+        if XAI_API_KEY and ALL_GROUNDED:
+            try:
+                return (_grok_direct(enriched_prompt), True)
+            except Exception as e:
+                print("Grok direct (xAI) failed; OpenRouter fallback:", str(e)[:160])
         if not openrouter_client:
             raise RuntimeError("OPENROUTER_API_KEY not configured")
         if ALL_GROUNDED:
@@ -10926,6 +10983,26 @@ def admin_board_live_run(slug):
     return jsonify({"result": res, "pulled_at": (row.pulled_at.isoformat() + 'Z') if row else None,
                     "last_error": row.last_error if row else None,
                     "bytes": len(row.payload) if row else 0})
+
+
+@app.route('/admin/llm-smoke', methods=['POST'])
+def admin_llm_smoke():
+    """Operator: one grounded call to one provider; reports the path used,
+    grounded flag, text length and extracted source URLs. ~1 call of spend."""
+    if not _operator_ok():
+        return Response("forbidden\n", status=403, mimetype='text/plain')
+    prov = request.args.get('provider', 'Grok')
+    prompt = request.args.get('prompt') or "Which niche perfume houses are best known for long-lasting evening fragrances? Cite sources."
+    _LAST_GROK_PATH["path"] = None
+    try:
+        text, grounded = _call_llm(prov, prompt + CITATION_SUFFIX)
+    except Exception as e:
+        return jsonify({"provider": prov, "error": str(e)[:300]}), 502
+    urls = [u.get('url') if isinstance(u, dict) else u for u in extract_urls(text)]
+    return jsonify({"provider": prov, "path": _LAST_GROK_PATH.get("path") if prov == "Grok" else prov,
+                    "grounded": grounded, "chars": len(text or ''), "sources": len(urls),
+                    "x_com_sources": sum(1 for u in urls if u and ('x.com/' in u or 'twitter.com/' in u)),
+                    "sample_sources": urls[:6]})
 
 
 @app.route('/admin/upload-static-report', methods=['POST'])
