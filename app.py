@@ -7066,7 +7066,14 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
         # about the server, not about whether the citation exists.
         _stalled = [u for f, u in fut_map.items() if not f.done()]
         for u in _stalled:
-            out.setdefault(u, u)
+            # Fail open for real pages, never for redirectors: a Gemini
+            # vertexaisearch link is not a citable source, so keeping it
+            # unresolved put "vertexaisearch.cloud.google.com" in the top
+            # cited domains (Kilian rerun e9d58e8a7c: 61 kept). Drop it.
+            if 'vertexaisearch.cloud.google.com' in u.lower():
+                out.setdefault(u, None)
+            else:
+                out.setdefault(u, u)
         if _stalled:
             print(f"[audit] URL verification hit its {batch_deadline:.0f}s batch deadline; "
                   f"kept {len(_stalled)} unresolved URL(s) unverified "
