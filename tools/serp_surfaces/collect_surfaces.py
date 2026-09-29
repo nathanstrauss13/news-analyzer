@@ -44,10 +44,11 @@ from conventions import forms_to_pattern  # noqa: E402
 
 API = "https://serpapi.com/search.json"
 SURFACE_NAMES = {"aio": "Google AI Overview", "aimode": "Google AI Mode", "copilot": "Copilot",
-                 "mistral": "Mistral"}
-COST = {"aio": 2, "aimode": 1, "copilot": 1, "mistral": 0}   # SerpApi searches; Mistral bills its own API
+                 "mistral": "Mistral", "deepseek": "DeepSeek"}
+COST = {"aio": 2, "aimode": 1, "copilot": 1, "mistral": 0, "deepseek": 0}   # SerpApi searches; Mistral bills its own API
 SERP_SURFACES = ("aio", "aimode", "copilot")
 MISTRAL_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-medium-latest")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")   # served as deepseek-v4-flash (9/29)
 _JUNK = re.compile(r"(Go to product viewer dialog for this item\.?)+", re.I)
 
 
@@ -210,6 +211,94 @@ def _app_prompting():
     return ns["SYS"], ns["_time_aware_note"]()
 
 
+def _app_url_extractor():
+    """app.py's own extract_urls (regex, balanced-bracket tail trim, domain
+    blacklist), loaded from source so DeepSeek's in-text links are extracted
+    exactly as ChatGPT's are."""
+    import ast
+    src = open(os.path.join(ROOT, "app.py")).read()
+    ns = {"re": re}
+    want = {"URL_PATTERN", "DOMAIN_BLACKLIST", "_strip_url_tail", "extract_urls"}
+    for n in ast.parse(src).body:
+        name = getattr(n, "name", None) or (getattr(n.targets[0], "id", None) if isinstance(n, ast.Assign) else None)
+        if name in want:
+            exec(ast.get_source_segment(src, n), ns)
+    return ns["extract_urls"]
+
+
+def _env_key(name):
+    k = os.environ.get(name)
+    if not k:
+        try:
+            from dotenv import dotenv_values
+            k = dotenv_values(os.path.join(ROOT, ".env")).get(name)
+        except Exception:
+            k = None
+    if not k:
+        sys.exit(f"{name} not set (environment or worktree .env)")
+    return k.strip()
+
+
+def deepseek_balance(key):
+    try:
+        b = requests.get("https://api.deepseek.com/user/balance",
+                         headers={"Authorization": f"Bearer {key}"}, timeout=30).json()
+        return float(b["balance_infos"][0]["total_balance"])
+    except Exception:
+        return None
+
+
+def collect_deepseek(key, prompt, n, raw_dir, system, note, extract):
+    """DeepSeek's own API through its Anthropic-compatible endpoint, with its
+    native web_search server tool: DeepSeek's search, run on DeepSeek's
+    infrastructure (not OpenRouter's search on a third-party host). DeepSeek
+    decides whether to search; it ignores max_uses (6 searches on the probe).
+    It cites as markdown links in the text, so citations = the app's
+    extract_urls over the answer; retrieved = every search result it read."""
+    body = {"model": DEEPSEEK_MODEL, "max_tokens": 4000, "system": system,
+            "messages": [{"role": "user", "content": prompt + note}],
+            "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]}
+    hdr = {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    d, err = None, None
+    for i in range(4):
+        try:
+            r = requests.post("https://api.deepseek.com/anthropic/v1/messages", headers=hdr, json=body, timeout=300)
+            d = r.json() if r.content else {}
+            if r.status_code == 200:
+                err = None
+                break
+            err = str((d.get("error") or {}).get("message") or f"HTTP {r.status_code}")[:200]
+            if r.status_code in (400, 401, 402, 403):
+                break
+        except Exception as e:
+            err = type(e).__name__
+        time.sleep(10 * (i + 1))
+    row = {"llm": SURFACE_NAMES["deepseek"], "prompt": prompt, "response": "", "citations": [],
+           "grounded": True, "error": err, "model_id": DEEPSEEK_MODEL, "surface": "deepseek",
+           "grounding": {"source": "deepseek", "queries": [], "retrieved": [], "supports": []}}
+    if err or not d:
+        return row
+    json.dump(d, open(os.path.join(raw_dir, f"deepseek_{n:03d}.json"), "w"))
+    row["model_id"] = d.get("model") or DEEPSEEK_MODEL
+    texts = []
+    for c in d.get("content") or []:
+        t = c.get("type")
+        if t == "text":
+            texts.append(c.get("text") or "")
+        elif t == "server_tool_use":
+            q = (c.get("input") or {}).get("query")
+            if q:
+                row["grounding"]["queries"].append(q)
+        elif t == "web_search_tool_result" and isinstance(c.get("content"), list):
+            for x in c["content"]:
+                if isinstance(x, dict) and x.get("url"):
+                    row["grounding"]["retrieved"].append({"url": x["url"], "title": x.get("title") or "",
+                                                          "date": x.get("page_age") or ""})
+    row["response"] = "\n\n".join(t for t in texts if t.strip())
+    row["citations"] = extract(row["response"])
+    return row
+
+
 def mistral_key():
     k = os.environ.get("MISTRAL_API_KEY")
     if not k:
@@ -333,6 +422,8 @@ def main():
         acct = requests.get("https://serpapi.com/account.json", params={"api_key": key}, timeout=30).json()
         left = acct.get("total_searches_left")
     mkey = mistral_key() if "mistral" in surfaces else None
+    dkey = _env_key("DEEPSEEK_API_KEY") if "deepseek" in surfaces else None
+    bal0 = deepseek_balance(dkey) if dkey else None
     caps = [x for x in (left, a.max_searches) if x is not None]
     cap = min(caps) if caps and serp else None
     print(f"{len(prompts)} prompts x {surfaces} -> up to {need} SerpApi searches "
@@ -355,11 +446,20 @@ def main():
             out.append((collect_mistral(mkey, q, i, raw_dir, system, note), 0))
             print(f"  Mistral {i + 1}/{len(prompts)}", flush=True)
         return out
-    with ThreadPoolExecutor(5) as ex:
+    def _deepseek_all():
+        system, note = _app_prompting()
+        extract = _app_url_extractor()
+        with ThreadPoolExecutor(3) as dx:
+            return list(dx.map(lambda iq: (collect_deepseek(dkey, iq[1], iq[0], raw_dir, system, note, extract), 0),
+                               list(enumerate(prompts))))
+    with ThreadPoolExecutor(6) as ex:
         mf = ex.submit(_mistral_all) if mkey else None
+        df = ex.submit(_deepseek_all) if dkey else None
         res = list(ex.map(lambda j: collect_one(key, j[0], j[1], j[2], raw_dir, a.gl, a.hl), jobs))
         if mf:
             res += mf.result()
+        if df:
+            res += df.result()
     rows = [r for r, _ in res]
     used = sum(c for _, c in res)
 
@@ -375,8 +475,12 @@ def main():
         unb = [r for r in shown if r["prompt"] not in branded]
         unb_all = [r for r in rs if r["prompt"] not in branded]
         cits = sum(len(r["citations"]) for r in shown)
-        if s == "mistral":
-            lines.append(f"  Mistral searched the web on {sum(1 for r in shown if r['grounding']['queries'] or r['citations'])}"
+        if s == "deepseek" and bal0 is not None:
+            bal1 = deepseek_balance(dkey)
+            if bal1 is not None:
+                lines.append(f"  DeepSeek spend (balance delta): ${bal0 - bal1:.4f}")
+        if s in ("mistral", "deepseek"):
+            lines.append(f"  {SURFACE_NAMES[s]} searched the web on {sum(1 for r in shown if r['grounding']['queries'] or r['citations'])}"
                          f" of {len(shown)} answers")
         named_unb = sum(1 for r in unb if pat.search(r["response"]))
         lines.append(f"  {SURFACE_NAMES[s]:<20} answered {len(shown)}/{len(rs)}"
