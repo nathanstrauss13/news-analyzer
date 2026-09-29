@@ -43,8 +43,11 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "mcp_server"))
 from conventions import forms_to_pattern  # noqa: E402
 
 API = "https://serpapi.com/search.json"
-SURFACE_NAMES = {"aio": "Google AI Overview", "aimode": "Google AI Mode", "copilot": "Copilot"}
-COST = {"aio": 2, "aimode": 1, "copilot": 1}
+SURFACE_NAMES = {"aio": "Google AI Overview", "aimode": "Google AI Mode", "copilot": "Copilot",
+                 "mistral": "Mistral"}
+COST = {"aio": 2, "aimode": 1, "copilot": 1, "mistral": 0}   # SerpApi searches; Mistral bills its own API
+SERP_SURFACES = ("aio", "aimode", "copilot")
+MISTRAL_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-medium-latest")
 _JUNK = re.compile(r"(Go to product viewer dialog for this item\.?)+", re.I)
 
 
@@ -192,6 +195,111 @@ def collect_one(key, surface, prompt, n, raw_dir, gl, hl):
     return to_row(surface, prompt, d, err, "bing_copilot"), 1
 
 
+def _app_prompting():
+    """The product's shared system prompt and date note, read from app.py
+    source (not copied), so Mistral gets exactly what the five assistants get."""
+    import ast
+    from datetime import datetime
+    src = open(os.path.join(ROOT, "app.py")).read()
+    ns = {"datetime": datetime}
+    for n in ast.parse(src).body:
+        if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "CITATION_SYSTEM_PROMPT":
+            ns["SYS"] = ast.literal_eval(n.value)
+        if isinstance(n, ast.FunctionDef) and n.name in ("_today_label", "_time_aware_note"):
+            exec(ast.get_source_segment(src, n), ns)
+    return ns["SYS"], ns["_time_aware_note"]()
+
+
+def mistral_key():
+    k = os.environ.get("MISTRAL_API_KEY")
+    if not k:
+        try:
+            from dotenv import dotenv_values
+            k = dotenv_values(os.path.join(ROOT, ".env")).get("MISTRAL_API_KEY")
+        except Exception:
+            k = None
+    if not k:
+        sys.exit("MISTRAL_API_KEY not set (environment or worktree .env)")
+    return k.strip()
+
+
+def collect_mistral(key, prompt, n, raw_dir, system, note):
+    """Mistral's Conversations API with its built-in web_search connector.
+    The connector can't be forced (tool_choice 'required' is rejected for
+    built-in connectors), so Mistral decides whether to search, as Claude and
+    Gemini do; the row's grounding records whether it did. Same system prompt
+    and date note as the product. 429s on the per-minute token cap are waited
+    out (Retry-After or 20s steps, up to ~4 minutes)."""
+    body = {"model": MISTRAL_MODEL, "inputs": prompt + note, "instructions": system,
+            "tools": [{"type": "web_search"}], "store": False}
+    hdr = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    d, err = None, None
+    for i in range(12):
+        try:
+            r = requests.post("https://api.mistral.ai/v1/conversations", headers=hdr, json=body, timeout=240)
+            if r.status_code == 429:
+                err = "rate limited"
+                time.sleep(min(60, float(r.headers.get("retry-after") or 20)))
+                continue
+            d = r.json()
+            if r.status_code == 200:
+                err = None
+                break
+            err = str(d.get("detail") or d.get("message") or f"HTTP {r.status_code}")[:200]
+            if r.status_code in (400, 401, 403, 422):
+                break
+        except Exception as e:
+            err = type(e).__name__
+        time.sleep(10)
+    row = {"llm": SURFACE_NAMES["mistral"], "prompt": prompt, "response": "", "citations": [],
+           "grounded": True, "error": err, "model_id": MISTRAL_MODEL, "surface": "mistral",
+           "grounding": {"source": "mistral", "queries": [], "retrieved": [], "supports": []}}
+    if d is None or err:
+        return row
+    json.dump(d, open(os.path.join(raw_dir, f"mistral_{n:03d}.json"), "w"))
+    text, cur, seen = [], "", []
+    for o in d.get("outputs") or []:
+        if o.get("type") == "tool.execution":
+            try:
+                q = json.loads(o.get("arguments") or "{}").get("query")
+                if q:
+                    row["grounding"]["queries"].append(q)
+            except Exception:
+                pass
+            try:
+                res = json.loads((o.get("info") or {}).get("result") or "{}")
+                for v in (res.values() if isinstance(res, dict) else []):
+                    if isinstance(v, dict) and v.get("url"):
+                        row["grounding"]["retrieved"].append({"url": v["url"], "title": v.get("title") or "",
+                                                              "date": v.get("date") or v.get("page_age") or ""})
+            except Exception:
+                pass
+        if o.get("type") != "message.output":
+            continue
+        row["model_id"] = o.get("model") or row["model_id"]
+        c = o.get("content")
+        if isinstance(c, str):
+            text.append(c)
+            continue
+        pending = []
+        for ch in c or []:
+            if ch.get("type") == "text":
+                if pending and cur.strip():
+                    row["grounding"]["supports"].append({"claim": cur.strip()[-600:], "urls": pending})
+                pending = []
+                cur = ch.get("text") or ""
+                text.append(cur)
+            elif ch.get("type") == "tool_reference" and ch.get("url"):
+                pending.append(ch["url"])
+                if ch["url"] not in seen:
+                    seen.append(ch["url"])
+        if pending and cur.strip():
+            row["grounding"]["supports"].append({"claim": cur.strip()[-600:], "urls": pending})
+    row["response"] = "".join(text)
+    row["citations"] = [{"url": u, "domain": domain(u)} for u in seen]
+    return row
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("payload"); ap.add_argument("out_dir")
@@ -218,11 +326,16 @@ def main():
         sys.exit(f"unknown surface(s): {bad}; choose from {list(SURFACE_NAMES)}")
 
     need = len(prompts) * sum(COST[s] for s in surfaces)
-    key = api_key()
-    acct = requests.get("https://serpapi.com/account.json", params={"api_key": key}, timeout=30).json()
-    left = acct.get("total_searches_left")
-    cap = min(x for x in (left, a.max_searches) if x is not None) if (left is not None or a.max_searches) else None
-    print(f"{len(prompts)} prompts x {surfaces} -> up to {need} searches "
+    serp = [s for s in surfaces if s in SERP_SURFACES]
+    key, acct, left = None, {}, None
+    if serp:
+        key = api_key()
+        acct = requests.get("https://serpapi.com/account.json", params={"api_key": key}, timeout=30).json()
+        left = acct.get("total_searches_left")
+    mkey = mistral_key() if "mistral" in surfaces else None
+    caps = [x for x in (left, a.max_searches) if x is not None]
+    cap = min(caps) if caps and serp else None
+    print(f"{len(prompts)} prompts x {surfaces} -> up to {need} SerpApi searches "
           f"(AI Overviews not shown cost 1, not 2) | account: {acct.get('plan_name')}, {left} left")
     if cap is not None and need > cap:
         sys.exit(f"refusing: worst case {need} searches exceeds the cap of {cap}. "
@@ -231,9 +344,22 @@ def main():
         return
 
     os.makedirs(os.path.join(a.out_dir, "raw"), exist_ok=True)
-    jobs = [(s, q, i) for s in surfaces for i, q in enumerate(prompts)]
-    with ThreadPoolExecutor(4) as ex:
-        res = list(ex.map(lambda j: collect_one(key, j[0], j[1], j[2], os.path.join(a.out_dir, "raw"), a.gl, a.hl), jobs))
+    raw_dir = os.path.join(a.out_dir, "raw")
+    jobs = [(s, q, i) for s in serp for i, q in enumerate(prompts)]
+    res = []
+
+    def _mistral_all():
+        system, note = _app_prompting()
+        out = []
+        for i, q in enumerate(prompts):
+            out.append((collect_mistral(mkey, q, i, raw_dir, system, note), 0))
+            print(f"  Mistral {i + 1}/{len(prompts)}", flush=True)
+        return out
+    with ThreadPoolExecutor(5) as ex:
+        mf = ex.submit(_mistral_all) if mkey else None
+        res = list(ex.map(lambda j: collect_one(key, j[0], j[1], j[2], raw_dir, a.gl, a.hl), jobs))
+        if mf:
+            res += mf.result()
     rows = [r for r, _ in res]
     used = sum(c for _, c in res)
 
@@ -249,6 +375,9 @@ def main():
         unb = [r for r in shown if r["prompt"] not in branded]
         unb_all = [r for r in rs if r["prompt"] not in branded]
         cits = sum(len(r["citations"]) for r in shown)
+        if s == "mistral":
+            lines.append(f"  Mistral searched the web on {sum(1 for r in shown if r['grounding']['queries'] or r['citations'])}"
+                         f" of {len(shown)} answers")
         named_unb = sum(1 for r in unb if pat.search(r["response"]))
         lines.append(f"  {SURFACE_NAMES[s]:<20} answered {len(shown)}/{len(rs)}"
                      f" | not shown {sum(1 for r in rs if r['error']=='not_shown')}"
