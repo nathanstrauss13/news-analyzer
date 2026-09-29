@@ -119,6 +119,34 @@ def flatten(blocks, depth=0):
     return out
 
 
+def _is_google(u):
+    d = domain(u)
+    return d == "google.com" or d.endswith(".google.com") or d.startswith("google.") \
+        or d.endswith("gstatic.com") or d.endswith("googleusercontent.com")
+
+
+def inline_links(blocks):
+    """Every outside link Google or Microsoft wrote INTO the answer (product
+    names and phrases linked to a retailer page, an Instagram post, a video),
+    in order. The five assistants' in-text links count as citations, so these
+    do too. Google-owned links (shopping panels, search redirects, images)
+    are widgets, not sources, and are skipped."""
+    out = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k in ("link", "url") and isinstance(v, str) and v.startswith("http") and not _is_google(v):
+                    out.append(v)
+                elif k not in ("thumbnail", "favicon", "image", "images"):
+                    walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(blocks)
+    return out
+
+
 def to_row(surface, prompt, body, err, engine):
     name = SURFACE_NAMES[surface]
     row = {"llm": name, "prompt": prompt, "response": "", "citations": [], "grounded": True,
@@ -130,7 +158,7 @@ def to_row(surface, prompt, body, err, engine):
     by_idx = {}
     for i, r in enumerate(refs):
         u = r.get("link") or r.get("url")
-        if not u or domain(u).endswith("google.com"):
+        if not u or _is_google(u):
             continue
         by_idx[r.get("index", i)] = u
         row["grounding"]["retrieved"].append({"url": u, "title": r.get("title") or "",
@@ -160,10 +188,11 @@ def to_row(surface, prompt, body, err, engine):
         text = body["reconstructed_markdown"]
     row["response"] = text
     seen = set()
-    for u in by_idx.values():
+    for u in list(by_idx.values()) + inline_links(body.get("text_blocks")):
         if u not in seen:
             seen.add(u)
             row["citations"].append({"url": u, "domain": domain(u)})
+    row["inline_link_count"] = len({u for u in inline_links(body.get("text_blocks"))})
     for l, ix in lines:
         us = [by_idx[i] for i in ix if i in by_idx]
         if us:
@@ -389,6 +418,41 @@ def collect_mistral(key, prompt, n, raw_dir, system, note):
     return row
 
 
+def reparse(out_dir, prompts, p):
+    """Re-derive AI Overview / AI Mode / Copilot rows from the raw responses
+    already on disk, so a parsing fix never costs searches. Rows from other
+    surfaces (Mistral, DeepSeek) are kept as they are."""
+    raw = os.path.join(out_dir, "raw")
+    old = json.load(open(os.path.join(out_dir, "surfaces_rows.json")))
+    rows = [r for r in old if r.get("surface") not in SERP_SURFACES]
+    before = {s: sum(len(r["citations"]) for r in old if r.get("surface") == s) for s in SERP_SURFACES}
+    for n, q in enumerate(prompts):
+        g, ov = os.path.join(raw, f"aio_{n:03d}_google.json"), os.path.join(raw, f"aio_{n:03d}_overview.json")
+        if os.path.exists(g):
+            if os.path.exists(ov):
+                rows.append(to_row("aio", q, json.load(open(ov)).get("ai_overview"), None, "google_ai_overview"))
+            else:
+                ao = json.load(open(g)).get("ai_overview") or {}
+                rows.append(to_row("aio", q, ao if ao.get("text_blocks") else None,
+                                   None if ao.get("text_blocks") else "not_shown", "google_ai_overview"))
+        for s, eng in (("aimode", "google_ai_mode"), ("copilot", "bing_copilot")):
+            f = os.path.join(raw, f"{s}_{n:03d}.json")
+            if os.path.exists(f):
+                rows.append(to_row(s, q, json.load(open(f)), None, eng))
+    json.dump(rows, open(os.path.join(out_dir, "surfaces_rows.json"), "w"), indent=1)
+    mp = os.path.join(out_dir, "merged_payload.json")
+    if os.path.exists(mp):
+        m = json.load(open(mp))
+        m["all_responses"] = [r for r in m["all_responses"] if not r.get("surface")] + rows
+        json.dump(m, open(mp, "w"))
+    for s in SERP_SURFACES:
+        rs = [r for r in rows if r.get("surface") == s]
+        if rs:
+            print(f"  {SURFACE_NAMES[s]:<20} citations {before[s]} -> {sum(len(r['citations']) for r in rs)}"
+                  f" | answers with any citation {sum(1 for r in rs if r['citations'])}/{len(rs)}"
+                  f" | domains {len({c['domain'] for r in rs for c in r['citations']})}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("payload"); ap.add_argument("out_dir")
@@ -397,6 +461,8 @@ def main():
     ap.add_argument("--gl", default="us"); ap.add_argument("--hl", default="en")
     ap.add_argument("--limit", type=int, default=None, help="first N prompts only")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--reparse", action="store_true",
+                    help="rebuild the SerpApi surfaces' rows from out_dir/raw (no searches), keep other rows")
     a = ap.parse_args()
 
     p = json.load(open(a.payload))
@@ -414,6 +480,8 @@ def main():
     if bad:
         sys.exit(f"unknown surface(s): {bad}; choose from {list(SURFACE_NAMES)}")
 
+    if a.reparse:
+        return reparse(a.out_dir, prompts, p)
     need = len(prompts) * sum(COST[s] for s in surfaces)
     serp = [s for s in surfaces if s in SERP_SURFACES]
     key, acct, left = None, {}, None
