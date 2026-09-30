@@ -7988,6 +7988,20 @@ TIER_CONFIG = {
         # to ~45-75s.
         "max_workers": 30,
     },
+    # Self-serve free audits (anonymous visitors, no operator key/IP/email and
+    # no operator prompt set) run this trimmed config. Operator-run client
+    # audits keep "free" (10 x 5) untouched. Tunable on Render, no deploy:
+    # FREE_LITE_PROMPTS (default 6) and FREE_LITE_LLMS (comma list, default
+    # drops Grok, the costliest line). Set FREE_LITE_ENABLED=0 to restore 10x5.
+    "lite": {
+        "prompt_count": max(4, min(10, int(os.environ.get("FREE_LITE_PROMPTS", "6") or "6"))),
+        "llms": [x.strip() for x in (os.environ.get("FREE_LITE_LLMS") or "Claude,ChatGPT,Gemini,Perplexity").split(",")
+                 if x.strip() in ("Claude", "ChatGPT", "Gemini", "Perplexity", "Grok")] or ["Claude", "ChatGPT", "Gemini", "Perplexity"],
+        "media_target_count": 10,
+        "institutional_target_count": 5,
+        "analyst_target_count": 5,
+        "max_workers": 30,
+    },
     "paid": {
         "prompt_count": 100,
         # Perplexity temporarily disabled — API account out of credit (insufficient_quota).
@@ -8813,7 +8827,21 @@ def _send_mail_object(msg):
     return SendGridAPIClient(sg_key).send(msg)
 
 
-def _send_requester_report_email(to_email, brand, slug):
+@app.context_processor
+def _free_tier_ctx():
+    """Self-serve settings the homepage copy and form read, so the page tells
+    the truth after a Render env change without a template edit."""
+    _lite = TIER_CONFIG["lite"] if FREE_LITE_ENABLED else TIER_CONFIG["free"]
+    return {"work_email_required": WORK_EMAIL_REQUIRED,
+            "free_prompt_count": _lite["prompt_count"],
+            "free_llms": list(_lite["llms"])}
+
+
+def _agents_word(n):
+    return {2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}.get(int(n or 0), str(n))
+
+
+def _send_requester_report_email(to_email, brand, slug, n_agents=5):
     """Fulfil the homepage promise ('we'll email you the report so you don't
     lose the link'): a short, sober note to the person who ran the audit with
     their report URL. Client-facing: no internal cost or diagnostic detail.
@@ -8824,7 +8852,7 @@ def _send_requester_report_email(to_email, brand, slug):
         subject = f"Your AI citation audit for {brand} is ready"
         text = (
             f"Your free AI citation audit for {brand} is ready:\n\n{url}\n\n"
-            "It reports how five AI agents answer branded and unbranded "
+            f"It reports how {_agents_word(n_agents)} AI agents answer branded and unbranded "
             "questions in your category: where the brand appears, which sources "
             "carry the answers, and which of your own pages AI cites. The "
             "numbers are automated; every figure is recomputable from the full "
@@ -8835,7 +8863,7 @@ def _send_requester_report_email(to_email, brand, slug):
         html_body = (
             f'<p>Your free AI citation audit for <b>{html.escape(brand)}</b> is ready:</p>'
             f'<p><a href="{url}">{url}</a></p>'
-            '<p>It reports how five AI agents answer branded and unbranded '
+            '<p>It reports how ' + _agents_word(n_agents) + ' AI agents answer branded and unbranded '
             'questions in your category: where the brand appears, which sources '
             'carry the answers, and which of your own pages AI cites. The numbers '
             'are automated; every figure is recomputable from the full responses '
@@ -10895,6 +10923,38 @@ _EMAIL_AUDIT_CAP = max(1, int(os.environ.get("EMAIL_AUDIT_CAP", "1") or "1"))
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$")
 
 
+# Work-email gate for self-serve audits (2026-09-30). Free audits cost real
+# money per run; requiring a work address filters bots and casual runs and
+# makes every lead contactable. Operator runs (key / exempt IP / operator
+# email) are never gated. WORK_EMAIL_REQUIRED=0 on Render turns it off.
+WORK_EMAIL_REQUIRED = (os.environ.get("WORK_EMAIL_REQUIRED", "1") or "1").strip() not in ("0", "false", "no")
+FREE_LITE_ENABLED = (os.environ.get("FREE_LITE_ENABLED", "1") or "1").strip() not in ("0", "false", "no")
+_FREEMAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.uk", "ymail.com", "rocketmail.com",
+    "hotmail.com", "hotmail.co.uk", "outlook.com", "live.com", "msn.com", "aol.com",
+    "icloud.com", "me.com", "mac.com", "proton.me", "protonmail.com", "pm.me", "gmx.com",
+    "gmx.net", "mail.com", "yandex.com", "yandex.ru", "zoho.com", "fastmail.com", "hey.com",
+    "qq.com", "163.com", "126.com", "duck.com", "tutanota.com", "tuta.io", "mailinator.com",
+    "guerrillamail.com", "10minutemail.com", "temp-mail.org", "yopmail.com", "sharklasers.com",
+}
+_FREEMAIL_EXTRA = {d.strip().lower() for d in (os.environ.get("FREEMAIL_EXTRA_DOMAINS", "") or "").split(",") if d.strip()}
+
+
+def _is_work_email(e):
+    """True for a syntactically valid address on a non-consumer domain."""
+    if not e or "@" not in e:
+        return False
+    dom = e.rsplit("@", 1)[1].lower()
+    if dom in _FREEMAIL_DOMAINS or dom in _FREEMAIL_EXTRA:
+        return False
+    # Country variants (outlook.co.uk, yahoo.fr, hotmail.de ...): match the
+    # provider label rather than enumerate every TLD.
+    if dom.split(".")[0] in ("gmail", "googlemail", "yahoo", "ymail", "hotmail", "outlook", "live",
+                             "msn", "aol", "icloud", "proton", "protonmail", "gmx", "yandex", "zoho"):
+        return False
+    return "." in dom
+
+
 def _normalize_email(s):
     """Strip + lowercase + bounds-check. Returns None if obviously invalid."""
     s = (s or "").strip().lower()
@@ -11729,6 +11789,20 @@ def citation_audit():
         # the demo flow), capture it as a lead and honor the per-email lifetime
         # cap. With no email, the per-IP/day cap below is the sole cost control.
         lead_email = _normalize_email(request.form.get('email', ''))
+        if WORK_EMAIL_REQUIRED and not _is_operator_email(lead_email):
+            _raw_email = (request.form.get('email') or '').strip()
+            if not lead_email:
+                return jsonify({
+                    "error": ("Please enter your work email to run the free audit. We email you the "
+                              "report link and never share the address."),
+                    "code": "work_email_required",
+                }), 400
+            if not _is_work_email(lead_email):
+                return jsonify({
+                    "error": ("Please use a work email address (not a personal Gmail, Outlook or "
+                              "similar account). We use it only to send you the report."),
+                    "code": "work_email_required",
+                }), 400
         if lead_email:
             lead = AuditLead.query.filter_by(email=lead_email).first()
             if lead and lead.audit_count >= _EMAIL_AUDIT_CAP:
@@ -11777,7 +11851,6 @@ def citation_audit():
         print(f"[audit] {'lead capture: ' + lead_email if lead_email else 'anonymous audit'} ip={ip}")
 
     user_id = user.id if user else None
-    cfg = TIER_CONFIG[tier]
 
     # ── Concurrency guard ── cap simultaneous audits so a traffic spike can't OOM
     # the single 2GB instance. Excess requests get a friendly "in line" 503; the
@@ -11812,6 +11885,12 @@ def citation_audit():
     # Flag our own runs (operator key, exempt IP, or an ops+*@innatec3.com email)
     # so the default /inbound view shows real DIY demand, not biz-dev batch runs.
     _is_operator = bool(_operator_ok() or _ip_is_exempt_from_cap(ip) or _is_operator_email(lead_email))
+    # Self-serve visitors run the trimmed "lite" config; every operator path
+    # (client audits, batch runners, restorations) keeps the full free config.
+    if FREE_LITE_ENABLED and not _is_operator:
+        tier = 'lite'
+    cfg = TIER_CONFIG[tier]
+    print(f"[audit] tier={tier} llms={cfg['llms']} prompts={cfg['prompt_count']} operator={_is_operator}")
 
     q = queue.Queue()
 
@@ -11909,7 +11988,7 @@ def citation_audit():
             try:
                 if lead_email and not _is_operator and result.get('slug'):
                     _send_requester_report_email(lead_email, result.get('brand') or 'your brand',
-                                                 result['slug'])
+                                                 result['slug'], n_agents=len(cfg['llms']))
             except Exception as _re_err:
                 print("requester-email dispatch error:", _re_err)
             # Fire the owner debug email AFTER the result is pushed to the
@@ -12018,6 +12097,9 @@ def signal_generate_prompts():
     # spamming this endpoint without ever running an audit. We do NOT
     # increment here — only the actual audit increments. We just check.
     ip = _client_ip()
+    if FREE_LITE_ENABLED and not (_ip_is_exempt_from_cap(ip) or _operator_ok()
+                                  or _is_operator_email(_normalize_email(body.get('email') or ''))):
+        tier = 'lite'   # the editor previews the same count the self-serve run uses
     if not (_ip_is_exempt_from_cap(ip) or _operator_ok()):
         today = date.today()
         # Prompt generation is metered on its OWN per-IP counter (prefixed key,

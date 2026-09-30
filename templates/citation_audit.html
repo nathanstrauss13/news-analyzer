@@ -1951,9 +1951,9 @@
                     <div class="sentence">I want <input id="brandInput" class="fin brand" aria-label="Your brand" autocomplete="off"> to be known for <input id="topicInput" class="fin topic" aria-label="what you want to be known for" autocomplete="off">.</div>
                     <input type="hidden" id="problemInput">
                     <div class="emailrow" style="margin:16px 0 2px;text-align:center;">
-                        <input type="text" inputmode="email" id="emailInput" aria-label="Email (optional)" autocomplete="email" placeholder="you@company.com"
+                        <input type="text" inputmode="email" id="emailInput" aria-label="{{ 'Work email' if work_email_required else 'Email (optional)' }}" autocomplete="email" placeholder="{{ 'you@yourcompany.com' if work_email_required else 'you@company.com' }}"
                                style="width:min(340px,100%);padding:11px 15px;border-radius:11px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.04);color:#e6e6ee;font-size:14px;text-align:center;outline:none;">
-                        <div style="font-size:12px;color:#8a8a9a;margin-top:7px;">Optional — we'll email you the report so you don't lose the link.</div>
+                        <div id="emailHint" style="font-size:12px;color:#8a8a9a;margin-top:7px;">{% if work_email_required %}Work email required — we'll send you the report link and never share the address.{% else %}Optional — we'll email you the report so you don't lose the link.{% endif %}</div>
                     </div>
                     <div class="runner-btns">
                         <button class="btn" id="submitBtn" type="submit">Run the audit &rarr;</button>
@@ -2028,7 +2028,7 @@
                 <div class="shd"><span class="eyebrow">How it works</span></div>
                 <div class="steps">
                     <div class="step"><span class="n">1</span><h3>Tell it what you want to be known for</h3><p>Name your brand and what you want it known for — "Square, payments and point of sale for small business." That's the answer AI should be giving.</p></div>
-                    <div class="step"><span class="n">2</span><h3>We query 5 leading AIs</h3><p>Ten unbranded prompts across ChatGPT, Claude, Gemini, Perplexity and Grok — every citation extracted and classified.</p></div>
+                    <div class="step"><span class="n">2</span><h3>We query {{ free_llms | length }} leading AIs</h3><p>{{ free_prompt_count }} prompts across {{ free_llms[:-1] | join(', ') }} and {{ free_llms[-1] }} — every citation extracted and classified. The full audit adds Grok, Copilot, Google AI Overviews and more.</p></div>
                     <div class="step"><span class="n">3</span><h3>Get your PR read</h3><p>The outlets doing the heavy lifting, where rivals out-cite you, and your single highest-leverage move. No dashboards to decode.</p></div>
                 </div>
             </section>
@@ -2068,6 +2068,8 @@
 
     <script>
         window.SHARED_REPORT = {{ shared_data | tojson | safe if shared_data else 'null' }};
+        window.WORK_EMAIL_REQUIRED = {{ 'true' if work_email_required else 'false' }};
+        window.FREE_TIER = {{ {'prompts': free_prompt_count, 'llms': free_llms} | tojson | safe }};
         window.SIGNAL_SHARE_URL = {{ share_url | tojson | safe if share_url else 'null' }};
         window.SIGNAL_PDF_URL   = {{ pdf_url   | tojson | safe if pdf_url   else 'null' }};
         window.SIGNAL_CSV_URL   = {{ csv_url   | tojson | safe if csv_url   else 'null' }};
@@ -2082,7 +2084,7 @@
             <button class="modal-close" onclick="closeDemoModal()">&times;</button>
             <div id="demoForm">
                 <h3 id="demoFormTitle">Request a call</h3>
-                <p id="demoFormDesc">This free audit runs 10 prompts &times; 5 leading AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
+                <p id="demoFormDesc">This free audit runs {{ free_prompt_count }} prompts &times; {{ free_llms | length }} AI assistants ({{ free_llms | join(', ') }}). A full audit covers 100+ prompts across up to 10 AI platforms, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
                 <p id="demoFormSubdesc" style="font-size:13px;color:#888;margin-bottom:14px">Drop your details and we'll reach out within 24 hours to scope the engagement.</p>
                 <div class="modal-field">
                     <label>Name *</label>
@@ -2401,6 +2403,13 @@
             // blank. The audit runs either way (server enforces the per-IP cap).
             const emailEl = document.getElementById('emailInput');
             const email = (emailEl ? emailEl.value : '').trim();
+            if (window.WORK_EMAIL_REQUIRED && !email && !opts._retry) {
+                // Server enforces this too; the client check just saves a round trip.
+                const e = document.getElementById('errorMsg');
+                if (e) { e.textContent = 'Please enter your work email to run the free audit.'; e.classList.add('active'); }
+                if (emailEl) { emailEl.focus(); emailEl.style.borderColor = 'rgba(255,120,120,.7)'; }
+                return;
+            }
 
             lastAuditContext = { slug: null, problem_statement: input, tier: tier, email: email };
             // Funnel start — skip on the auto-retry after an at-capacity 503 so
@@ -2460,6 +2469,13 @@
                     document.getElementById('loading').classList.remove('active');
                     document.getElementById('formSection').classList.remove('hidden');
                     setSubtitleVisible(true);
+                    if (data.code === 'work_email_required') {
+                        document.getElementById('errorMsg').textContent = data.error;
+                        document.getElementById('errorMsg').classList.add('active');
+                        const _em = document.getElementById('emailInput');
+                        if (_em) { _em.focus(); _em.style.borderColor = 'rgba(255,120,120,.7)'; }
+                        return;
+                    }
                     if (data.code === 'rate_limited' || data.code === 'email_rate_limited') {
                         document.getElementById('errorMsg').textContent = data.error;
                         document.getElementById('errorMsg').classList.add('active');
@@ -3002,7 +3018,7 @@
                 <div class="bespoke-cta">
                     <div class="bespoke-cta-label">Want deeper insight?</div>
                     <h3>Get a bespoke AI citation analysis</h3>
-                    <p>This free audit runs 10 prompts &times; 5 leading AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.</p>
+                    <p>${freeAuditScopeCopy(data)}</p>
                     <button class="cta-buy-btn" onclick="openDemoModal()">
                         Talk to us about a bespoke audit &rarr;
                     </button>
@@ -3034,6 +3050,17 @@
         }
 
         let lastAuditContext = { slug: null, problem_statement: '' };
+        // Scope sentence for the report CTA, from the payload itself (agents that
+        // answered, prompts asked) so a trimmed self-serve run and a full
+        // operator run each describe themselves truthfully.
+        function freeAuditScopeCopy(data) {
+            const agents = (data && data.per_llm_visibility && data.per_llm_visibility.length)
+                ? data.per_llm_visibility.map(x => x.llm) : ((window.FREE_TIER && window.FREE_TIER.llms) || []);
+            const nPrompts = (data && data.prompts_used && data.prompts_used.length) ? data.prompts_used.length
+                : ((window.FREE_TIER && window.FREE_TIER.prompts) || 10);
+            const list = agents.length ? ` (${agents.map(esc).join(', ')})` : '';
+            return `This free audit ran ${nPrompts} prompts &times; ${agents.length || 5} AI assistants${list}. A full audit covers 100+ prompts across up to 10 AI platforms, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.`;
+        }
         // The descriptive hero subtitle is homepage-only — once the user has
         // started a search (run an audit or opened the prompt editor) it's
         // retired and never re-shown on subsequent/return views.
@@ -3090,7 +3117,7 @@
                 if (successBody) successBody.textContent = "We've got your note and we'll reply within 24 hours.";
             } else {
                 if (titleEl) titleEl.textContent = 'Request a call';
-                if (descEl) descEl.innerHTML = 'This free audit runs 10 prompts &times; 5 leading AI assistants (Claude, ChatGPT, Gemini, Perplexity, Grok). A bespoke engagement with us covers 100+ prompts across up to 10 LLMs, custom-curated for your category &mdash; plus a strategic roadmap, executive briefing, and ongoing analysis.';
+                if (descEl) descEl.innerHTML = freeAuditScopeCopy(window.SHARED_REPORT || (lastAuditContext && lastAuditContext.data) || null);
                 if (subdescEl) subdescEl.textContent = "Drop your details and we'll reach out within 24 hours to scope the engagement.";
                 if (submitBtn) submitBtn.textContent = 'Request a call';
                 if (successTitle) successTitle.textContent = "Thanks — we'll be in touch.";
@@ -3389,6 +3416,15 @@
                 tEl.value = focus;
                 const stmt = _syncProblemInput();
                 if (!stmt) return;
+                if (window.WORK_EMAIL_REQUIRED) {
+                    // The website widget can't collect the email; land the visitor
+                    // on the filled-in form with the email field ready to type.
+                    const emEl = document.getElementById('emailInput');
+                    const hint = document.getElementById('emailHint');
+                    if (hint) hint.textContent = 'One more step: enter your work email and we\'ll run the audit.';
+                    if (emEl) setTimeout(() => { emEl.focus(); emEl.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, 300);
+                    return;
+                }
                 // Defer one tick so the loading/progress DOM is fully wired.
                 setTimeout(() => runAudit({ input: stmt }), 0);
             } catch (e) {}
