@@ -3905,9 +3905,44 @@ def _is_brand_own_domain(domain, brand):
     root = parts[-2].lower()
     # Bidirectional containment so multi-word brands ("HelloFresh" → hellofresh.com)
     # and single-word brands ("Adobe" → adobe.com / developer.adobe.com) both match.
-    if brand_slug in root or root in brand_slug:
+    if brand_slug in root:
         return True
+    # root inside the slug ("adobe" in "adobe", "hellofresh"): never let a bare
+    # place/descriptor or stopword label qualify (paris.com is not Kilian Paris).
+    if root in brand_slug and root not in _BRAND_PLACE_DESCRIPTOR_TOKENS and root not in _BRAND_STOPWORDS:
+        return True
+    # Token rule (2026-10-01, Kilian Paris -> bykilian.com): a brand's site is
+    # often one distinctive word of the name with a short affix: by<brand>,
+    # maison<brand>, <brand>parfums, <brand>official. The whole-slug test above
+    # misses these when the name carries a place or descriptor ("Paris"). Only
+    # distinctive tokens (>= 5 chars, not stopwords or place descriptors) and
+    # only a closed affix list, so kilianreviews.com stays editorial.
+    for tok in _brand_distinctive_tokens(brand):
+        if root == tok:
+            return True
+        for pre in _OWN_DOMAIN_PREFIXES:
+            if root == pre + tok:
+                return True
+        for suf in _OWN_DOMAIN_SUFFIXES:
+            if root == tok + suf:
+                return True
     return False
+
+
+_OWN_DOMAIN_PREFIXES = ("by", "maison", "parfums", "shop", "official", "the", "house", "atelier")
+_OWN_DOMAIN_SUFFIXES = ("paris", "parfums", "parfum", "perfumes", "fragrances", "beauty", "official",
+                        "store", "shop", "usa", "us", "uk", "group", "brand", "cosmetics", "skincare")
+
+
+def _brand_distinctive_tokens(brand):
+    """Alnum words of the accent-folded brand name, minus stopwords and place /
+    descriptor tokens, >= 5 chars. 'Kilian Paris' -> ['kilian']."""
+    toks = []
+    for w in re.findall(r'[a-z0-9]+', _ascii_fold((brand or '').lower())):
+        if len(w) < 5 or w in _BRAND_STOPWORDS or w in _BRAND_PLACE_DESCRIPTOR_TOKENS:
+            continue
+        toks.append(w)
+    return toks
 
 
 def verify_editorial_domains(editorial_domains, brand, category):
