@@ -11785,6 +11785,12 @@ def citation_audit():
     # the labeled dict straight into 'prompts'.
     raw_sets = (request.form.get('prompt_sets') or '').strip()
     raw_prompts = (request.form.get('prompts') or '').strip()
+    # Operator runs (key, exempt IP, ops+ email) carry client-approved sets of
+    # up to 120 prompts (the paid audit is 100+). Self-serve stays at 5-20.
+    # Decided here, before the lead/email block, so the parse below can use it.
+    _early_operator = bool(_operator_ok() or _ip_is_exempt_from_cap(_client_ip())
+                           or _is_operator_email(_normalize_email(request.form.get('email', ''))))
+    _half_max, _total_max = (60, 120) if _early_operator else (10, 20)
     for raw in (raw_sets, raw_prompts):
         if not raw or prompts_override:
             continue
@@ -11797,12 +11803,15 @@ def citation_audit():
                  if isinstance(p, str) and p.strip()]
             u = [p.strip()[:500] for p in (parsed.get('unbranded') or [])
                  if isinstance(p, str) and p.strip()]
-            if 3 <= len(b) <= 10 and 3 <= len(u) <= 10 and 5 <= len(b) + len(u) <= 20:
+            if 3 <= len(b) <= _half_max and 3 <= len(u) <= _half_max and 5 <= len(b) + len(u) <= _total_max:
                 prompt_sets_override = {'branded': b, 'unbranded': u}
                 prompts_override = b + u
+            else:
+                print(f"[audit] prompt_sets REJECTED (branded {len(b)}, unbranded {len(u)}, "
+                      f"limits {_half_max}/half, {_total_max} total, operator={_early_operator}); falling back to generation")
         elif isinstance(parsed, list):
             cleaned = [p.strip() for p in parsed if isinstance(p, str) and p.strip()]
-            if 5 <= len(cleaned) <= 20:
+            if 5 <= len(cleaned) <= _total_max:
                 # Trim per-prompt length to a sane ceiling so a malicious
                 # client can't blow Claude's input budget.
                 prompts_override = [p[:500] for p in cleaned]
