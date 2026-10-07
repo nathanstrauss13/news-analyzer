@@ -8,7 +8,7 @@
        Keep them out of search indexes so a casually-shared link doesn't get scraped. #}
     <meta name="robots" content="noindex,nofollow">
     {% endif %}
-    <title>Free AI Citation Audit — INNATE C3</title>
+    <title>Free AI Visibility Audit — INNATE C3</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1942,7 +1942,7 @@
         </div>
 
         <header class="hero" id="heroSection">
-            <span class="eyebrow">Free AI Citation Audit · Built for communicators</span>
+            <span class="eyebrow">Free AI Visibility Audit · Built for communicators</span>
             <h1>See your brand through the<br>eyes of <span class="g">AI</span>.</h1>
             <p class="subtitle sub" id="initialSubtitle">What AI believes about your brand is a good indication of what humans will, too. We query 5 leading agents (Claude, ChatGPT, Gemini, Perplexity, and Grok), extract every citation (explicit and inferred), and identify correlations between earned and owned media and your presence, prominence, and absence in AI answers. Give it a try, on us:</p>
 
@@ -2053,7 +2053,7 @@
                         <div class="col"><div class="ct">Free automated sample</div><div class="ci">10 prompts (branded + unbranded)</div><div class="ci">5 assistants · 50 outputs</div><div class="ci">automated illustrative preview</div></div>
                         <div class="col hot"><div class="ct">Consultation</div><div class="ci">bespoke prompts you approve</div><div class="ci">500&ndash;1,000 outputs, up to 10 assistants</div><div class="ci">human filtering and analysis</div><div class="ci">earned + owned share of voice</div><div class="ci">truly actionable insights</div></div>
                     </div>
-                    <button class="btn-lg" type="button" onclick="openDemoModal()">Talk to us about a deep dive &rarr;</button>
+                    <button class="btn-lg" type="button" onclick="openDemoModal()">Talk to us about a full audit &rarr;</button>
                 </div>
             </section>
 
@@ -2522,7 +2522,7 @@
                                             const newPath = '/signal/' + msg.data.slug;
                                             window.history.pushState({slug: msg.data.slug}, '', newPath);
                                             if (msg.data.brand) {
-                                                document.title = msg.data.brand + ' signal report — AI Citation Audit';
+                                                document.title = msg.data.brand + ' report — AI Visibility Audit';
                                             }
                                         } catch (e) {}
                                     }
@@ -3017,7 +3017,7 @@
                 </div>
                 <div class="bespoke-cta">
                     <div class="bespoke-cta-label">Want deeper insight?</div>
-                    <h3>Get a bespoke AI citation analysis</h3>
+                    <h3>Get the full AI Visibility Audit</h3>
                     <p>${freeAuditScopeCopy(data)}</p>
                     <button class="cta-buy-btn" onclick="openDemoModal()">
                         Talk to us about a bespoke audit &rarr;
@@ -3378,7 +3378,7 @@
             if (window.SIGNAL_SHARE_URL) {
                 const banner = document.createElement('div');
                 banner.className = 'share-banner';
-                banner.innerHTML = `<span>Viewing a shared AI citation audit report.</span>`
+                banner.innerHTML = `<span>Viewing a shared AI Visibility Audit report.</span>`
                     + `<span><a href="/citation-audit">Run your own &rarr;</a></span>`;
                 const results = document.getElementById('results');
                 results.insertBefore(banner, results.firstChild);

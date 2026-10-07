@@ -8884,9 +8884,9 @@ def _send_requester_report_email(to_email, brand, slug, n_agents=5):
     try:
         root = os.environ.get("PUBLIC_BASE_URL", "https://signal.innatec3.com").rstrip('/')
         url = f"{root}/signal/{slug}"
-        subject = f"Your AI citation audit for {brand} is ready"
+        subject = f"Your AI Visibility Audit for {brand} is ready"
         text = (
-            f"Your free AI citation audit for {brand} is ready:\n\n{url}\n\n"
+            f"Your free AI Visibility Audit for {brand} is ready:\n\n{url}\n\n"
             f"It reports how {_agents_word(n_agents)} AI agents answer branded and unbranded "
             "questions in your category: where the brand appears, which sources "
             "carry the answers, and which of your own pages AI cites. The "
@@ -8896,7 +8896,7 @@ def _send_requester_report_email(to_email, brand, slug, n_agents=5):
             "or book 30 minutes: https://calendly.com/nstrauss/new-meeting\n\n"
             "Nathan Strauss\nInnate C3\n")
         html_body = (
-            f'<p>Your free AI citation audit for <b>{html.escape(brand)}</b> is ready:</p>'
+            f'<p>Your free AI Visibility Audit for <b>{html.escape(brand)}</b> is ready:</p>'
             f'<p><a href="{url}">{url}</a></p>'
             '<p>It reports how ' + _agents_word(n_agents) + ' AI agents answer branded and unbranded '
             'questions in your category: where the brand appears, which sources '
