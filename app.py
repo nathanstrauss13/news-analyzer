@@ -7079,6 +7079,56 @@ def _is_specific_article(url):
         return True
 
 
+# ---- redirect chains that end somewhere other than the cited page ---------
+# 2026-10-08, NY health systems read (52c2df3b15): 46 nychealthandhospitals.org
+# citations were stored as Radware bot-challenge URLs and a Grok link as
+# ir.amnhealthcare.com/404. The resolver follows redirects; when the chain ends
+# on a site's bot wall, or on an error page served with a success code, the
+# final URL is not the page the agent cited. Signatures are vendor-specific
+# (no bare "captcha") so a real page is never mistaken for a wall.
+_BOT_CHALLENGE_RE = re.compile(
+    r"ssk=botmanager|perfdrive\.com"                    # Radware / ShieldSquare
+    r"|/cdn-cgi/challenge-platform|[?&]__cf_chl_"       # Cloudflare
+    r"|captcha-delivery\.com"                           # DataDome
+    r"|_Incapsula_Resource"                              # Imperva
+    r"|px-captcha"                                       # PerimeterX / HUMAN
+    r"|/\.well-known/sgcaptcha",                        # SiteGround
+    re.I)
+_ERROR_PAGE_PATH_RE = re.compile(
+    r"/(?:404|410|not[-_]?found|page[-_]?not[-_]?found|error[-_]?404)(?:\.\w{2,5})?/?$", re.I)
+
+
+def _redirect_landing_problem(requested, final):
+    """Why a redirect chain's final URL is not the cited page: 'challenge'
+    (a bot wall), 'error_page' (a soft 404 the requested URL was not), or ''."""
+    if not final or final == requested:
+        return ''
+    if _BOT_CHALLENGE_RE.search(final):
+        return 'challenge'
+    from urllib.parse import urlparse
+    try:
+        fp, rp = urlparse(final).path or '', urlparse(requested).path or ''
+    except Exception:
+        return ''
+    if _ERROR_PAGE_PATH_RE.search(fp) and not _ERROR_PAGE_PATH_RE.search(rp):
+        return 'error_page'
+    return ''
+
+
+def _stored_url_problem(u):
+    """QA view of an already-stored citation URL: a bot-wall challenge or an
+    error-page path means the resolver kept the wrong URL."""
+    if not u or not isinstance(u, str):
+        return ''
+    if _BOT_CHALLENGE_RE.search(u):
+        return 'challenge'
+    from urllib.parse import urlparse
+    try:
+        return 'error_page' if _ERROR_PAGE_PATH_RE.search(urlparse(u).path or '') else ''
+    except Exception:
+        return ''
+
+
 def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None,
                              batch_deadline=None):
     """HEAD-check + redirect-resolve a batch of URLs concurrently.
@@ -7126,6 +7176,11 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
             if r.status_code in (404, 410):
                 return (original_u, None)
             if r.status_code < 400:
+                _why = _redirect_landing_problem(u, r.url)
+                if _why == 'error_page':
+                    return (original_u, None)     # soft 404: excluded and listed
+                if _why == 'challenge':
+                    return (original_u, u)        # keep the cited page, never the wall
                 return (original_u, r.url)
             if r.status_code == 403:
                 # Possible bot-block of HEAD; one retry with streaming GET.
@@ -7139,6 +7194,11 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
                     if r2.status_code in (404, 410):
                         return (original_u, None)
                     if r2.status_code < 400:
+                        _why = _redirect_landing_problem(u, r2.url)
+                        if _why == 'error_page':
+                            return (original_u, None)
+                        if _why == 'challenge':
+                            return (original_u, u)
                         return (original_u, r2.url)
                 except Exception:
                     pass
@@ -9728,6 +9788,24 @@ def _qa_audit(payload):
         ", ".join(f"{p} {_gp[p][1]}/{_gp[p][0]}" for p in sorted(_gp)) or "n/a",
         "every provider grounded on >=1 answer",
         f"no retrieval at all from: {', '.join(_dark)}" if _dark else '')
+
+    # Citation URL integrity (non-blocking). A stored citation must be the page
+    # the agent cited, never a bot-wall challenge or an error page the resolver
+    # landed on (52c2df3b15, Oct 8: 46 Radware challenge URLs and a /404).
+    # Domain counts stay right; page-level data and page checks do not.
+    _bad_urls = []
+    for _r in (_ar_full or []):
+        for _c in (_r.get('citations') or []):
+            _u = _c.get('url') if isinstance(_c, dict) else None
+            _why = _stored_url_problem(_u)
+            if _why:
+                _bad_urls.append((_why, _u))
+    add('citation_url_integrity', not _bad_urls,
+        f"{sum(1 for w, _ in _bad_urls if w == 'challenge')} challenge, "
+        f"{sum(1 for w, _ in _bad_urls if w == 'error_page')} error-page URLs stored",
+        "0",
+        ("re-run or repair before sharing page-level data; e.g. "
+         + ", ".join(sorted({(u or '')[:80] for _, u in _bad_urls})[:2])) if _bad_urls else '')
 
     blocking_fail = [c['check'] for c in checks if c['blocking'] and not c['pass']]
     return {'checks': checks, 'flags': flags, 'client_ready': not blocking_fail,
