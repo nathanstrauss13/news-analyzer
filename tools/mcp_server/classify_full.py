@@ -11,7 +11,11 @@ distinct cited root a type, in this order:
      (_classify_domains_llm: same prompt, same types, observed domains only).
 Then it lists EXCEPTIONS for an analyst to review before delivery:
   - the model returned no valid type
-  - the root matches the brand's name (or an alias) but isn't in brand_domains
+  - the root matches the brand's name (or an alias) but isn't in brand_domains:
+    either the brand's own site (type owned) or an unrelated company with the
+    same name (type namesake, e.g. gruppoiren.it, Italy's Iren S.p.A., in an
+    IREN audit); answers citing a namesake are listed by --check for the
+    accuracy pass, because they may describe the wrong company
   - a named competitor's own site typed as something else
   - link plumbing (search and redirect hosts), which is never a source
   - the computed root looks like a bare public suffix
@@ -90,7 +94,7 @@ def classify(payload_path, out_path):
     raw = open(payload_path, "rb").read()
     p = json.loads(raw)
     A = _app()
-    valid = set(A._DOMAIN_TYPES_VALID) | {"owned"}
+    valid = set(A._DOMAIN_TYPES_VALID) | {"owned", "namesake"}
     brand = (p.get("brand") or "").strip()
     aliases = [a for a in (p.get("brand_aliases") or []) if isinstance(a, str) and a.strip()]
     comps = [c.get("name") for c in (p.get("competitors") or []) if isinstance(c, dict) and c.get("name")]
@@ -196,8 +200,16 @@ def check(payload_path, out_path, decisions=None):
     if problems:
         print("CHECK FAILED:\n  " + "\n  ".join(problems))
         sys.exit(1)
+    names = {r for r in counts if doc.get(r) == "namesake"}
+    flagged = []
+    for r_ in p.get("all_responses") or []:
+        hit = sorted({root_of(c.get("url", "")) for c in (r_.get("citations") or []) if isinstance(c, dict)} & names)
+        if hit:
+            flagged.append({"llm": r_.get("llm"), "prompt": r_.get("prompt"), "namesake_roots": hit})
     meta.update(status="reviewed", reviewed=datetime.date.today().isoformat(),
-                classified=len(counts), roots=len(counts))
+                classified=len(counts), roots=len(counts), namesake_answers=flagged)
+    for f_ in flagged:
+        print(f"  check for entity confusion: {f_['llm']} | {f_['prompt'][:70]} | cites {', '.join(f_['namesake_roots'])}")
     doc["_meta"] = meta
     json.dump(doc, open(out_path, "w"), indent=1)
     print(f"CHECK PASSED: all {len(counts)} distinct cited roots typed; status reviewed")

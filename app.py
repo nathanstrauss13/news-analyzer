@@ -3869,6 +3869,22 @@ def _is_competitor_owned_domain(domain, competitor_stems):
     return False
 
 
+# Vendor-hosted investor-relations and newsroom sites carry the company in the
+# label left of the vendor's domain: iren.gcs-web.com, <co>.q4web.com,
+# <co>.mediaroom.com. On these roots the company is that label, never the
+# vendor's second-level name (IREN 802fd06e1e: 57 IR citations on gcs-web.com
+# were invisible to owned matching).
+_SHARED_IR_HOSTING_ROOTS = {"gcs-web.com", "q4web.com", "q4ir.com", "investorroom.com",
+                            "mediaroom.com", "prezly.com", "pr.co"}
+
+
+def _company_label(parts):
+    """Second-level label, or the company label on a vendor-hosted IR/newsroom root."""
+    if len(parts) >= 3 and '.'.join(parts[-2:]) in _SHARED_IR_HOSTING_ROOTS:
+        return parts[-3]
+    return parts[-2] if len(parts) >= 2 else (parts[0] if parts else '')
+
+
 def _is_brand_own_domain(domain, brand):
     """Quick deterministic check: is this domain the brand's own property?
 
@@ -3902,7 +3918,7 @@ def _is_brand_own_domain(domain, brand):
     parts = d.split('.')
     if len(parts) < 2:
         return False
-    root = parts[-2].lower()
+    root = _company_label(parts).lower()
     # Bidirectional containment so multi-word brands ("HelloFresh" → hellofresh.com)
     # and single-word brands ("Adobe" → adobe.com / developer.adobe.com) both match.
     if brand_slug in root:
@@ -5562,9 +5578,10 @@ _BRAND_DOMAINS_CACHE = {}
 
 
 def _registrable_root(dom):
-    """Second-level label of a domain ('investors.elcompanies.com' -> 'elcompanies')."""
+    """Second-level label of a domain ('investors.elcompanies.com' -> 'elcompanies'), or
+    the company label on a vendor-hosted IR/newsroom root ('iren.gcs-web.com' -> 'iren')."""
     parts = [p for p in (dom or '').lower().lstrip('.').split('/')[0].split(':')[0].split('.') if p]
-    return parts[-2] if len(parts) >= 2 else (parts[0] if parts else '')
+    return _company_label(parts)
 
 
 _BRAND_ALIASES_CACHE = {}
@@ -6594,6 +6611,44 @@ _GENERIC_ALIAS_WORDS = {
     # so the corpus gate alone can't catch it (Ultimate.ai counted 33/50 falsely).
     'ultimate',
 }
+
+
+_CORP_SUFFIX_RE = re.compile(r"\s+(?:Limited|Ltd\.?|Inc\.?|Incorporated|Corporation|Corp\.?|plc|PLC|LLC|"
+                             r"S\.A\.|S\.p\.A\.|N\.V\.|AG|SE|GmbH|Co\.?)$")
+
+
+def _former_names_from_answers(brand, responses, min_answers=2):
+    """Former company names the answers state next to the brand: "IREN (formerly Iris
+    Energy)", "IREN Limited, formerly known as Iris Energy Limited", "rebranded from
+    Iris Energy to IREN". Deterministic, so no model can invent one (a Haiku prompt
+    for former names returned "neocloud" for IREN and "TBD" for Block). A name counts
+    only when at least min_answers answers state it, and corporate suffixes are
+    dropped ("Iris Energy Limited" -> "Iris Energy")."""
+    b = (brand or '').strip()
+    if len(b) < 2:
+        return []
+    name = r"([A-Z][A-Za-z0-9&'.-]*(?:\s+[A-Z][A-Za-z0-9&'.-]*){0,3})"
+    bp = r"(?<![A-Za-z0-9])" + re.escape(b) + r"(?![A-Za-z0-9])"
+    # The former name must sit right after the brand: only a corporate suffix, markdown or
+    # punctuation between them. "Adobe AI (formerly Sensei)" and "Adobe Commerce (formerly
+    # Magento)" are product renames, not the company's former name, and stay out.
+    sfx = r"(?:,?\s+(?:Limited|Ltd\.?|Inc\.?|Incorporated|Corporation|Corp\.?|plc|PLC|LLC|Holdings))?"
+    join = r"[*_\"'\u2019]*\s*[,(\u2014-]?\s*"
+    pats = [re.compile(bp + sfx + join + r"(?:formerly|previously)(?:\s+known\s+as)?\s+" + name),
+            re.compile(r"\b(?:rebranded|renamed)\s+from\s+" + name + r"\s+to\s+" + bp),
+            re.compile(name + r"\s*\(\s*now\s+" + bp + sfx + r"\s*\)")]
+    seen = {}
+    for r in responses or []:
+        t = _response_text(r)
+        found = set()
+        for pt in pats:
+            for m in pt.finditer(t):
+                n = _CORP_SUFFIX_RE.sub('', m.group(1).strip(" .,;:)*")).strip(" .,;:)*")
+                if len(n) >= 3 and b.lower() not in n.lower():
+                    found.add(n)
+        for n in found:
+            seen[n] = seen.get(n, 0) + 1
+    return [n for n, k in sorted(seen.items(), key=lambda kv: -kv[1]) if k >= min_answers][:3]
 
 
 def _verify_brand_aliases(aliases, all_responses):
@@ -10136,6 +10191,11 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     total_citations = sum(d['count'] for d in ranked_domains)
     brand_aliases = _resolve_brand_aliases(brand)   # sub-brands (e.g. iShares for BlackRock)
     brand_aliases = _verify_brand_aliases(brand_aliases, all_responses)  # drop hallucinated/generic aliases
+    # Former names the answers themselves state next to the brand ("IREN (formerly Iris
+    # Energy)"), read from both halves; same generic-word guard as any alias.
+    for _fn in _verify_brand_aliases(_former_names_from_answers(brand, _all_responses_full), _all_responses_full):
+        if _fn not in brand_aliases:
+            brand_aliases.append(_fn)
     # Corpus-aware forms shared with the QA gate — stored count == QA recount
     # by construction (see _brand_count_forms for the STACK/Signet/Scribes bugs).
     _cnt_forms, _cnt_union = _brand_count_forms(brand, brand_aliases, all_responses,

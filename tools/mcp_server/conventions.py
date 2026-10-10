@@ -34,10 +34,20 @@ GENERIC_TOKENS = {"company", "companies", "group", "corp", "corporation", "inc",
                   "technologies", "holdings", "global", "international"}
 
 
+# Vendor-hosted investor-relations and newsroom sites: the company is the label
+# left of the vendor's domain (iren.gcs-web.com is IREN's IR site, not
+# "gcs-web.com"), so each company's site is its own source. Same set as
+# app._SHARED_IR_HOSTING_ROOTS.
+SHARED_IR_HOSTING = {"gcs-web.com", "q4web.com", "q4ir.com", "investorroom.com",
+                     "mediaroom.com", "prezly.com", "pr.co"}
+
+
 def root_of(host_or_url):
     h = (host_or_url or "").split("//")[-1].split("/")[0].split(":")[0].lower()
     h = h[4:] if h.startswith("www.") else h
     parts = h.split(".")
+    if len(parts) >= 3 and ".".join(parts[-2:]) in SHARED_IR_HOSTING:
+        return ".".join(parts[-3:])
     if len(parts) >= 3 and ".".join(parts[-2:]) in SECOND_LEVEL:
         return ".".join(parts[-3:])
     return ".".join(parts[-2:]) if len(parts) >= 2 else h
