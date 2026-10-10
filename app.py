@@ -7098,13 +7098,38 @@ _ERROR_PAGE_PATH_RE = re.compile(
     r"/(?:404|410|not[-_]?found|page[-_]?not[-_]?found|error[-_]?404)(?:\.\w{2,5})?/?$", re.I)
 
 
+# Domain marketplaces and parking services. A cited link that redirects here
+# means the cited site no longer exists (keentel.com -> hugedomains.com in the
+# IREN run): a dead link, never a source.
+_PARKED_DOMAIN_HOSTS = {"hugedomains.com", "dan.com", "sedo.com", "sedoparking.com", "afternic.com",
+                        "undeveloped.com", "buydomains.com", "domainmarket.com", "brandbucket.com",
+                        "parkingcrew.net", "bodis.com", "above.com", "domainnamesales.com", "efty.com",
+                        "squadhelp.com"}
+
+
+def _is_parked_landing(u):
+    from urllib.parse import urlparse
+    try:
+        pu = urlparse(u)
+        h = (pu.hostname or '').lower()
+    except Exception:
+        return False
+    h = h[4:] if h.startswith('www.') else h
+    if h in _PARKED_DOMAIN_HOSTS:
+        return True
+    return h == 'godaddy.com' and (pu.path or '').lower().startswith(('/forsale', '/domainsearch'))
+
+
 def _redirect_landing_problem(requested, final):
     """Why a redirect chain's final URL is not the cited page: 'challenge'
-    (a bot wall), 'error_page' (a soft 404 the requested URL was not), or ''."""
+    (a bot wall), 'error_page' (a soft 404 the requested URL was not, or a
+    domain-for-sale page the cited site redirected to), or ''."""
     if not final or final == requested:
         return ''
     if _BOT_CHALLENGE_RE.search(final):
         return 'challenge'
+    if _is_parked_landing(final) and not _is_parked_landing(requested):
+        return 'error_page'
     from urllib.parse import urlparse
     try:
         fp, rp = urlparse(final).path or '', urlparse(requested).path or ''
@@ -7122,6 +7147,8 @@ def _stored_url_problem(u):
         return ''
     if _BOT_CHALLENGE_RE.search(u):
         return 'challenge'
+    if _is_parked_landing(u):
+        return 'error_page'
     from urllib.parse import urlparse
     try:
         return 'error_page' if _ERROR_PAGE_PATH_RE.search(urlparse(u).path or '') else ''
