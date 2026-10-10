@@ -7,7 +7,9 @@ site, the database or the original payload.
 Usage:
     python3 collect_surfaces.py <payload.json> <out_dir>
         [--surfaces aio,aimode,copilot] [--max-searches N] [--gl us] [--hl en]
-        [--limit N] [--dry-run]
+        [--limit N] [--dry-run] [--no-resolve]
+    python3 collect_surfaces.py <payload.json> <out_dir> --reparse        (no searches)
+    python3 collect_surfaces.py <payload.json> <out_dir> --resolve-only   (no API calls)
 
 Reads SERPAPI_API_KEY from the environment or the worktree .env.
 
@@ -27,6 +29,11 @@ Conventions (so the rows mean the same thing as the five assistants' rows):
     (Copilot and AI Overviews tag them; AI Mode usually does not).
   * model_id records the collection path ("serpapi:google_ai_mode" etc.);
     SerpApi does not expose which model Google or Microsoft ran.
+  * Links go through the app's own resolver (2026-10-10), the same pass the
+    five assistants get: redirects demasked, dead links dropped and listed in
+    dropped_citations, bot walls keep the cited URL, and an identical final
+    URL counts once per answer (merged_citation_repeats). --resolve-only
+    applies it to an existing out_dir without collecting anything.
   * Search budget: an AI Overview costs 2 searches (the Google results page,
     then the overview itself); AI Mode and Copilot cost 1 each. The script
     checks the account balance first and refuses to overrun it.
@@ -418,7 +425,63 @@ def collect_mistral(key, prompt, n, raw_dir, system, note):
     return row
 
 
-def reparse(out_dir, prompts, p):
+def _app_module():
+    """The app itself, for its resolver. Heavy import; DB noise suppressed."""
+    import contextlib, io
+    sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
+    os.environ.setdefault("FLASK_SECRET_KEY", "offline")
+    with contextlib.redirect_stdout(io.StringIO()):
+        import app as A   # noqa: E402
+    return A
+
+
+def resolve_rows(rows):
+    """Run the app's link resolver over these rows in place, so add-on
+    platforms follow the five assistants' rules. Returns (dropped, merged)
+    record lists in the payload's dropped_citations / merged_citation_repeats
+    shapes."""
+    urls = sorted({c["url"] for r in rows for c in (r.get("citations") or []) if c.get("url")})
+    if not urls:
+        return [], []
+    A = _app_module()
+    url_map = A._resolve_and_verify_urls(urls)
+    dropped, merged = [], []
+    A._apply_url_resolution(rows, url_map, dropped_out=dropped, merged_out=merged)
+    A._remap_grounding_urls(rows, url_map)
+    print(f"  links resolved: {len(urls)} distinct | dropped {len(dropped)} | merged repeats {len(merged)}")
+    return dropped, merged
+
+
+def _write_merged(mp, rows, dropped, merged_reps):
+    """Swap this out_dir's surface rows into merged_payload.json and record
+    the resolver's dropped and merged links next to the original run's."""
+    if not os.path.exists(mp):
+        return
+    m = json.load(open(mp))
+    m["all_responses"] = [r for r in m["all_responses"] if not r.get("surface")] + rows
+    surf_llms = {r.get("llm") for r in rows}
+    m["dropped_citations"] = [d for d in (m.get("dropped_citations") or [])
+                              if d.get("llm") not in surf_llms] + dropped
+    m["merged_citation_repeats"] = [d for d in (m.get("merged_citation_repeats") or [])
+                                    if d.get("llm") not in surf_llms] + merged_reps
+    es = m.get("extra_surfaces") or {}
+    es["links_resolved"] = {"dropped": len(dropped), "merged_repeats": len(merged_reps),
+                            "date": time.strftime("%Y-%m-%d")}
+    m["extra_surfaces"] = es
+    json.dump(m, open(mp, "w"))
+
+
+def resolve_only(out_dir):
+    rp = os.path.join(out_dir, "surfaces_rows.json")
+    rows = json.load(open(rp))
+    before = sum(len(r.get("citations") or []) for r in rows)
+    dropped, merged_reps = resolve_rows(rows)
+    json.dump(rows, open(rp, "w"), indent=1)
+    _write_merged(os.path.join(out_dir, "merged_payload.json"), rows, dropped, merged_reps)
+    print(f"  citations {before} -> {sum(len(r.get('citations') or []) for r in rows)}")
+
+
+def reparse(out_dir, prompts, p, resolve=True):
     """Re-derive AI Overview / AI Mode / Copilot rows from the raw responses
     already on disk, so a parsing fix never costs searches. Rows from other
     surfaces (Mistral, DeepSeek) are kept as they are."""
@@ -439,12 +502,9 @@ def reparse(out_dir, prompts, p):
             f = os.path.join(raw, f"{s}_{n:03d}.json")
             if os.path.exists(f):
                 rows.append(to_row(s, q, json.load(open(f)), None, eng))
+    dropped, merged_reps = resolve_rows(rows) if resolve else ([], [])
     json.dump(rows, open(os.path.join(out_dir, "surfaces_rows.json"), "w"), indent=1)
-    mp = os.path.join(out_dir, "merged_payload.json")
-    if os.path.exists(mp):
-        m = json.load(open(mp))
-        m["all_responses"] = [r for r in m["all_responses"] if not r.get("surface")] + rows
-        json.dump(m, open(mp, "w"))
+    _write_merged(os.path.join(out_dir, "merged_payload.json"), rows, dropped, merged_reps)
     for s in SERP_SURFACES:
         rs = [r for r in rows if r.get("surface") == s]
         if rs:
@@ -463,6 +523,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--reparse", action="store_true",
                     help="rebuild the SerpApi surfaces' rows from out_dir/raw (no searches), keep other rows")
+    ap.add_argument("--resolve-only", action="store_true",
+                    help="run the app's link resolver over an existing out_dir's rows (no API calls)")
+    ap.add_argument("--no-resolve", action="store_true", help="skip link resolution (offline only)")
     a = ap.parse_args()
 
     p = json.load(open(a.payload))
@@ -480,8 +543,10 @@ def main():
     if bad:
         sys.exit(f"unknown surface(s): {bad}; choose from {list(SURFACE_NAMES)}")
 
+    if a.resolve_only:
+        return resolve_only(a.out_dir)
     if a.reparse:
-        return reparse(a.out_dir, prompts, p)
+        return reparse(a.out_dir, prompts, p, resolve=not a.no_resolve)
     need = len(prompts) * sum(COST[s] for s in surfaces)
     serp = [s for s in surfaces if s in SERP_SURFACES]
     key, acct, left = None, {}, None
@@ -530,6 +595,7 @@ def main():
             res += df.result()
     rows = [r for r, _ in res]
     used = sum(c for _, c in res)
+    dropped, merged_reps = resolve_rows(rows) if not a.no_resolve else ([], [])
 
     brand = p.get("brand") or ""
     pat = forms_to_pattern([brand] + [x for x in (p.get("brand_aliases") or []) if isinstance(x, str)])
@@ -570,8 +636,13 @@ def main():
 
     merged = dict(p)
     merged["all_responses"] = list(p.get("all_responses") or []) + rows
+    merged["dropped_citations"] = list(p.get("dropped_citations") or []) + dropped
+    merged["merged_citation_repeats"] = list(p.get("merged_citation_repeats") or []) + merged_reps
     merged["extra_surfaces"] = {"collected": time.strftime("%Y-%m-%d"), "via": "serpapi",
                                 "surfaces": [SURFACE_NAMES[s] for s in surfaces],
+                                "links_resolved": None if a.no_resolve else
+                                    {"dropped": len(dropped), "merged_repeats": len(merged_reps),
+                                     "date": time.strftime("%Y-%m-%d")},
                                 "note": "Appended by collect_surfaces.py. Headline figures stored in "
                                         "this payload were computed on the original agents only."}
     json.dump(merged, open(os.path.join(a.out_dir, "merged_payload.json"), "w"))

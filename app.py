@@ -7129,6 +7129,18 @@ def _stored_url_problem(u):
         return ''
 
 
+def _is_definitive_connect_failure(exc):
+    """True only when the host does not exist or refuses connections: the
+    two connection errors that mean a cited link is confabulated or dead.
+    Timeouts, resets and TLS failures are not evidence of a dead page."""
+    msg = repr(exc)
+    return any(k in msg for k in (
+        "NameResolutionError", "Failed to resolve", "nodename nor servname",
+        "Name or service not known", "getaddrinfo failed", "No address associated",
+        "Temporary failure in name resolution", "Connection refused",
+        "[Errno 61]", "[Errno 111]", "[WinError 10061]"))
+
+
 def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None,
                              batch_deadline=None):
     """HEAD-check + redirect-resolve a batch of URLs concurrently.
@@ -7138,11 +7150,14 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
     - final_url may differ from original (Gemini's grounding URLs redirect from
       vertexaisearch.cloud.google.com → real source; we use the real URL/domain).
     - For 403 / 5xx / timeouts we err toward KEEPING the URL (might be bot-blocked
-      but real). Only definitive negatives are dropped.
+      but real). Only definitive negatives are dropped: a 404/410 confirmed by
+      GET, a DNS failure or a refused connection (since 2026-10-10; HEAD-only
+      negatives and slow connects used to drop live pages).
 
     Tuned aggressively: timeout 2.5s + 40 workers. The bottleneck used to be
     waiting on slow servers; with these settings 100+ URLs verify in 5-10s
-    instead of 30s+. Only retries with GET for 403 (the main bot-block signal).
+    instead of 30s+. Any negative HEAD (403/404/405/410/429/5xx, or a non-DNS
+    connection error) is retried once with a streaming GET before deciding.
     """
     out = {}
 
@@ -7170,45 +7185,55 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
             u = real
             if not _is_safe_url(u):
                 return (original_u, None)
+        # 2026-10-10 fix (IREN 802fd06e1e: 13 of 55 "dead" links were live,
+        # 5 of them on iren.com; Azzaro surfaces: 25 of 26). HEAD alone is
+        # not evidence: some servers 404/405 a HEAD they serve to a GET
+        # (cloud.google.com, keentel.com, ebc.com), and a slow or reset
+        # connection raises ConnectionError (ConnectTimeout and SSLError are
+        # subclasses), which used to drop the link as confabulated. Now any
+        # negative HEAD is confirmed with a GET, and only a 404/410 on GET,
+        # a DNS failure or a refused connection drops a link.
+        def _landing(resp):
+            _why = _redirect_landing_problem(u, resp.url)
+            if _why == 'error_page':
+                return (original_u, None)     # soft 404: excluded and listed
+            if _why == 'challenge':
+                return (original_u, u)        # keep the cited page, never the wall
+            return (original_u, resp.url)
+
+        def _confirm_with_get():
+            try:
+                r2 = requests.get(u, timeout=max(timeout, 6), allow_redirects=True, stream=True,
+                                  headers=_URL_VALIDATION_HEADERS)
+                try:
+                    r2.close()
+                except Exception:
+                    pass
+            except requests.exceptions.ConnectionError as e:
+                return (original_u, None) if _is_definitive_connect_failure(e) else (original_u, u)
+            except Exception:
+                return (original_u, u)        # timeout / TLS quirks: keep
+            if r2.status_code in (404, 410):
+                return (original_u, None)
+            if r2.status_code < 400:
+                return _landing(r2)
+            return (original_u, u)            # 403 / 5xx / other 4xx: real but walled
+
         try:
             r = requests.head(u, timeout=timeout, allow_redirects=True,
                               headers=_URL_VALIDATION_HEADERS)
-            if r.status_code in (404, 410):
-                return (original_u, None)
-            if r.status_code < 400:
-                _why = _redirect_landing_problem(u, r.url)
-                if _why == 'error_page':
-                    return (original_u, None)     # soft 404: excluded and listed
-                if _why == 'challenge':
-                    return (original_u, u)        # keep the cited page, never the wall
-                return (original_u, r.url)
-            if r.status_code == 403:
-                # Possible bot-block of HEAD; one retry with streaming GET.
-                try:
-                    r2 = requests.get(u, timeout=timeout, allow_redirects=True, stream=True,
-                                      headers=_URL_VALIDATION_HEADERS)
-                    try:
-                        r2.close()
-                    except Exception:
-                        pass
-                    if r2.status_code in (404, 410):
-                        return (original_u, None)
-                    if r2.status_code < 400:
-                        _why = _redirect_landing_problem(u, r2.url)
-                        if _why == 'error_page':
-                            return (original_u, None)
-                        if _why == 'challenge':
-                            return (original_u, u)
-                        return (original_u, r2.url)
-                except Exception:
-                    pass
-                return (original_u, u)
-            # 4xx (other than 404/410/403) or 5xx — assume real, keep resolved URL.
-            return (original_u, u)
-        except requests.exceptions.ConnectionError:
-            return (original_u, None)  # DNS / connection refused = confabulated
+        except requests.exceptions.ConnectionError as e:
+            if _is_definitive_connect_failure(e):
+                return (original_u, None)     # DNS failure / refused = confabulated
+            return _confirm_with_get()        # slow connect, reset, TLS: ask again with GET
         except Exception:
-            return (original_u, u)  # timeout / TLS quirks — keep, don't penalize real URLs
+            return _confirm_with_get()
+        if r.status_code < 400:
+            return _landing(r)
+        if r.status_code in (403, 404, 405, 410, 429) or r.status_code >= 500:
+            return _confirm_with_get()
+        # other 4xx: assume real, keep the cited page
+        return (original_u, u)
 
     completed = 0
     total = len(urls)
