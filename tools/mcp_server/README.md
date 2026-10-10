@@ -27,3 +27,22 @@ Then register in the assistant's MCP settings:
 
 Payloads are cached at ~/.signal_mcp/cache (TTL 24h) so steady-state load on
 the hosting instance is a handful of conditional fetches per day.
+
+## Delivery QA steps (every delivered audit)
+Run in this order on the audit's payload JSON, then build the bundle:
+
+    python3 page_check_full.py   <payload.json> <checks_full.json>     # every distinct cited page fetched, client's name checked
+    python3 classify_full.py     <payload.json> <classes.json>         # every distinct cited root typed; exceptions listed
+    python3 classify_full.py     <payload.json> <classes.json> --check --decide <root>=accept|keep|<type> ...
+    python3 export_raw_run.py    <payload.json> <out_dir> <classes.json>
+
+classify_full.py (standard since 2026-10-10): owned roots from brand_domains,
+the payload's own domain_types, then one Haiku pass over the rest with the
+app's classifier. --check fails until every exception carries a decision and
+every root has a type. The exporter's manifest states the coverage
+("classified roots: N of N | full classification pass: reviewed").
+
+Within-answer repeats: from 2026-10-10 the pipeline counts an identical final
+URL once per answer and stamps the payload with `citation_counting`. Older
+payloads export as stored; the manifest counts the repeats they still hold,
+and --merge-repeats merges them to compare an older run with a newer one.

@@ -4,7 +4,14 @@ files and a manifest). The single implementation of extraction conventions:
 imports `conventions.py` (shared with the MCP server); never fork the rules.
 
 Usage:
-    python3 export_raw_run.py <payload.json> <out_dir> [host_classes.json]
+    python3 export_raw_run.py <payload.json> <out_dir> [host_classes.json] [--merge-repeats]
+
+Within-answer repeats (Nathan, 2026-10-10): runs from that date carry
+`citation_counting` and arrive with identical final URLs already merged per
+answer, so the export needs nothing. Older payloads export AS STORED by
+default, so their numbers match what was delivered; the manifest counts the
+identical-URL repeats they still hold. --merge-repeats merges those at export,
+for comparing an older run with a newer one on the same rule.
 
 Scope rules (split audits):
   * 01/02 carry every answer with a prompt_class column (branded/unbranded).
@@ -105,7 +112,7 @@ def _searched(r, cits):
     return bool(cits or g.get("queries") or g.get("retrieved"))
 
 
-def export(payload_path, out_dir, host_classes_path=None):
+def export(payload_path, out_dir, host_classes_path=None, merge_repeats=False):
     raw_bytes = open(payload_path, "rb").read()
     payload_sha = hashlib.sha256(raw_bytes).hexdigest()
     p = json.loads(raw_bytes)
@@ -121,9 +128,13 @@ def export(payload_path, out_dir, host_classes_path=None):
     comp_pats = {n: wb(n) for n in comp_names}
 
     cls_map = dict(p.get("domain_types") or {})
+    full_pass = None
     if host_classes_path and os.path.exists(host_classes_path):
         extra = json.load(open(host_classes_path))
         cls_map.update({k: v for k, v in extra.items() if not k.startswith("_")})
+        full_pass = (extra.get("_meta") or {}) if isinstance(extra.get("_meta"), dict) else None
+    counting = p.get("citation_counting") if isinstance(p.get("citation_counting"), dict) else None
+    repeats_found = 0
     checks = p.get("citation_checks") or {}
     run_date = p.get("run_date") or ""
 
@@ -156,6 +167,15 @@ def export(payload_path, out_dir, host_classes_path=None):
                 comp_first[n] = m.start()
         before_all = bool(first) and all(first.start() < v for v in comp_first.values())
         cits = [c for c in (r.get("citations") or []) if isinstance(c, dict) and c.get("url")]
+        _u_seen, _once = set(), []
+        for c in cits:
+            if c["url"] in _u_seen:
+                repeats_found += 1
+                continue
+            _u_seen.add(c["url"])
+            _once.append(c)
+        if merge_repeats:
+            cits = _once
         answers.append({
             "answer_id": aid, "llm": r.get("llm"),
             "prompt_class": "branded" if r.get("prompt") in branded else "unbranded",
@@ -322,7 +342,7 @@ def export(payload_path, out_dir, host_classes_path=None):
         "pages_mentioning_brand": page_by_root.get(root, [0]*4)[2],
         "brand_mentions_on_pages": page_by_root.get(root, [0]*4)[3],
         "sample_url": root_sample.get(root, ""), "checked_date": run_date}
-       for root in sorted(universe, key=lambda r_: -root_cites_all.get(r_, 0))])
+       for root in sorted(universe, key=lambda r_: (-root_cites_all.get(r_, 0), r_))])
     w("04_source_index.csv",
       ["domain", "answers_citing", "brand_presence_baseline", "brand_presence_at_source",
        "differential", "brand_mentions_at_source", "top_competitor",
@@ -417,6 +437,15 @@ def export(payload_path, out_dir, host_classes_path=None):
     # Machine-readable sidecar (biz-dev's builder asserts against row_counts:
     # a mismatch between manifest and files must fail the build loudly).
     import datetime as _dt
+    if counting:
+        _repeats_note = (f"merged in the pipeline ({counting.get('rule')}; "
+                         f"{counting.get('merged', 0)} merged at collection)")
+    elif merge_repeats:
+        _repeats_note = (f"merged at export: {repeats_found} identical-URL repeats within answers "
+                         f"removed (run predates the 2026-10-10 merge rule)")
+    else:
+        _repeats_note = (f"as stored: {repeats_found} identical-URL repeats within answers retained "
+                         f"(run predates the 2026-10-10 merge rule; --merge-repeats to compare with newer runs)")
     row_counts = {"01_answers.csv": len(answers), "02_citations.csv": len(citations),
                   "03_sources.csv": len(universe), "04_source_index.csv": len(src_index),
                   "05_llm_summary.csv": len(per_llm), "06_competitors.csv": len(comp_hits_unb),
@@ -440,6 +469,11 @@ def export(payload_path, out_dir, host_classes_path=None):
         "answers_without_retrieval": sum(1 for a in answers if not a["searched"]),
         "model_ids": {k: dict(v) for k, v in models.items()},
         "distinct_pages": len({c["page_key"] for c in citations}),
+        "within_answer_repeats": _repeats_note,
+        "classification": {"roots": len(universe),
+                           "classified": sum(1 for r_ in universe if cls_map.get(r_)),
+                           "unclassified": sum(1 for r_ in universe if not cls_map.get(r_)),
+                           "full_pass_status": (full_pass or {}).get("status")},
         "scopes": {
             "01_02_07": "all answers; rows carry prompt_class / per-URL grain",
             "03": "citations_root_all = all answers; citations_root_unbranded = unbranded only",
@@ -462,6 +496,8 @@ payload_sha256: {payload_sha}
 answers: {len(rows)} (branded {len(rows)-len(unb)} / unbranded {len(unb)})
 citation_rows: {len(citations)} | rootable: {sum(root_cites_all.values())} | unrootable (retained in 02, root blank): {len(unrootable)}
 page_checks: {len(checks)} URLs | classification: {'payload-native domain_types' if p.get('domain_types') else 'NONE in payload'}{' + host-classes supplement' if host_classes_path else ''}
+classified roots: {sum(1 for r_ in universe if cls_map.get(r_))} of {len(universe)}{' | full classification pass: ' + str((full_pass or {}).get('status')) if full_pass else ' | full classification pass: not run'}
+within-answer repeats: {_repeats_note}
 brand_forms: {json.dumps([brand] + aliases)} (+ first distinctive token, apostrophe-tolerant)
 
 SCOPES — read before quoting any number:
@@ -485,4 +521,5 @@ SCOPES — read before quoting any number:
 
 
 if __name__ == "__main__":
-    print(json.dumps(export(*sys.argv[1:]), indent=1))
+    _args = [a for a in sys.argv[1:] if a != "--merge-repeats"]
+    print(json.dumps(export(*_args, merge_repeats="--merge-repeats" in sys.argv[1:]), indent=1))

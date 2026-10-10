@@ -8023,11 +8023,26 @@ def _category_keywords(category):
     return result[:10]
 
 
-def _apply_url_resolution(all_responses, url_map, dropped_out=None):
+CITATION_COUNTING_RULE = {
+    "within_answer_repeats": "merged",
+    "rule": "identical final URLs after resolution count once per answer",
+    "since": "2026-10-10",
+}
+
+
+def _apply_url_resolution(all_responses, url_map, dropped_out=None, merged_out=None):
     """Rewrite each citation in-place: drop unverified, re-key valid ones under
     their final (post-redirect) URL + domain. Returns count of dropped URLs.
     dropped_out (a list) receives one record per dropped citation so the
-    payload keeps them, with the reason, instead of silently discarding them."""
+    payload keeps them, with the reason, instead of silently discarding them.
+
+    Repeats (Nathan, 2026-10-10, option 1): extract_urls already drops a link
+    the agent repeats word for word, but two DIFFERENT links can resolve to
+    the same page (a direct link plus a Vertex grounding redirect, an old URL
+    that redirects, a trailing-slash variant). Each final URL now counts once
+    per answer; merged_out (a list) receives one record per merged repeat.
+    Only identical final URLs merge. Same-page grouping across query strings
+    is NOT applied here; the Raw Run's page_key gives that view."""
     dropped = 0
     def _drop(r, c, reason):
         if dropped_out is not None and len(dropped_out) < 5000:
@@ -8035,6 +8050,7 @@ def _apply_url_resolution(all_responses, url_map, dropped_out=None):
                                 'url': c.get('url'), 'reason': reason})
     for r in all_responses:
         new_cits = []
+        _finals = set()
         for c in r.get('citations', []) or []:
             final = url_map.get(c['url'])
             if not final:
@@ -8048,6 +8064,12 @@ def _apply_url_resolution(all_responses, url_map, dropped_out=None):
                     dropped += 1
                     _drop(r, c, f'blacklisted domain: {host}')
                     continue
+                if final in _finals:
+                    if merged_out is not None and len(merged_out) < 5000:
+                        merged_out.append({'llm': r.get('llm'), 'prompt': r.get('prompt'),
+                                           'url': final, 'original_url': c.get('url')})
+                    continue
+                _finals.add(final)
                 new_cits.append({'url': final, 'domain': host})
             except Exception:
                 dropped += 1
@@ -8192,21 +8214,24 @@ def _gmeta_put(provider, model_id=None, queries=None, retrieved=None, supports=N
 def _remap_grounding_urls(rows, url_map):
     """Point grounding metadata at resolved destinations (Gemini's chunk URIs
     are vertex redirectors; the verification pass resolves them). A URL the
-    verifier dropped (None) is removed from supports and retrieved."""
+    verifier dropped (None) is removed from supports and retrieved. Same
+    repeat rule as citations (2026-10-10): once resolved, an identical final
+    URL is kept once per support and once per answer's retrieved list."""
     for r in rows or []:
         g = r.get('grounding') or {}
         for sp in g.get('supports') or []:
             urls = []
             for u in sp.get('urls') or []:
                 v = url_map.get(u, u) if url_map else u
-                if v:
+                if v and v not in urls:
                     urls.append(v)
             sp['urls'] = urls
         if g.get('retrieved'):
-            keep = []
+            keep, seen = [], set()
             for it in g['retrieved']:
                 v = url_map.get(it.get('url'), it.get('url')) if url_map else it.get('url')
-                if v:
+                if v and v not in seen:
+                    seen.add(v)
                     it['url'] = v
                     keep.append(it)
             g['retrieved'] = keep
@@ -10026,9 +10051,14 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
             emit("extract", f"Verifying URLs ({done}/{total})...", done, extract_total)
         url_map = _resolve_and_verify_urls(all_urls, on_progress=url_progress)
         _dropped_records = []
-        dropped = _apply_url_resolution(all_responses, url_map, dropped_out=_dropped_records)
+        _merged_records = []
+        dropped = _apply_url_resolution(all_responses, url_map, dropped_out=_dropped_records,
+                                        merged_out=_merged_records)
         _remap_grounding_urls(all_responses, url_map)
         emit("extract", f"Verified {url_total - dropped} of {url_total} URLs (dropped {dropped} dead/confabulated)", url_total, extract_total)
+        if _merged_records:
+            print(f"[audit] merged {len(_merged_records)} within-answer repeats "
+                  f"(different links resolving to the same final URL)")
     else:
         emit("extract", "No URLs to verify", 0, extract_total)
 
@@ -10564,7 +10594,13 @@ Respond with ONLY valid JSON:
     # all_responses below still carries BOTH halves for the dashboard.
     analysis["prompt_sets"] = prompt_sets
     analysis["dropped_citations"] = locals().get('_dropped_records') or []
-    analysis["metrics_scope"] = ("unbranded_only" if prompt_sets and prompt_sets.get("branded")
+    # Counting convention stamp: payloads without this key predate the
+    # 2026-10-10 repeat merge, so their stored citations can repeat a final
+    # URL within one answer. Exporters and recounts read this, never a date.
+    analysis["citation_counting"] = dict(CITATION_COUNTING_RULE,
+                                         merged=len(locals().get('_merged_records') or []))
+    analysis["merged_citation_repeats"] = (locals().get('_merged_records') or [])[:500]
+    analysis["metrics_scope"] =("unbranded_only" if prompt_sets and prompt_sets.get("branded")
                                  else "all_prompts")
     # Full ranked domains list (no cap). Each dict already carries:
     # {domain, count, llms, prompts, urls, specific_urls, diversity_score} — preserve all.
