@@ -6,7 +6,7 @@ site, the database or the original payload.
 
 Usage:
     python3 collect_surfaces.py <payload.json> <out_dir>
-        [--surfaces aio,aimode,copilot] [--max-searches N] [--gl us] [--hl en]
+        [--surfaces aio,aimode,copilot,mistral,deepseek,metaai] [--max-searches N] [--gl us] [--hl en]
         [--limit N] [--dry-run] [--no-resolve]
     python3 collect_surfaces.py <payload.json> <out_dir> --reparse        (no searches)
     python3 collect_surfaces.py <payload.json> <out_dir> --resolve-only   (no API calls)
@@ -51,11 +51,15 @@ from conventions import forms_to_pattern  # noqa: E402
 
 API = "https://serpapi.com/search.json"
 SURFACE_NAMES = {"aio": "Google AI Overview", "aimode": "Google AI Mode", "copilot": "Copilot",
-                 "mistral": "Mistral", "deepseek": "DeepSeek"}
-COST = {"aio": 2, "aimode": 1, "copilot": 1, "mistral": 0, "deepseek": 0}   # SerpApi searches; Mistral bills its own API
+                 "mistral": "Mistral", "deepseek": "DeepSeek", "metaai": "Meta AI"}
+COST = {"aio": 2, "aimode": 1, "copilot": 1, "mistral": 0, "deepseek": 0, "metaai": 0}   # SerpApi searches; the others bill their own APIs
 SERP_SURFACES = ("aio", "aimode", "copilot")
 MISTRAL_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-medium-latest")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")   # served as deepseek-v4-flash (9/29)
+# Meta AI runs on Muse Spark ("the model behind experiences serving hundreds of
+# millions of people in Meta AI", Meta developer blog). Standard tier, never the
+# cheaper -contributor tier, so the run matches what Meta AI users get.
+META_MODEL = os.environ.get("META_MODEL", "muse-spark-1.3")
 _JUNK = re.compile(r"(Go to product viewer dialog for this item\.?)+", re.I)
 
 
@@ -335,6 +339,98 @@ def collect_deepseek(key, prompt, n, raw_dir, system, note, extract):
     return row
 
 
+def meta_key():
+    """META_API_KEY (our name) or MODEL_API_KEY (Meta's documented name)."""
+    for name in ("META_API_KEY", "MODEL_API_KEY"):
+        k = os.environ.get(name)
+        if not k:
+            try:
+                from dotenv import dotenv_values
+                k = dotenv_values(os.path.join(ROOT, ".env")).get(name)
+            except Exception:
+                k = None
+        if k:
+            return k.strip()
+    sys.exit("META_API_KEY not set (environment or worktree .env)")
+
+
+def collect_metaai(key, prompt, n, raw_dir, system, note, gl="us"):
+    """Meta AI through Meta's own Model API (api.meta.ai, Responses API) with
+    its built-in web_search tool: Meta's search on Meta's infrastructure, the
+    model behind Meta AI. Meta decides whether to search, as Claude, Gemini
+    and Mistral do; grounding records whether it did. Citations are the
+    answer's url_citation annotations, in order; supports pair each cited span
+    with its URL; retrieved = every result the search returned
+    (include web_search_call.results). Same system prompt and date note as the
+    product; user_location follows --gl, as the SerpApi surfaces do."""
+    tool = {"type": "web_search", "user_location": {"type": "approximate", "country": (gl or "us").upper()}}
+    base = {"model": META_MODEL, "tools": [tool], "include": ["web_search_call.results"]}
+    bodies = [dict(base, instructions=system, input=prompt + note),
+              dict(base, input=[{"role": "system", "content": system},
+                                {"role": "user", "content": prompt + note}])]
+    hdr = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    d, err, bi = None, None, 0
+    for i in range(10):
+        try:
+            r = requests.post("https://api.meta.ai/v1/responses", headers=hdr, json=bodies[bi], timeout=300)
+            if r.status_code == 429:
+                err = "rate limited"
+                time.sleep(min(60, float(r.headers.get("retry-after") or 15)))
+                continue
+            d = r.json() if r.content else {}
+            if r.status_code == 200:
+                err = None
+                break
+            e_ = d.get("error") if isinstance(d.get("error"), dict) else {}
+            err = str(e_.get("message") or d.get("message") or f"HTTP {r.status_code}")[:200]
+            if r.status_code == 400 and bi == 0 and "instruction" in err.lower():
+                bi = 1      # fall back to a system message if 'instructions' is not accepted
+                continue
+            if r.status_code in (400, 401, 402, 403, 404, 422):
+                break
+        except Exception as e:
+            err = type(e).__name__
+        time.sleep(10)
+    row = {"llm": SURFACE_NAMES["metaai"], "prompt": prompt, "response": "", "citations": [],
+           "grounded": True, "error": err, "model_id": META_MODEL, "surface": "metaai",
+           "grounding": {"source": "meta", "queries": [], "retrieved": [], "supports": []}}
+    if err or not d:
+        return row
+    json.dump(d, open(os.path.join(raw_dir, f"metaai_{n:03d}.json"), "w"))
+    row["model_id"] = d.get("model") or META_MODEL
+    texts, seen = [], []
+    for o in d.get("output") or []:
+        if o.get("type") == "web_search_call":
+            q = (o.get("action") or {}).get("query") if isinstance(o.get("action"), dict) else None
+            if q:
+                row["grounding"]["queries"].append(q)
+            for x in o.get("results") or []:
+                if isinstance(x, dict) and x.get("url"):
+                    row["grounding"]["retrieved"].append({"url": x["url"], "title": x.get("title") or "",
+                                                          "snippet": (x.get("snippet") or "")[:300]})
+            row["grounding"]["searched"] = True
+        if o.get("type") != "message":
+            continue
+        for blk in o.get("content") or []:
+            if blk.get("type") != "output_text":
+                continue
+            t = blk.get("text") or ""
+            texts.append(t)
+            for a in blk.get("annotations") or []:
+                if a.get("type") != "url_citation" or not a.get("url"):
+                    continue
+                u = a["url"]
+                if u not in seen:
+                    seen.append(u)
+                s0, e0 = a.get("start_index"), a.get("end_index")
+                claim = t[s0:e0] if isinstance(s0, int) and isinstance(e0, int) else ""
+                row["grounding"]["supports"].append({"claim": claim.strip()[:600], "urls": [u],
+                                                     "title": a.get("title") or ""})
+    row["response"] = "\n\n".join(t for t in texts if t.strip())
+    row["citations"] = [{"url": u, "domain": domain(u)} for u in seen]
+    return row
+
+
 def mistral_key():
     k = os.environ.get("MISTRAL_API_KEY")
     if not k:
@@ -556,6 +652,7 @@ def main():
         left = acct.get("total_searches_left")
     mkey = mistral_key() if "mistral" in surfaces else None
     dkey = _env_key("DEEPSEEK_API_KEY") if "deepseek" in surfaces else None
+    metakey = meta_key() if "metaai" in surfaces else None
     bal0 = deepseek_balance(dkey) if dkey else None
     caps = [x for x in (left, a.max_searches) if x is not None]
     cap = min(caps) if caps and serp else None
@@ -585,14 +682,22 @@ def main():
         with ThreadPoolExecutor(3) as dx:
             return list(dx.map(lambda iq: (collect_deepseek(dkey, iq[1], iq[0], raw_dir, system, note, extract), 0),
                                list(enumerate(prompts))))
+    def _metaai_all():
+        system, note = _app_prompting()
+        with ThreadPoolExecutor(3) as mx:
+            return list(mx.map(lambda iq: (collect_metaai(metakey, iq[1], iq[0], raw_dir, system, note, a.gl), 0),
+                               list(enumerate(prompts))))
     with ThreadPoolExecutor(6) as ex:
         mf = ex.submit(_mistral_all) if mkey else None
         df = ex.submit(_deepseek_all) if dkey else None
+        mtf = ex.submit(_metaai_all) if metakey else None
         res = list(ex.map(lambda j: collect_one(key, j[0], j[1], j[2], raw_dir, a.gl, a.hl), jobs))
         if mf:
             res += mf.result()
         if df:
             res += df.result()
+        if mtf:
+            res += mtf.result()
     rows = [r for r, _ in res]
     used = sum(c for _, c in res)
     dropped, merged_reps = resolve_rows(rows) if not a.no_resolve else ([], [])
@@ -613,7 +718,7 @@ def main():
             bal1 = deepseek_balance(dkey)
             if bal1 is not None:
                 lines.append(f"  DeepSeek spend (balance delta): ${bal0 - bal1:.4f}")
-        if s in ("mistral", "deepseek"):
+        if s in ("mistral", "deepseek", "metaai"):
             lines.append(f"  {SURFACE_NAMES[s]} searched the web on {sum(1 for r in shown if r['grounding']['queries'] or r['citations'])}"
                          f" of {len(shown)} answers")
         named_unb = sum(1 for r in unb if pat.search(r["response"]))
