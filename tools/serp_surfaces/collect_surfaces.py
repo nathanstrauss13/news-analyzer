@@ -237,18 +237,23 @@ def collect_one(key, surface, prompt, n, raw_dir, gl, hl):
 
 
 def _app_prompting():
-    """The product's shared system prompt and date note, read from app.py
-    source (not copied), so Mistral gets exactly what the five assistants get."""
+    """The product's shared prompting, read from app.py source (not copied), so
+    Mistral, DeepSeek and Meta AI get exactly what the five agents get: the
+    system prompt, and each question followed by CITATION_SUFFIX and the date
+    note (app.py: prompt_text + CITATION_SUFFIX + time_note). Returns
+    (system, tail); callers send prompt + tail. Before 2026-10-10 the tail
+    carried only the date note, so add-on agents got a weaker citation request
+    than the five; samples collected before then lack the suffix."""
     import ast
     from datetime import datetime
     src = open(os.path.join(ROOT, "app.py")).read()
     ns = {"datetime": datetime}
     for n in ast.parse(src).body:
-        if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "CITATION_SYSTEM_PROMPT":
-            ns["SYS"] = ast.literal_eval(n.value)
+        if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in ("CITATION_SYSTEM_PROMPT", "CITATION_SUFFIX"):
+            ns[n.targets[0].id] = ast.literal_eval(n.value)
         if isinstance(n, ast.FunctionDef) and n.name in ("_today_label", "_time_aware_note"):
             exec(ast.get_source_segment(src, n), ns)
-    return ns["SYS"], ns["_time_aware_note"]()
+    return ns["CITATION_SYSTEM_PROMPT"], ns["CITATION_SUFFIX"] + ns["_time_aware_note"]()
 
 
 def _app_url_extractor():
@@ -264,6 +269,20 @@ def _app_url_extractor():
         if name in want:
             exec(ast.get_source_segment(src, n), ns)
     return ns["extract_urls"]
+
+
+_EXTRACT = None
+
+
+def _text_urls(text):
+    """URLs written in the answer text, by app.py's own extract_urls. The app
+    counts every URL in an answer (with structured citations appended), so
+    add-on agents that annotate citations also count the URLs they write,
+    e.g. the 'Sources and References' list CITATION_SUFFIX asks for."""
+    global _EXTRACT
+    if _EXTRACT is None:
+        _EXTRACT = _app_url_extractor()
+    return [c["url"] for c in _EXTRACT(text or "")]
 
 
 def _env_key(name):
@@ -434,6 +453,9 @@ def collect_metaai(key, prompt, n, raw_dir, system, note, gl="us"):
                 row["grounding"]["supports"].append({"claim": claim.strip()[:600], "urls": [u],
                                                      "title": a.get("title") or ""})
     row["response"] = "\n\n".join(t for t in texts if t.strip())
+    for u in _text_urls(row["response"]):
+        if u not in seen:
+            seen.append(u)
     row["citations"] = [{"url": u, "domain": domain(u)} for u in seen]
     return row
 
@@ -524,6 +546,9 @@ def collect_mistral(key, prompt, n, raw_dir, system, note):
         if pending and cur.strip():
             row["grounding"]["supports"].append({"claim": cur.strip()[-600:], "urls": pending})
     row["response"] = "".join(text)
+    for u in _text_urls(row["response"]):
+        if u not in seen:
+            seen.append(u)
     row["citations"] = [{"url": u, "domain": domain(u)} for u in seen]
     return row
 
