@@ -399,6 +399,13 @@ def collect_metaai(key, prompt, n, raw_dir, system, note, gl="us"):
     json.dump(d, open(os.path.join(raw_dir, f"metaai_{n:03d}.json"), "w"))
     row["model_id"] = d.get("model") or META_MODEL
     texts, seen = [], []
+    # Muse Spark narrates while it searches ("I've got strong early leads..."):
+    # those message items carry phase "commentary". The answer the user gets is
+    # the non-commentary message(s); fall back to the last message if every one
+    # is commentary. Citations live on the answer (14 of 14 on the probe).
+    msgs = [o for o in d.get("output") or [] if o.get("type") == "message"]
+    answer_ids = {id(o) for o in ([m for m in msgs if m.get("phase") != "commentary"] or msgs[-1:])}
+    row["grounding"]["commentary_messages"] = sum(1 for m in msgs if id(m) not in answer_ids)
     for o in d.get("output") or []:
         if o.get("type") == "web_search_call":
             q = (o.get("action") or {}).get("query") if isinstance(o.get("action"), dict) else None
@@ -409,7 +416,7 @@ def collect_metaai(key, prompt, n, raw_dir, system, note, gl="us"):
                     row["grounding"]["retrieved"].append({"url": x["url"], "title": x.get("title") or "",
                                                           "snippet": (x.get("snippet") or "")[:300]})
             row["grounding"]["searched"] = True
-        if o.get("type") != "message":
+        if o.get("type") != "message" or id(o) not in answer_ids:
             continue
         for blk in o.get("content") or []:
             if blk.get("type") != "output_text":
