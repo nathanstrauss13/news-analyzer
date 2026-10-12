@@ -14866,6 +14866,16 @@ def outreach_set(oid):
         if 'linkedin' in request.form:
             _li = (request.form.get('linkedin') or '').strip()[:255]
             o.linkedin = _li if _li.startswith(('http://', 'https://')) else None
+        # Title and company (2026-10-12): people change jobs between a LinkedIn
+        # export and the send (card 120). /outreach/new can't reach a card with
+        # no report slug, and delete-and-re-add renumbers it, so edit in place.
+        # 'title' is accepted as an alias for prospect_title. An empty value
+        # clears the field.
+        if 'prospect_title' in request.form or 'title' in request.form:
+            _t = request.form.get('prospect_title', request.form.get('title')) or ''
+            o.prospect_title = _t.strip()[:200] or None
+        if 'company' in request.form:
+            o.company = (request.form.get('company') or '').strip()[:120] or None
         if request.form.get('status'):
             _outreach_apply_status(o, request.form.get('status'))
         db.session.commit()
