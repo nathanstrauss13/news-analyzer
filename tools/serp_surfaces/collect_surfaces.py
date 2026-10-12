@@ -51,8 +51,8 @@ from conventions import forms_to_pattern  # noqa: E402
 
 API = "https://serpapi.com/search.json"
 SURFACE_NAMES = {"aio": "Google AI Overview", "aimode": "Google AI Mode", "copilot": "Copilot",
-                 "mistral": "Mistral", "deepseek": "DeepSeek", "metaai": "Meta AI"}
-COST = {"aio": 2, "aimode": 1, "copilot": 1, "mistral": 0, "deepseek": 0, "metaai": 0}   # SerpApi searches; the others bill their own APIs
+                 "mistral": "Mistral", "deepseek": "DeepSeek", "metaai": "Meta AI", "youcom": "You.com"}
+COST = {"aio": 2, "aimode": 1, "copilot": 1, "mistral": 0, "deepseek": 0, "metaai": 0, "youcom": 0}   # SerpApi searches; the others bill their own APIs
 SERP_SURFACES = ("aio", "aimode", "copilot")
 MISTRAL_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-medium-latest")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")   # served as deepseek-v4-flash (9/29)
@@ -460,6 +460,79 @@ def collect_metaai(key, prompt, n, raw_dir, system, note, gl="us"):
     return row
 
 
+def you_key():
+    """YOU_API_KEY (worktree .env) or YDC_API_KEY (You.com's documented name)."""
+    for name in ("YOU_API_KEY", "YDC_API_KEY"):
+        k = os.environ.get(name)
+        if not k:
+            try:
+                from dotenv import dotenv_values
+                k = dotenv_values(os.path.join(ROOT, ".env")).get(name)
+            except Exception:
+                k = None
+        if k:
+            return k.strip()
+    sys.exit("YOU_API_KEY not set (environment or worktree .env)")
+
+
+def collect_youcom(key, prompt, n, raw_dir, system, note, gl="us"):
+    """You.com's Answer API (POST api.you.com/v1/answer, launched Aug 2026):
+    one call searches, writes a Markdown answer with numbered inline markers,
+    and returns citations, each with the verbatim excerpts that support it,
+    plus the results it considered. It has no system-prompt slot and caps
+    the query at 400 characters, which CITATION_SUFFIX plus the date note
+    alone exceed (the API returns string_too_long). So You.com gets the
+    question as typed, like the search surfaces; it cites by design, with a
+    verified excerpt behind every citation. country follows --gl. Citations =
+    the citation sources in order, plus any URL written in the answer text."""
+    body = {"query": prompt[:400], "country": (gl or "us").upper()}
+    hdr = {"X-API-Key": key, "Content-Type": "application/json"}
+    d, err = None, None
+    for i in range(6):
+        try:
+            r = requests.post("https://api.you.com/v1/answer", headers=hdr, json=body, timeout=180)
+            if r.status_code == 429 or r.status_code >= 500:
+                err = f"HTTP {r.status_code}"
+                time.sleep(min(60, float(r.headers.get("retry-after") or 10 * (i + 1))))
+                continue
+            d = r.json() if r.content else {}
+            if r.status_code == 200:
+                err = None
+                break
+            err = str(d.get("detail") or d.get("message") or d.get("error") or f"HTTP {r.status_code}")[:200]
+            break
+        except Exception as e:
+            err = type(e).__name__
+            time.sleep(10)
+    row = {"llm": SURFACE_NAMES["youcom"], "prompt": prompt, "response": "", "citations": [],
+           "grounded": True, "error": err, "model_id": "you.com:answer", "surface": "youcom",
+           "grounding": {"source": "you.com", "queries": [], "retrieved": [], "supports": [],
+                         "prompting": "question as typed (400-character query limit; no system prompt)"}}
+    if err or not d:
+        return row
+    json.dump(d, open(os.path.join(raw_dir, f"youcom_{n:03d}.json"), "w"))
+    row["response"] = (d.get("answer") or "").strip()
+    seen = []
+    for c in d.get("citations") or []:
+        u = (c.get("source") or c.get("url") or "") if isinstance(c, dict) else ""
+        if not u:
+            continue
+        if u not in seen:
+            seen.append(u)
+        for ex in (c.get("excerpts") or [])[:3]:
+            row["grounding"]["supports"].append({"claim": str(ex)[:600], "urls": [u]})
+    for x in d.get("results") or []:
+        if isinstance(x, dict) and x.get("url"):
+            row["grounding"]["retrieved"].append({"url": x["url"], "title": x.get("title") or "",
+                                                  "snippet": str(x.get("snippet") or x.get("description") or "")[:300]})
+    row["grounding"]["searched"] = bool(row["grounding"]["retrieved"] or seen)
+    for u in _text_urls(row["response"]):
+        if u not in seen:
+            seen.append(u)
+    row["citations"] = [{"url": u, "domain": domain(u)} for u in seen]
+    return row
+
+
 def mistral_key():
     k = os.environ.get("MISTRAL_API_KEY")
     if not k:
@@ -685,6 +758,7 @@ def main():
     mkey = mistral_key() if "mistral" in surfaces else None
     dkey = _env_key("DEEPSEEK_API_KEY") if "deepseek" in surfaces else None
     metakey = meta_key() if "metaai" in surfaces else None
+    youkey = you_key() if "youcom" in surfaces else None
     bal0 = deepseek_balance(dkey) if dkey else None
     caps = [x for x in (left, a.max_searches) if x is not None]
     cap = min(caps) if caps and serp else None
@@ -719,10 +793,16 @@ def main():
         with ThreadPoolExecutor(3) as mx:
             return list(mx.map(lambda iq: (collect_metaai(metakey, iq[1], iq[0], raw_dir, system, note, a.gl), 0),
                                list(enumerate(prompts))))
+    def _youcom_all():
+        system, note = _app_prompting()
+        with ThreadPoolExecutor(3) as yx:
+            return list(yx.map(lambda iq: (collect_youcom(youkey, iq[1], iq[0], raw_dir, system, note, a.gl), 0),
+                               list(enumerate(prompts))))
     with ThreadPoolExecutor(6) as ex:
         mf = ex.submit(_mistral_all) if mkey else None
         df = ex.submit(_deepseek_all) if dkey else None
         mtf = ex.submit(_metaai_all) if metakey else None
+        ytf = ex.submit(_youcom_all) if youkey else None
         res = list(ex.map(lambda j: collect_one(key, j[0], j[1], j[2], raw_dir, a.gl, a.hl), jobs))
         if mf:
             res += mf.result()
@@ -730,6 +810,8 @@ def main():
             res += df.result()
         if mtf:
             res += mtf.result()
+        if ytf:
+            res += ytf.result()
     rows = [r for r, _ in res]
     used = sum(c for _, c in res)
     dropped, merged_reps = resolve_rows(rows) if not a.no_resolve else ([], [])
@@ -750,7 +832,7 @@ def main():
             bal1 = deepseek_balance(dkey)
             if bal1 is not None:
                 lines.append(f"  DeepSeek spend (balance delta): ${bal0 - bal1:.4f}")
-        if s in ("mistral", "deepseek", "metaai"):
+        if s in ("mistral", "deepseek", "metaai", "youcom"):
             lines.append(f"  {SURFACE_NAMES[s]} searched the web on {sum(1 for r in shown if r['grounding']['queries'] or r['citations'])}"
                          f" of {len(shown)} answers")
         named_unb = sum(1 for r in unb if pat.search(r["response"]))
