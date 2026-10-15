@@ -552,17 +552,21 @@ def collect_mistral(key, prompt, n, raw_dir, system, note):
     built-in connectors), so Mistral decides whether to search, as Claude and
     Gemini do; the row's grounding records whether it did. Same system prompt
     and date note as the product. 429s on the per-minute token cap are waited
-    out (Retry-After or 20s steps, up to ~4 minutes)."""
+    out with escalating waits (Retry-After, else 30s steps up to 3 minutes;
+    the Oct 15 Azzaro run lost 4 of 20 prompts to the old 20s/4-minute budget)."""
     body = {"model": MISTRAL_MODEL, "inputs": prompt + note, "instructions": system,
             "tools": [{"type": "web_search"}], "store": False}
     hdr = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     d, err = None, None
-    for i in range(12):
+    limited = 0
+    for i in range(15):
         try:
             r = requests.post("https://api.mistral.ai/v1/conversations", headers=hdr, json=body, timeout=240)
             if r.status_code == 429:
                 err = "rate limited"
-                time.sleep(min(60, float(r.headers.get("retry-after") or 20)))
+                limited += 1
+                wait = float(r.headers.get("retry-after") or 0) or 30.0 * limited
+                time.sleep(min(180.0, max(wait, 15.0)))
                 continue
             d = r.json()
             if r.status_code == 200:
