@@ -551,9 +551,12 @@ def collect_mistral(key, prompt, n, raw_dir, system, note):
     The connector can't be forced (tool_choice 'required' is rejected for
     built-in connectors), so Mistral decides whether to search, as Claude and
     Gemini do; the row's grounding records whether it did. Same system prompt
-    and date note as the product. 429s on the per-minute token cap are waited
-    out with escalating waits (Retry-After, else 30s steps up to 3 minutes;
-    the Oct 15 Azzaro run lost 4 of 20 prompts to the old 20s/4-minute budget)."""
+    and date note as the product. Mistral's free tier caps web search at
+    3 calls a minute and 20 a day (x-ratelimit-*-web-search-* headers) and
+    tokens at 20k a minute; per-minute 429s are waited out, and an exhausted
+    daily cap fails the prompt at once with a message naming it, since no
+    wait helps (the Oct 15 Azzaro runs lost 4 then 9 of 20 prompts that way;
+    a paid plan on console.mistral.ai lifts the caps)."""
     body = {"model": MISTRAL_MODEL, "inputs": prompt + note, "instructions": system,
             "tools": [{"type": "web_search"}], "store": False}
     hdr = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -564,10 +567,17 @@ def collect_mistral(key, prompt, n, raw_dir, system, note):
             r = requests.post("https://api.mistral.ai/v1/conversations", headers=hdr, json=body, timeout=240)
             if r.status_code == 429:
                 err = "rate limited"
+                if r.headers.get("x-ratelimit-remaining-web-search-day") == "0":
+                    err = ("daily web-search cap exhausted (%s a day on this Mistral plan)"
+                           % (r.headers.get("x-ratelimit-limit-web-search-day") or "?"))
+                    break
                 limited += 1
                 wait = float(r.headers.get("retry-after") or 0) or 30.0 * limited
                 time.sleep(min(180.0, max(wait, 15.0)))
                 continue
+            # pace to the per-minute web-search cap so the next prompt doesn't 429
+            if r.headers.get("x-ratelimit-remaining-web-search-minute") == "0":
+                time.sleep(21)
             d = r.json()
             if r.status_code == 200:
                 err = None
