@@ -2,7 +2,7 @@
 """Build a one-click .mcpb bundle for a hosted Signal MCP key.
 
 Usage:
-    python3 build_mcpb.py <key> [--name "Signal — Innate c³"] [--out dist/]
+    python3 build_mcpb.py <key> [--name "Signal — innate c3"] [--out dist/]
 
 Emits dist/<name-slug>.mcpb — a zip Claude Desktop installs with one click.
 The bundle contains a dependency-free Node stdio<->HTTP bridge pointed at
@@ -77,7 +77,7 @@ def build(key: str, display_name: str, out_dir: pathlib.Path, description: str) 
         "display_name": display_name,
         "version": "1.0.0",
         "description": description,
-        "author": {"name": "Innate c³", "url": "https://www.innatec3.com"},
+        "author": {"name": "innate c3", "url": "https://www.innatec3.com"},
         "server": {
             "type": "node",
             "entry_point": "server/index.js",
@@ -99,7 +99,7 @@ def build(key: str, display_name: str, out_dir: pathlib.Path, description: str) 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("key")
-    ap.add_argument("--name", default="Signal — Innate c³")
+    ap.add_argument("--name", default="Signal — innate c3")
     ap.add_argument("--description", default="Your AI visibility data, with the counting conventions attached.")
     ap.add_argument("--out", default="dist")
     a = ap.parse_args()

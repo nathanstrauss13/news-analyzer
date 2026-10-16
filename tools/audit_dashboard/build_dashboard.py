@@ -1740,7 +1740,7 @@ document.querySelectorAll('.donutwrap').forEach(function(w){
 </head>
 <body>
 <nav><div class="wrap">
-  <a class="wm" href="https://innatec3.com" target="_blank" rel="noopener">innate c<sup>3</sup></a>
+  <a class="wm" href="https://innatec3.com" target="_blank" rel="noopener">innate c3</a>
   <div class="navlinks">{"".join(navlinks)}</div>
 </div></nav>
 <div class="wrap">
@@ -1770,6 +1770,9 @@ document.querySelectorAll('.donutwrap').forEach(function(w){
 </body>
 </html>'''
 
+    # house rule (Nathan, Oct 16, 2026): the company is written "innate c3", never a superscript
+    bad = re.findall(r"c³|&sup3;|&#179;|c<sup>3", page)
+    assert not bad, f"company mark must be 'innate c3', found {sorted(set(bad))}"
     with open(out_path, "w") as f:
         f.write(page)
     return out_path

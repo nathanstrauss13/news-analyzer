@@ -121,14 +121,14 @@ h2.head{font-size:34px !important}
 
 def plate(pg, eyebrow, head, lede, body, brand, prepared_for, date_label, total):
     _plates.append(f"""<div class="plate">
-<div class="band"><span class="wm">innate c<sup>3</sup></span>
+<div class="band"><span class="wm">innate c3</span>
 <span class="pg">{brand.upper()} · AI VISIBILITY · {pg} / {total}</span></div>
 <div class="eyebrow">{eyebrow}</div>
 <h2 class="head">{head}</h2>
 <div class="lede">{lede}</div>
 {body}
 <div class="sig"><span>Prepared for <b>{prepared_for}</b> · {date_label}</span>
-<span>Confidential · <b>innate c³</b> · nstrauss@innatec3.com</span></div>
+<span>Confidential · <b>innate c3</b> · nstrauss@innatec3.com</span></div>
 <div class="pageno">{pg}</div></div>""")
 
 
@@ -230,6 +230,9 @@ verified rather than inferred.</p>
     html = ("<!DOCTYPE html><html><head><meta charset='utf-8'>"
             f"<title>{b} · AI Visibility Sample Read · innate c3</title>"
             + fonts + deck_css() + "</head><body>" + "".join(_plates) + "</body></html>")
+    # house rule (Nathan, Oct 16, 2026): the company is written "innate c3", never a superscript
+    bad = re.findall(r"c³|&sup3;|&#179;|c<sup>3", html)
+    assert not bad, f"company mark must be 'innate c3', found {sorted(set(bad))}"
     open(out_html, "w").write(html)
     return out_html
 
