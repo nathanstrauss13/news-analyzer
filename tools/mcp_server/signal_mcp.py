@@ -420,19 +420,102 @@ def get_audit(slug: str) -> dict:
     }
 
 
+_BRAND_IN_ANSWER = ("", "named", "named_prose", "named_first", "absent")
+
+
+def _answer_brand_state(payload, pat, comp_pats):
+    """Classify every answer row by how the brand appears in it, under the
+    compare_runs convention: 'named_prose' = the brand pattern matches the
+    answer text with URLs stripped; 'cited_links_only' = it matches only
+    inside cited link URLs; 'absent' = no match. 'named_first' additionally
+    requires the brand's first prose mention to precede every competitor's
+    first prose mention (competitors from the payload's own list). Returns
+    {(agent, prompt): {"state", "named_first"}}."""
+    out = {}
+    for r in payload.get("all_responses") or []:
+        t = r.get("response") or ""
+        prose = URLISH_RE.sub(" ", t)
+        m = pat.search(prose)
+        if m:
+            state = "named_prose"
+            first = min((cm.start() for cp in comp_pats for cm in [cp.search(prose)] if cm),
+                        default=None)
+            named_first = first is None or m.start() < first
+        elif pat.search(t):
+            state, named_first = "cited_links_only", False
+        else:
+            state, named_first = "absent", False
+        out[(r.get("llm"), r.get("prompt"))] = {"state": state, "named_first": named_first}
+    return out
+
+
+def _brand_patterns(payload):
+    forms = [payload.get("brand") or ""] + [a for a in (payload.get("brand_aliases") or [])
+                                            if isinstance(a, str)]
+    comps = []
+    for c in payload.get("competitors") or []:
+        name = c.get("name") if isinstance(c, dict) else c
+        if isinstance(name, str) and name.strip():
+            # exact form only: the brand pattern's first-token expansion would
+            # turn "General Mills" into a match on every "general"
+            comps.append(re.compile(r"\b" + re.escape(name.strip()).replace(r"\'", "'?")
+                                    + r"(?:'?s)?\b", re.I))
+    return _forms_to_pattern(forms), comps
+
+
+def _owned_roots(payload):
+    return {_root(d) for d in (payload.get("brand_domains") or []) if isinstance(d, str) and d}
+
+
+def _source_type_of(url, root, cls_map, owned_roots):
+    """Classified type of a cited URL, with the audit's own domains reported
+    as 'owned' (the run-time class map leaves brand domains unlabelled)."""
+    if root in owned_roots:
+        return "owned"
+    return _type_of(url, cls_map) or cls_map.get(root)
+
+
 @server.tool()
 def query_citations(slug: str, domain: str = "", agent: str = "",
-                    prompt_contains: str = "", limit: int = 40) -> dict:
-    """Citations from one audit, filterable by domain root, agent, and prompt
-    substring. Returns citation rows (prompt, agent, url, domain root) plus
-    totals with denominators. A domain cited 12 times may appear in fewer
+                    prompt_contains: str = "", limit: int = 40,
+                    prompt_class: str = "", brand_in_answer: str = "",
+                    source_type: str = "", url_contains: str = "",
+                    group_by: str = "") -> dict:
+    """Citations from one audit, filterable by domain root, agent, prompt
+    substring, prompt_class ('branded' | 'unbranded'), brand_in_answer
+    ('named' = brand appears anywhere in the answer incl. link URLs;
+    'named_prose' = in the answer text itself; 'named_first' = named in prose
+    before any competitor; 'absent'), source_type (the classified type of the
+    cited domain, e.g. editorial, corporate, competitor; 'owned' = the
+    audited brand's own domains) and url_contains
+    (case-insensitive substring of the cited URL). Returns citation rows
+    (prompt, agent, url, domain root, source type, brand state of the answer)
+    plus totals with denominators. group_by='domain' returns instead a
+    ranked table over the FULL matching set (citations and distinct answers
+    per domain root, top `limit`), so 'most cited' questions are never
+    truncated by the row cap. A domain cited 12 times may appear in fewer
     answers — both units are reported."""
     p = _payload(slug)
     rows, unb, branded = _split_rows(p)
     _cls_map, _cls_note = _classes(slug, p)
+    if brand_in_answer not in _BRAND_IN_ANSWER:
+        raise ValueError(f"brand_in_answer must be one of {[x for x in _BRAND_IN_ANSWER if x]}")
+    if prompt_class not in ("", "branded", "unbranded"):
+        raise ValueError("prompt_class must be 'branded' or 'unbranded'")
+    if group_by not in ("", "domain"):
+        raise ValueError("group_by supports only 'domain'")
+    states = None
+    if brand_in_answer:
+        pat, comp_pats = _brand_patterns(p)
+        states = _answer_brand_state(p, pat, comp_pats)
+    owned = _owned_roots(p)
     hits, answers_with = [], set()
-    total = 0
+    groups = {}
+    total = matched = 0
     for r in rows:
+        key = (r.get("llm"), r.get("prompt"))
+        pclass = "branded" if r.get("prompt") in branded else "unbranded"
+        st = states.get(key) if states is not None else None
         for c in (r.get("citations") or []):
             if not isinstance(c, dict) or not c.get("url"):
                 continue
@@ -444,22 +527,70 @@ def query_citations(slug: str, domain: str = "", agent: str = "",
                 continue
             if prompt_contains and prompt_contains.lower() not in r.get("prompt", "").lower():
                 continue
-            answers_with.add((r.get("llm"), r.get("prompt")))
-            if len(hits) < max(1, min(limit, 100)):
-                hits.append({"prompt": r.get("prompt"),
-                             "prompt_class": "branded" if r.get("prompt") in branded else "unbranded",
+            if prompt_class and pclass != prompt_class:
+                continue
+            if url_contains and url_contains.lower() not in c["url"].lower():
+                continue
+            stype = _source_type_of(c["url"], root, _cls_map, owned)
+            if source_type and (stype or "unclassified").lower() != source_type.lower():
+                continue
+            if st is not None:
+                if brand_in_answer == "named" and st["state"] == "absent":
+                    continue
+                if brand_in_answer == "named_prose" and st["state"] != "named_prose":
+                    continue
+                if brand_in_answer == "named_first" and not st["named_first"]:
+                    continue
+                if brand_in_answer == "absent" and st["state"] != "absent":
+                    continue
+            matched += 1
+            answers_with.add(key)
+            g = groups.setdefault(root, {"domain_root": root, "source_type": stype,
+                                         "citations": 0, "answers": set()})
+            g["citations"] += 1
+            g["answers"].add(key)
+            if group_by != "domain" and len(hits) < max(1, min(limit, 100)):
+                hits.append({"prompt": r.get("prompt"), "prompt_class": pclass,
                              "agent": r.get("llm"), "url": c["url"], "domain_root": root,
-                             "source_type": _cls_map.get(root)})
-    return {**_label(slug, p),
-            "filter": {"domain": domain or None, "agent": agent or None,
-                       "prompt_contains": prompt_contains or None},
-            "citations_returned": hits,
-            "answers_containing_matches": len(answers_with),
-            "of_total_citations_all_answers": total,
-            "scope_note": "this tool searches ALL answers (branded + unbranded); each row "
-                          "carries prompt_class so results can be filtered to one scope",
-            "source_type_source": _cls_note,
-            "convention": _convention(p)}
+                             "source_type": stype,
+                             **({"brand_in_answer": st["state"],
+                                 "brand_named_first": st["named_first"]} if st else {})})
+    out = {**_label(slug, p),
+           "filter": {"domain": domain or None, "agent": agent or None,
+                      "prompt_contains": prompt_contains or None,
+                      "prompt_class": prompt_class or None,
+                      "brand_in_answer": brand_in_answer or None,
+                      "source_type": source_type or None,
+                      "url_contains": url_contains or None},
+           "matching_citations": matched,
+           "answers_containing_matches": len(answers_with),
+           "of_total_citations_all_answers": total,
+           "scope_note": "this tool searches ALL answers (branded + unbranded) unless "
+                         "prompt_class is set; each row carries prompt_class so results can "
+                         "be filtered to one scope",
+           "brand_in_answer_definitions": {
+               "named": "the brand pattern (name + aliases) matches anywhere in the answer, "
+                        "cited link URLs included",
+               "named_prose": "matches the answer text with URLs stripped",
+               "named_first": "named_prose, and the brand's first mention precedes every "
+                              "competitor's first mention (competitors = the audit's own list)",
+               "absent": "no match anywhere in the answer"} if brand_in_answer else None,
+           "source_type_source": _cls_note,
+           "convention": _convention(p)}
+    if group_by == "domain":
+        table = sorted(groups.values(), key=lambda g: (-g["citations"], -len(g["answers"]),
+                                                       g["domain_root"]))
+        out["domains"] = [{"domain_root": g["domain_root"], "source_type": g["source_type"],
+                           "citations": g["citations"], "answers_citing": len(g["answers"])}
+                          for g in table[:max(1, min(limit, 200))]]
+        out["domains_scope"] = (f"top {min(max(1, min(limit, 200)), len(table))} of {len(table)} "
+                                "domain roots in the matching set, ranked by citations then "
+                                "answers; counts cover the FULL matching set, not a row slice")
+    else:
+        out["citations_returned"] = hits
+        out["rows_scope"] = (f"first {len(hits)} of {matched} matching citations — do not "
+                             "aggregate from this slice; use group_by='domain' or the totals")
+    return out
 
 
 @server.tool()
@@ -545,19 +676,35 @@ def get_responses(slug: str, prompt_contains: str = "", agent: str = "",
 
 
 @server.tool()
-def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 50) -> dict:
+def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 50,
+                      offset: int = 0, url_contains: str = "", title_contains: str = "",
+                      source_type: str = "", sort: str = "") -> dict:
     """Page-level grounding for one audit: for each fetched cited URL, whether
-    it loaded, and how many times the brand appears ON THE PAGE (as opposed
-    to in the AI's answer). The fetch ratio states coverage plainly — this
+    it loaded, how many times the brand appears ON THE PAGE (as opposed to in
+    the AI's answer), its page title, and how often the audit's answers cited
+    it (times_cited, answers_citing). Filters: url_contains and
+    title_contains (case-insensitive substrings), source_type, and
+    only_missing_brand (loaded pages that never name the brand). Page through
+    the full set with offset + limit; sort='times_cited' ranks pages by how
+    often they were cited. The fetch ratio states coverage plainly — this
     evidence exists only for the fetched subset, never the whole citation set."""
     p = _payload(slug)
     rows, _, _ = _split_rows(p)
     cc, ev_note = _evidence(slug, p)
     urls = {c.get("url") for r in rows for c in (r.get("citations") or [])
             if isinstance(c, dict) and c.get("url")}
+    cited, cited_answers = {}, {}
+    for r in rows:
+        for c in (r.get("citations") or []):
+            if isinstance(c, dict) and c.get("url"):
+                cited[c["url"]] = cited.get(c["url"], 0) + 1
+                cited_answers.setdefault(c["url"], set()).add((r.get("llm"), r.get("prompt")))
+    if sort not in ("", "times_cited"):
+        raise ValueError("sort supports only 'times_cited'")
     loaded = [(u, v) for u, v in cc.items() if v.get("status") == "ok"]
     silent = [u for u, v in loaded if not v.get("brand_count")]
     _cls_map, _cls_note = _classes(slug, p)
+    _owned = _owned_roots(p)
     # Full-set outlet rollup (never limited by `limit`): the story unit is the
     # OUTLET; pages are the evidence underneath. An outlet counts as
     # never_mentioning only when NONE of its loaded pages mentions the brand.
@@ -570,7 +717,7 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
         # domain_root reproduces these figures exactly). Classification of
         # each PAGE stays host-first; the outlet key does not split on host.
         key = _root(u.split("//")[-1])
-        t = _type_of(u, _cls_map) or "unclassified"
+        t = _source_type_of(u, key, _cls_map, _owned) or "unclassified"
         d = _out.setdefault((t, key), [0, 0])
         d[0] += 1
         if v.get("brand_count"):
@@ -588,11 +735,28 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
     items = [{"url": u, "fetch_status": v.get("status"),
               "brand_mentions_on_page": v.get("brand_count") or 0,
               "page_title": (v.get("title") or "")[:120],
-              "source_type": _type_of(u, _cls_map),
+              "source_type": _source_type_of(u, _root(u.split("//")[-1]), _cls_map, _owned),
+              "times_cited": cited.get(u, 0),
+              "answers_citing": len(cited_answers.get(u, ())),
               **({"checked_date": v["checked_date"]} if v.get("checked_date") else {})}
              for u, v in cc.items()
-             if not (only_missing_brand and (v.get("status") != "ok" or v.get("brand_count")))]
+             if not (only_missing_brand and (v.get("status") != "ok" or v.get("brand_count")))
+             and (not url_contains or url_contains.lower() in u.lower())
+             and (not title_contains or title_contains.lower() in (v.get("title") or "").lower())
+             and (not source_type or
+                  (_source_type_of(u, _root(u.split("//")[-1]), _cls_map, _owned)
+                   or "unclassified").lower() == source_type.lower())]
+    if sort == "times_cited":
+        items.sort(key=lambda x: (-x["times_cited"], -x["answers_citing"], x["url"]))
+    lim = max(1, min(limit, 100))
+    off = max(0, offset)
+    page = items[off:off + lim]
     return {**_label(slug, p),
+            "filter": {"only_missing_brand": only_missing_brand or None,
+                       "url_contains": url_contains or None,
+                       "title_contains": title_contains or None,
+                       "source_type": source_type or None, "sort": sort or None},
+            "matching_pages": len(items),
             "fetch_ratio": {"scope": "all answers (branded + unbranded)",
                             "distinct_cited_urls": len(urls), "fetched": len(cc),
                             "loaded": len(loaded), "bot_walled": len(cc) - len(loaded),
@@ -605,11 +769,12 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
                             "only if none of its loaded pages mentions the brand",
             "evidence_source": ev_note,
             "source_type_source": _cls_note,
-            "pages": items[:max(1, min(limit, 100))],
-            "pages_scope": f"first {min(max(1, min(limit, 100)), len(items))} of {len(items)} "
-                           "matching evidence rows — do NOT aggregate from this slice; use "
+            "pages": page,
+            "pages_scope": f"rows {off + 1}-{off + len(page)} of {len(items)} matching evidence "
+                           "rows (page with offset) — do NOT aggregate from this slice; use "
                            "outlet_rollup_by_type and the fetch/loaded totals above, which "
                            "cover the full set",
+            "next_offset": off + lim if off + lim < len(items) else None,
             "convention": _convention(p)}
 
 
@@ -755,8 +920,15 @@ TOOLS_REG = {
     "get_audit": (_fn(get_audit),
                   {"type": "object", "properties": {"slug": _S}, "required": ["slug"]}),
     "query_citations": (_fn(query_citations),
-                        {"type": "object", "properties": {"slug": _S, "domain": _S, "agent": _S,
-                                                          "prompt_contains": _S, "limit": _I},
+                        {"type": "object", "properties": {
+                            "slug": _S, "domain": _S, "agent": _S, "prompt_contains": _S,
+                            "limit": _I,
+                            "prompt_class": {"type": "string", "enum": ["branded", "unbranded"]},
+                            "brand_in_answer": {"type": "string",
+                                                "enum": ["named", "named_prose", "named_first",
+                                                         "absent"]},
+                            "source_type": _S, "url_contains": _S,
+                            "group_by": {"type": "string", "enum": ["domain"]}},
                          "required": ["slug"]}),
     "outlet_profile": (_fn(outlet_profile),
                        {"type": "object", "properties": {"slug": _S, "domain": _S},
@@ -766,9 +938,10 @@ TOOLS_REG = {
                                                         "agent": _S, "max_chars": _I},
                        "required": ["slug"]}),
     "get_page_evidence": (_fn(get_page_evidence),
-                          {"type": "object", "properties": {"slug": _S,
-                                                            "only_missing_brand": _B,
-                                                            "limit": _I},
+                          {"type": "object", "properties": {
+                              "slug": _S, "only_missing_brand": _B, "limit": _I, "offset": _I,
+                              "url_contains": _S, "title_contains": _S, "source_type": _S,
+                              "sort": {"type": "string", "enum": ["times_cited"]}},
                            "required": ["slug"]}),
     "compare_runs": (_fn(compare_runs),
                      {"type": "object", "properties": {"slug_a": _S, "slug_b": _S},

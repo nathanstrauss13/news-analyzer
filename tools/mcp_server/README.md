@@ -17,6 +17,30 @@ list_audits · get_audit · query_citations · outlet_profile · get_responses
 (verbatim, labeled as agent output) · get_page_evidence · compare_runs ·
 request_rerun
 
+query_citations filters (2026-10-17): domain, agent, prompt_contains,
+prompt_class (branded | unbranded), brand_in_answer (named | named_prose |
+named_first | absent — the compare_runs convention: prose = answer text with
+URLs stripped; named_first = brand's first prose mention precedes every
+competitor's, competitors from the audit's own list, exact names only),
+source_type (classified type of the cited root; 'owned' = the audit's
+brand_domains), url_contains. group_by='domain' returns a ranked table over
+the full matching set (citations and distinct answers per root) instead of a
+row slice, so "most cited" questions are never capped by `limit`.
+
+get_page_evidence filters: only_missing_brand, url_contains, title_contains,
+source_type; sort='times_cited'; offset + limit page through the full set
+(next_offset in the response). Each page row carries times_cited and
+answers_citing from the run's own answers.
+
+Worked example (a client's four questions, all answerable in one call each):
+most-cited outlets where the brand was named first in an unbranded answer →
+query_citations(slug, prompt_class="unbranded", brand_in_answer="named_first",
+group_by="domain"); where the brand was absent → brand_in_answer="absent";
+cited pages with the brand in the URL or title → get_page_evidence(slug,
+url_contains="<brand>", sort="times_cited") and title_contains; own site vs
+competitors' sites in unbranded answers → source_type="owned" and
+source_type="competitor" with prompt_class="unbranded", group_by="domain".
+
 ## Install (client)
     python3 -m venv venv && venv/bin/pip install mcp certifi
     # config at ~/.signal_mcp/config.json (or SIGNAL_MCP_CONFIG):
