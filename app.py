@@ -10064,6 +10064,12 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         batch_deadline_seconds = 420 if tier == "free" else 1200
     else:
         batch_deadline_seconds = 180 if tier == "free" else 900
+    if tier != "free":
+        # Paid runs scale with the work: the Coco Robotics run (Oct 19, 2026)
+        # drained 104 of 250 grounded calls in 900s, so a fixed ceiling cuts
+        # any run past ~20 prompts. Observed throughput is ~9s per call with
+        # the pool; cap at an hour so a 100-prompt audit still runs as two jobs.
+        batch_deadline_seconds = max(batch_deadline_seconds, min(3600, int(total_calls * 9)))
 
     emit("llm", f"Querying {len(llms)} LLMs × {len(prompts)} prompts ({total_calls} calls)...", 0, total_calls)
     executor = ThreadPoolExecutor(max_workers=max_workers)
