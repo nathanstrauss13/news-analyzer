@@ -8171,12 +8171,17 @@ def _apply_url_resolution(all_responses, url_map, dropped_out=None, merged_out=N
                     dropped += 1
                     _drop(r, c, f'blacklisted domain: {host}')
                     continue
-                if final in _finals:
+                # Compare on the page, not the tracking string: ChatGPT appends
+                # utm_source=chatgpt.com to some links and not others, so the
+                # same page sat twice in 20 answers of the Coco run (Oct 19, 2026).
+                _key = re.sub(r'[?&](?:utm_[^&#]*|fbclid=[^&#]*|gclid=[^&#]*)', '', final)
+                _key = _key.rstrip('?&').rstrip('/').lower()
+                if _key in _finals:
                     if merged_out is not None and len(merged_out) < 5000:
                         merged_out.append({'llm': r.get('llm'), 'prompt': r.get('prompt'),
                                            'url': final, 'original_url': c.get('url')})
                     continue
-                _finals.add(final)
+                _finals.add(_key)
                 new_cits.append({'url': final, 'domain': host})
             except Exception:
                 dropped += 1
