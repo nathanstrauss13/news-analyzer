@@ -55,7 +55,7 @@ the hosting instance is a handful of conditional fetches per day.
 ## Delivery QA steps (every delivered audit)
 Run in this order on the audit's payload JSON, then build the bundle:
 
-    python3 page_check_full.py   <payload.json> <checks_full.json>     # every distinct cited page fetched, client's name checked
+    python3 page_check_full.py   <payload.json> <checks_full.json> --browser   # every distinct cited page fetched, client's name checked
     python3 classify_full.py     <payload.json> <classes.json>         # every distinct cited root typed; exceptions listed
     python3 classify_full.py     <payload.json> <classes.json> --check --decide <root>=accept|keep|<type> ...
     python3 export_raw_run.py    <payload.json> <out_dir> <classes.json> --merge-repeats
@@ -67,6 +67,22 @@ payloads can hold empty strings or runaway repetitions). Re-collect those
 answers through the product call path, swap them in with a ledger
 (`rerun_ledger`), then run the steps. A payload with an empty answer is not
 client-ready.
+
+page_fetch.py (standard since 2026-10-20): the page reader for anything the
+platform fetcher cannot load. Four tiers in order (direct requests, headless
+Google Chrome through Playwright, the r.jina.ai reader, the Wayback Machine),
+a local cache at ~/.signal_mcp/page_cache.sqlite, and article-level byline
+extraction that demotes a JSON-LD staff roster or a date sitting in the
+author slot and records syndication credits (Miami Herald / TNS, AP, Reuters).
+`page_check_full.py --browser` uses it for the blocked remainder; for an
+editorial scan run it directly with the audit's own counting module:
+
+    python3 page_fetch.py pages.json out.jsonl --key walled --count-module editorial_scan.py --csv auto
+
+What it cannot read: Cloudflare "I am human" challenges (Block Club) fall to
+the reader tier, which loses the byline; hard paywalls with no archive copy
+(some WSJ) stay blocked and are reported as such. Never drive a browser tab by
+hand for page evidence again; if a page defeats all four tiers, say so.
 
 build_data_workbook.py (standard since 2026-10-20, every run, internal and
 client-facing): the data completeness workbook, three tabs (Read me, Answers

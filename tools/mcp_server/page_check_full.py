@@ -13,7 +13,12 @@ MCP server consumes with evidence_mode="replace":
            "checked_date": "YYYY-MM-DD"}}
 
 Usage:
-    python3 page_check_full.py <payload.json> <out_checks.json> [--workers 40] [--timeout 10]
+    python3 page_check_full.py <payload.json> <out_checks.json> [--workers 40] [--timeout 10] [--browser]
+    python3 page_check_full.py <payload.json> <out.json> --recheck <prior.json> --only-status blocked --browser
+
+--browser (Oct 20, 2026): pages the platform fetcher cannot read go through
+page_fetch.py (headless Chrome, then the reader proxy, then the Wayback
+Machine). Rows read that way carry "tier" and, where found, byline/published.
 
 Prints a summary with denominators. Single-epoch by construction: one
 checked_date for the whole corpus. Read-only HTTP; no LLM spend.
@@ -36,6 +41,9 @@ def main():
                     help="re-fetch only URLs whose prior status is in --only-status, merge into prior, write to <out>")
     ap.add_argument("--only-status", default="blocked,unchecked")
     ap.add_argument("--deadline", type=float, default=None, help="override whole-batch deadline seconds")
+    ap.add_argument("--browser", action="store_true",
+                    help="after the platform fetch, push pages still blocked through page_fetch.py "
+                         "(headless Chrome, reader, Wayback); marks each with the tier that read it")
     a = ap.parse_args()
 
     d = json.load(open(a.payload))
@@ -91,6 +99,19 @@ def main():
         try: ex.shutdown(wait=False, cancel_futures=True)
         except TypeError: ex.shutdown(wait=False)
 
+    if a.browser:
+        blocked = [u for u, v in out.items() if v["status"] in ("blocked", "unchecked")]
+        if blocked:
+            sys.path.insert(0, HERE); import page_fetch as PF
+            print(f"\nbrowser pass: {len(blocked)} pages still blocked -> chrome, reader, wayback", flush=True)
+            got = PF.run([(u, {}) for u in blocked], ["chrome", "reader", "wayback"], workers=8, chrome_conc=4,
+                         names=names, count_fn=None, refetch=False)
+            for r in got:
+                if r["status"] == "ok":
+                    out[r["url"]] = {"status": "ok", "brand_count": int(sum(r.get(n, 0) for n in names)),
+                                     "title": (r.get("title") or "")[:300], "checked_date": today, "tier": r["tier"],
+                                     "byline": r.get("byline", ""), "published": r.get("published", "")}
+            print(f"browser pass read {sum(1 for r in got if r['status']=='ok')} of {len(blocked)}", flush=True)
     if prior:
         merged = dict(prior); merged.update(out); out = merged
     json.dump(out, open(a.out, "w"), indent=1)
