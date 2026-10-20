@@ -49,7 +49,8 @@ def main():
     if a.recheck:
         prior = json.load(open(a.recheck))
         want = set(a.only_status.split(","))
-        urls = [u for u in urls if prior.get(u, {}).get("status") in want]
+        # URLs absent from the prior file (added by a re-run or merge) count as unchecked.
+        urls = [u for u in urls if prior.get(u, {"status": "unchecked"}).get("status") in want]
         print(f"recheck mode: {len(urls)} URLs with prior status in {sorted(want)}", flush=True)
     print(f"payload {a.payload} | slug {d.get('slug')} | brand forms {names} | distinct URLs {len(urls)}", flush=True)
 

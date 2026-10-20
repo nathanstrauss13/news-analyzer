@@ -8677,12 +8677,14 @@ def _call_llm(provider, enriched_prompt):
                 pass
             return (text, True)
         except Exception as e:
-            print("Gemini grounding fallback:", e)
+            # gemini-2.0-flash was retired by Google (404 as of Oct 2026); fall back to the
+            # same 2.5-flash model without the search tool so the cost table still applies.
+            print("Gemini grounding fallback:", type(e).__name__, str(e)[:300], flush=True)
             resp = gemini_client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-2.5-flash",
                 contents=gemini_prompt,
             )
-            _record_gemini_usage("gemini-2.0-flash", resp)
+            _record_gemini_usage("gemini-2.5-flash", resp)
             return (resp.text, False)
     if provider == "Perplexity":
         if not perplexity_client:
@@ -9949,6 +9951,29 @@ def _qa_audit(payload):
             'blocking_failures': blocking_fail, 'corrected': corrected}
 
 
+
+def _degenerate_answer(text):
+    """Return a reason string if an LLM answer is unusable (empty, or a runaway
+    repetition), else None. Runaway = over 150k chars, or any single line over
+    20k chars, or the text compresses below 8% of its size (a repeated token
+    inside one line slips past the length and line-repeat checks; zlib catches it).
+    Normal grounded answers run 2k to 30k chars and compress to 25% or more."""
+    t = text or ""
+    if not t.strip():
+        return "empty response"
+    n = len(t)
+    if n > 150000:
+        return f"runaway repetition ({n:,} chars)"
+    longest = max((len(l) for l in t.split("\n")), default=0)
+    if longest > 20000:
+        return f"runaway repetition ({n:,} chars; a {longest:,}-char line)"
+    if n > 20000:
+        import zlib
+        ratio = len(zlib.compress(t.encode("utf-8", "ignore"), 6)) / n
+        if ratio < 0.08:
+            return f"runaway repetition ({n:,} chars; compresses to {ratio:.0%})"
+    return None
+
 def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts_override=None,
                        prompt_sets_override=None):
     """Full agent pipeline: one prompt in, ranked media/partnership/analyst lists out.
@@ -10041,6 +10066,19 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         try:
             _gmeta_reset()
             resp_text, grounded = _call_llm(provider, enriched)
+            # An empty or runaway answer is a failed call, not a clean one. Gemini
+            # returned two empty strings (after 4 and 7 searches) and two 150k+
+            # repetition loops on the Coco run (Oct 19, 2026) with error None, so
+            # the completeness gate passed them. Retry once; if it recurs, record
+            # it as an error so completion counts and QA see it.
+            _bad = _degenerate_answer(resp_text)
+            if _bad:
+                _gmeta_reset()
+                resp_text, grounded = _call_llm(provider, enriched)
+                _bad = _degenerate_answer(resp_text)
+            if _bad:
+                why = _bad
+                return {"llm": provider, "prompt": prompt_text, "response": f"[Error: {why} after retry]", "citations": [], "grounded": False, "error": why}
             _gm = dict(_gmeta())
             row = {"llm": provider, "prompt": prompt_text, "response": resp_text, "citations": extract_urls(resp_text), "grounded": grounded, "error": None}
             if _gm:
