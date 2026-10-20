@@ -58,7 +58,25 @@ Run in this order on the audit's payload JSON, then build the bundle:
     python3 page_check_full.py   <payload.json> <checks_full.json>     # every distinct cited page fetched, client's name checked
     python3 classify_full.py     <payload.json> <classes.json>         # every distinct cited root typed; exceptions listed
     python3 classify_full.py     <payload.json> <classes.json> --check --decide <root>=accept|keep|<type> ...
-    python3 export_raw_run.py    <payload.json> <out_dir> <classes.json>
+    python3 export_raw_run.py    <payload.json> <out_dir> <classes.json> --merge-repeats
+    python3 build_data_workbook.py <payload.json> <classes.json> <out_dir> <Client_Data_Completeness.xlsx> --client <who> --run-date "<date>"
+
+Before any of the above: scan all_responses for empty or degenerate answers
+(the collector stores an error row for them since 2026-10-20, but older
+payloads can hold empty strings or runaway repetitions). Re-collect those
+answers through the product call path, swap them in with a ledger
+(`rerun_ledger`), then run the steps. A payload with an empty answer is not
+client-ready.
+
+build_data_workbook.py (standard since 2026-10-20, every run, internal and
+client-facing): the data completeness workbook, three tabs (Read me, Answers
+one row per prompt x platform with retrieval evidence and a collapsible full
+response, Citations one row per kept citation with delivery channel, demasking,
+duplicate handling, page scrape and source type). Styled like the project
+trackers; opens in Google Sheets with filters and coloured dropdowns intact.
+Inject the full page checks into the payload as `citation_checks` first (or
+pass --checks). Every figure is recomputed from all_responses; nothing is
+copied from the platform summary fields.
 
 classify_full.py (standard since 2026-10-10): owned roots from brand_domains,
 the payload's own domain_types, then one Haiku pass over the rest with the
