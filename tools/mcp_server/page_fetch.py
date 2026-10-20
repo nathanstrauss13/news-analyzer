@@ -77,8 +77,9 @@ def cache_put(url, final_url, tier, http, html):
 
 
 # ---------- extraction ----------
-def strip_html(s):
-    s = re.sub(r"(?is)<(script|style|noscript|svg|template|nav|footer|aside)[^>]*>.*?</\1>", " ", s)
+def strip_html(s, trim=False):
+    tags = "script|style|noscript|svg|template" + ("|nav|footer|aside|header" if trim else "")
+    s = re.sub(r"(?is)<(" + tags + r")[^>]*>.*?</\1>", " ", s)
     s = re.sub(r"(?s)<[^>]+>", " ", s)
     return re.sub(r"\s+", " ", H.unescape(s)).strip()
 
@@ -123,6 +124,8 @@ def jsonld_article(raw):
 
 DATE_LIKE = re.compile(r"^\s*(?:[A-Z][a-z]+\.? \d{1,2},? \d{4}|\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2})\s*[•·|-]?\s*$")
 NOT_A_NAME = re.compile(r"staff|editor|newsroom|contributor|admin|team|desk|wire|press release|sponsored|\bby\b$", re.I)
+STOP_WORDS = re.compile(r"^(?:share|follow|email|print|subscribe|comments?|tech|news|business|politics|opinion|sports|more|menu|search|sign in|log in|author|byline|written by|by)$", re.I)
+NAME_SHAPE = re.compile(r"^[A-Z][A-Za-z'.-]+(?: (?:and |& |, )?[A-Z][A-Za-z'.-]+){1,5}$")
 
 
 def visible_byline(raw):
@@ -137,8 +140,9 @@ def visible_byline(raw):
         mm = re.match(r"^(?:By|by|BY)\s+(.{2,120})$", t)
         if mm: return clean_name(mm.group(1))
     for t in cands:
-        if not DATE_LIKE.match(t) and not re.search(r"\d{4}", t) and len(t.split()) <= 8 and not NOT_A_NAME.search(t):
-            return clean_name(t)
+        c = clean_name(t)
+        if c and not STOP_WORDS.match(c) and not DATE_LIKE.match(c) and (NAME_SHAPE.match(c) or re.search(r"staff", c, re.I)):
+            return c
     # visible "By Name" near the top of the text, as a last resort
     txt = strip_html(raw[:120000])
     mm = re.search(r"\bBy ([A-Z][A-Za-z'.-]+(?: (?:and |& )?[A-Z][A-Za-z'.-]+){1,4})\b", txt)
@@ -153,6 +157,15 @@ def clean_name(s):
     s = re.sub(r"\s+(?:on|at|-|\||•|·)\s+" + MONTH + r"\s+\d{1,2},?\s+\d{4}.*$", "", s)      # "Joe Guszkowski on Jun. 12, 2025"
     s = re.sub(r"\s*[|•·-]\s*" + MONTH + r"\s+\d{1,2},?\s+\d{4}.*$", "", s)                   # "PYMNTS | August 26, 2026"
     s = re.sub(r"\s*[|•·-]\s*\d{1,2}/\d{1,2}/\d{2,4}.*$", "", s)
+    s = re.split(r"\s+[|•·]\s+", s)[0]                                                        # "Jane Miller | Chicago Tribune", "James Dargan · 19 June 2026"
+    s = re.sub(r"\s*(?:You're|You are) currently following.*$", "", s)
+    s = re.sub(r"\s+\d{1,2}\s+" + MONTH + r"\s+\d{4}.*$", "", s)                               # day-first dates
+    s = re.sub(r",?\s+(?:Senior|Deputy|Managing|Executive|Associate|Assistant|Contributing)?\s*(?:Editor|Writer|Columnist|Correspondent|Reporter|Journalist)(?:-in-Chief)?\b.*$", "", s)
+    s = re.sub(r"\s+\d{4}-\d{2}-\d{2}T\S*.*$", "", s)                                          # trailing ISO timestamp
+    s = re.sub(r"\s*\[month\].*$", "", s)                                                     # unrendered date template
+    s = re.sub(r"\s*[|•·]\s*[^\s@|]+@[^\s@|]+", "", s)                                        # "| jmiller@chicagotribune.com"
+    s = re.sub(r"\s+" + MONTH + r"\s+\d{1,2},?\s+\d{4}.*$", "", s)                           # "DC Velocity Staff Jun 08, 2026"
+    s = re.sub(r"\s+(?:Tech|Business|Politics|News|Opinion|Sports|Technology|Media)$", "", s)  # "Rachyl Jones Tech" (section label)
     s = re.sub(r"\s+", " ", s).strip(" ,|•·-")
     return s[:120]
 
@@ -169,13 +182,16 @@ def extract(url, raw):
         byline, source = vis, "visible byline"
     elif meta_author:
         byline, source = meta_author, "meta author"
+    norm = lambda x: re.sub(r"\s+", " ", x or "").strip().lower()
+    ld_authors = [re.sub(r"\s+", " ", x) for x in ld_authors]
     if ld_authors:
-        roster = len(ld_authors) >= 3 and (not byline or byline.split(";")[0].strip() not in ld_authors)
+        first = norm(byline.split(";")[0])
+        roster = len(ld_authors) >= 3 and (not byline or first not in [norm(x) for x in ld_authors])
         if roster:
             note = f"JSON-LD author list looks like a staff roster ({len(ld_authors)} names), ignored"
         elif not byline:
             byline, source = "; ".join(ld_authors[:3]), "JSON-LD article author"
-        elif byline and byline.split(";")[0].strip() in ld_authors and len(ld_authors) > 1 and len(ld_authors) <= 3:
+        elif byline and first in [norm(x) for x in ld_authors] and 1 < len(ld_authors) <= 3:
             byline, source = "; ".join(ld_authors), source + " + JSON-LD"
     if byline and DATE_LIKE.match(byline):
         note = (note + "; " if note else "") + f"byline slot held a date ({byline}), cleared"; byline, source = "", ""
@@ -184,11 +200,12 @@ def extract(url, raw):
     credit = ""
     CRED = r"\(TNS\)|Tribune Content Agency|Tribune News Service|\bAssociated Press\b|\(AP\)|\bAP\b(?= —| -)|\bReuters\b(?= —| -|\))|/ Reuters|\bBloomberg\b(?= —| -|\))|\bCNN Newsource\b"
     # a syndication credit sits in the byline/dateline or in the closing rights line, never in the body
-    zone = (byline + " | " + text[:1200] + " | " + text[-1200:])
+    ttext = strip_html(raw, trim=True)
+    zone = (byline + " | " + ttext[:1200] + " | " + ttext[-1200:])
     cm = re.search(CRED, zone)
     if cm:
         credit = cm.group(0).strip(" /")
-        srcm = re.search(r"([A-Z][A-Za-z.&' -]{3,40}(?:Herald|Times|Tribune|Post|Journal|News|Sun|Star|Bee|Chronicle|Gazette))\b", byline + " " + text[:1200])
+        srcm = re.search(r"([A-Z][A-Za-z.&' -]{3,40}(?:Herald|Times|Tribune|Post|Journal|News|Sun|Star|Bee|Chronicle|Gazette))\b", byline + " " + ttext[:1200])
         if srcm and srcm.group(1).strip().lower() not in title.lower(): credit = srcm.group(1).strip() + " / " + credit
     date = (ld_dates[0] if ld_dates else "") or meta(raw, "article:published_time", "datePublished", "date", "pubdate", "parsely-pub-date", "sailthru.date", "dc.date", "og:updated_time")
     return {"title": title[:200], "byline": byline, "byline_source": source, "byline_note": note, "credit": credit,
