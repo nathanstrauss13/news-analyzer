@@ -330,13 +330,16 @@ def blog(c):
     tot = {k: sum(p[k] for p in out_posts) for k in ("clicks_12m", "impressions_12m", "clicks_90d", "impressions_90d", "views_12m", "views_90d")}
     # Posts published per month, last 12 full months plus the current (partial) month,
     # counted from the feed's pubDates; undated posts are reported, not placed.
+    # With no dated source (feed blocked and no seeded list) the counts are
+    # unknown, not zero: emit null so a card never reads "nothing published".
+    dated_source = any(p["published"] for p in out_posts)
     months = []
     for label, ms, me in month_ranges():
-        n = sum(1 for p in out_posts if p["published"] and ms <= p["published"] <= me)
+        n = sum(1 for p in out_posts if p["published"] and ms <= p["published"] <= me) if dated_source else None
         months.append({"month": ms[:7], "label": label if label != "partial" else dt.date.today().strftime("%b %y"),
                        "start": ms, "end": me, "posts": n, "partial": label == "partial"})
     return {"source": source, "error": err, "feed_url": BLOG_RSS, "post_count": len(out_posts),
-            "undated_count": sum(1 for p in out_posts if not p["published"]),
+            "undated_count": sum(1 for p in out_posts if not p["published"]), "dated_source": dated_source,
             "windows": {k: {"start": v[0], "end": v[1]} for k, v in windows.items()}, "totals": tot,
             "posts_by_month": months, "posts": out_posts}
 
