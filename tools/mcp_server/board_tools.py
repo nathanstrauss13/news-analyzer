@@ -98,19 +98,34 @@ def _in_range(s, since, until):
     return (not since or s >= since) and (not until or s <= until)
 
 
-def _filter_rows(rows, **kw):
-    """Light, field-tolerant filters: a filter applies only where the row has the field."""
+def _as_dicts(rows, columns=None):
+    """Rows as dicts. Positional rows (lists) are mapped through the section's
+    "columns" array when it is present; dict rows pass through."""
     out = []
     for r in rows if isinstance(rows, list) else []:
-        if not isinstance(r, dict):
-            continue
+        if isinstance(r, dict):
+            out.append(r)
+        elif isinstance(r, (list, tuple)) and columns:
+            out.append({c: (r[i] if i < len(r) else None) for i, c in enumerate(columns)})
+    return out
+
+
+_ISO = re.compile(r"^\d{4}-\d{2}(-\d{2})?")
+
+
+def _filter_rows(rows, columns=None, **kw):
+    """Light, field-tolerant filters: a filter applies only where the row has the
+    field. since/until apply only to ISO dates; a free-text date ("Oct 9",
+    "since Aug 18") never excludes a row."""
+    out = []
+    for r in _as_dicts(rows, columns):
         ok = True
         for k, v in kw.items():
             if v in (None, ""):
                 continue
             if k in ("since", "until"):
-                d = r.get("date") or r.get("published") or r.get("month") or ""
-                if d and not _in_range(str(d), kw.get("since"), kw.get("until")):
+                d = str(r.get("date") or r.get("published") or r.get("month") or "")
+                if _ISO.match(d) and not _in_range(d, kw.get("since"), kw.get("until")):
                     ok = False
             elif k in r and str(r.get(k, "")).lower() != str(v).lower() and str(v).lower() not in str(r.get(k, "")).lower():
                 ok = False
@@ -227,9 +242,13 @@ def _reported(board, section, tool_doc_name, **filters):
     b = _board(board)
     rows, as_of, badge, note = _section(b, section)
     if isinstance(rows, dict) and any(isinstance(v, list) for v in rows.values()):
-        out = {k: (_filter_rows(v, **filters) if isinstance(v, list) else v) for k, v in rows.items()}
+        cols = rows.get("columns") if isinstance(rows.get("columns"), list) else None
+        out = {k: (_filter_rows(v, cols, **filters) if isinstance(v, list) and k != "columns" else v)
+               for k, v in rows.items() if not (k in ("asOf", "as_of", "source", "note") )}
+        if cols:
+            out["columns"] = cols
     elif isinstance(rows, list):
-        out = _filter_rows(rows, **filters)
+        out = _filter_rows(rows, None, **filters)
     else:
         out = rows
     return {**_hdr(b, section, as_of, badge, note), section: out}
