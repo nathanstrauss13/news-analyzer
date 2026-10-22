@@ -353,6 +353,22 @@ class LinkedInToken(db.Model):
     last_error = db.Column(db.Text, nullable=True)
 
 
+class LinkedInInvite(db.Model):
+    """Single-use authorization link for a page admin who must not hold the
+    operator key. Minted by the operator (/admin/linkedin/invite), used once by
+    /linkedin/authorize/<token>, consumed by the callback. Only a SHA-256 of the
+    token is stored; the clear token exists in the URL the operator sends."""
+    __tablename__ = 'linkedin_invites'
+    id = db.Column(db.Integer, primary_key=True)
+    token_hash = db.Column(db.String(64), unique=True, index=True, nullable=False)
+    label = db.Column(db.String(120), nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used_at = db.Column(db.DateTime, nullable=True)
+    revoked_at = db.Column(db.DateTime, nullable=True)
+    org_urn = db.Column(db.String(64), nullable=True)      # set when the flow completes
+
+
 class PageVisit(db.Model):
     """One row per HUMAN visit to a tool page (homepage or a shared report) —
     first-party traffic analytics for the operator /traffic view. Bots and
@@ -11953,20 +11969,74 @@ def _linkedin_pull_block():
             return None, err
 
 
-@app.route('/admin/linkedin/start')
-def admin_linkedin_start():
-    """Operator: begin LinkedIn authorization. The page ADMINISTRATOR (super admin)
-    signs in and consents; LinkedIn returns to /admin/linkedin/callback."""
-    if not _operator_ok():
-        abort(404)
+def _li_begin(invite_hash=None):
+    """Redirect to LinkedIn's consent page; the signed session carries the OAuth
+    state and, for an invited admin, the invite being consumed."""
     cid = os.environ.get('LINKEDIN_CLIENT_ID')
     if not cid or not os.environ.get('LINKEDIN_CLIENT_SECRET'):
-        return Response("LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET must be set on the service\n", status=503, mimetype='text/plain')
+        return Response("LinkedIn is not configured on this service yet\n", status=503, mimetype='text/plain')
     import secrets as _secrets
     from urllib.parse import urlencode
     state = _secrets.token_urlsafe(24); session['li_oauth_state'] = state
+    session['li_invite'] = invite_hash
     scope = os.environ.get('LINKEDIN_SCOPES') or 'r_organization_admin'
     return redirect(_LI_AUTH + '?' + urlencode({"response_type": "code", "client_id": cid, "redirect_uri": _li_redirect_uri(), "state": state, "scope": scope}))
+
+
+def _li_expired_page(reason="This authorization link has expired or was already used."):
+    return Response("<!doctype html><meta name='robots' content='noindex'><title>Link expired</title><div style='font-family:system-ui;margin:3em;max-width:36em'>"
+                    f"<h2>Link expired</h2><p>{html_mod.escape(reason)} Ask the person who sent it for a new one.</p></div>",
+                    status=410, mimetype='text/html', headers={'Cache-Control': 'private, no-store'})
+
+
+@app.route('/admin/linkedin/start')
+def admin_linkedin_start():
+    """Operator's own test path: begin LinkedIn authorization with the operator
+    key. Page admins who must not hold that key use an invite link instead."""
+    if not _operator_ok():
+        abort(404)
+    return _li_begin(None)
+
+
+@app.route('/admin/linkedin/invite', methods=['POST', 'GET'])
+def admin_linkedin_invite():
+    """Operator: mint a single-use authorization link for a page admin
+    (POST, optional label= and hours= 1..72, default 48), or list outstanding
+    invites (GET). The clear token is returned once, in the URL; only its hash
+    is stored. ?revoke=<id> on POST revokes an invite."""
+    if not _operator_ok():
+        abort(404)
+    import hashlib as _h, secrets as _secrets
+    if request.method == 'POST' and request.args.get('revoke'):
+        inv = db.session.get(LinkedInInvite, int(request.args.get('revoke')))
+        if inv is None:
+            return jsonify({"error": "no such invite"}), 404
+        inv.revoked_at = datetime.utcnow(); db.session.commit()
+        return jsonify({"revoked": inv.id})
+    if request.method == 'POST':
+        hours = max(1, min(int(request.form.get('hours') or request.args.get('hours') or 48), 72))
+        token = _secrets.token_urlsafe(32)
+        inv = LinkedInInvite(token_hash=_h.sha256(token.encode()).hexdigest(), label=(request.form.get('label') or request.args.get('label') or '')[:120] or None,
+                             expires_at=datetime.utcnow() + timedelta(hours=hours))
+        db.session.add(inv); db.session.commit()
+        url = os.environ.get("PUBLIC_BASE_URL", "https://signal.innatec3.com").rstrip('/') + f"/linkedin/authorize/{token}"
+        return jsonify({"invite_id": inv.id, "url": url, "expires_at": inv.expires_at.isoformat() + 'Z', "hours": hours, "label": inv.label,
+                        "note": "single use; send this URL to the page admin yourself; it is not stored in clear and cannot be shown again"})
+    now = datetime.utcnow()
+    rows = LinkedInInvite.query.order_by(LinkedInInvite.created_at.desc()).limit(50).all()
+    return jsonify({"invites": [{"id": i.id, "label": i.label, "created_at": i.created_at.isoformat() + 'Z', "expires_at": i.expires_at.isoformat() + 'Z',
+                                 "status": ("used" if i.used_at else "revoked" if i.revoked_at else "expired" if i.expires_at <= now else "outstanding"),
+                                 "used_at": (i.used_at.isoformat() + 'Z') if i.used_at else None, "org_urn": i.org_urn} for i in rows]})
+
+
+@app.route('/linkedin/authorize/<token>')
+def linkedin_authorize_invite(token):
+    """A page admin's entry point: no operator key. Valid once, before expiry."""
+    import hashlib as _h
+    inv = LinkedInInvite.query.filter_by(token_hash=_h.sha256((token or '').encode()).hexdigest()).first()
+    if inv is None or inv.used_at or inv.revoked_at or inv.expires_at <= datetime.utcnow():
+        return _li_expired_page()
+    return _li_begin(inv.token_hash)
 
 
 @app.route('/admin/linkedin/callback')
@@ -11980,6 +12050,12 @@ def admin_linkedin_callback():
     if not code or not state or state != session.get('li_oauth_state'):
         return Response("missing or mismatched state; start again at /admin/linkedin/start\n", status=400, mimetype='text/plain')
     session.pop('li_oauth_state', None)
+    invite_hash = session.pop('li_invite', None)
+    inv = None
+    if invite_hash:
+        inv = LinkedInInvite.query.filter_by(token_hash=invite_hash).first()
+        if inv is None or inv.used_at or inv.revoked_at or inv.expires_at <= datetime.utcnow():
+            return _li_expired_page("This authorization link expired or was used before LinkedIn returned.")
     r = requests.post(_LI_TOKEN, data={"grant_type": "authorization_code", "code": code, "redirect_uri": _li_redirect_uri(),
                                        "client_id": os.environ.get('LINKEDIN_CLIENT_ID') or '', "client_secret": os.environ.get('LINKEDIN_CLIENT_SECRET') or ''}, timeout=30)
     if r.status_code != 200:
@@ -11999,14 +12075,17 @@ def admin_linkedin_callback():
     tok.access_token = j['access_token']; tok.expires_at = now + timedelta(seconds=int(j.get('expires_in') or 0))
     tok.refresh_token = j.get('refresh_token'); tok.refresh_expires_at = (now + timedelta(seconds=int(j['refresh_token_expires_in']))) if j.get('refresh_token_expires_in') else None
     tok.scope = j.get('scope'); tok.member_roles = json.dumps(roles); tok.authorized_at = now; tok.last_error = role_err
-    db.session.add(tok); db.session.commit()
+    db.session.add(tok)
+    if inv is not None:
+        inv.used_at = now; inv.org_urn = org_urn
+    db.session.commit()
     st = _li_status_dict(tok)
     org_roles = [x['role'] for x in roles if x.get('organization') == org_urn]
     warn = "" if 'ADMINISTRATOR' in org_roles else "<p><b>Note:</b> LinkedIn's documentation restricts the page statistics endpoints to members with the ADMINISTRATOR (super admin) role; this member's roles on the page are " + html_mod.escape(", ".join(org_roles) or "none found") + ". The first pull will show whether the API accepts them.</p>"
     body = (f"<!doctype html><meta name='robots' content='noindex'><title>LinkedIn authorized</title><div style='font-family:system-ui;margin:3em;max-width:40em'>"
             f"<h2>LinkedIn authorized for {html_mod.escape(org_urn)}</h2><p>Scope: {html_mod.escape(st['scope'] or '')}<br>Access token expires: {st['access_token_expires']} ({st['days_left']} days)<br>"
             f"Refresh token granted: {'yes' if st['refresh_token'] else 'no'}{(' (expires ' + st['refresh_token_expires'] + ')') if st['refresh_token_expires'] else ''}</p>{warn}"
-            f"<p>Next: run the board pull (POST /admin/board-live/&lt;slug&gt;/run) and check live.json['linkedin'].</p></div>")
+            + ("<p>Thank you. The connection is complete and this page can be closed.</p></div>" if inv is not None else "<p>Next: run the board pull (POST /admin/board-live/&lt;slug&gt;/run) and check live.json['linkedin'].</p></div>"))
     return Response(body, mimetype='text/html', headers={'Cache-Control': 'private, no-store'})
 
 
