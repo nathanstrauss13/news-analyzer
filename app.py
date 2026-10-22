@@ -13035,8 +13035,17 @@ def signal_generate_prompts():
     })
 
 
-def _load_signal_report(slug):
-    """Return parsed PR Signal Finder report dict for a slug, or None."""
+def _payload_is_client_deliverable(data):
+    """Static boards (static_html) and operator-hosted data payloads are client
+    deliverables: the page (behind its gate) is the product, and nothing public
+    may serve the stored payload raw. Export routes 404 for non-operators."""
+    return bool(data.get('static_html') or data.get('hosted_payload_only'))
+
+
+def _load_signal_report(slug, with_access=False):
+    """Return parsed PR Signal Finder report dict for a slug, or None.
+    The 'access' gate (user + password hash) is stripped unless the caller is
+    the page route itself (with_access=True); it must never be serialized."""
     rec = SharedResult.query.filter_by(slug=slug).first()
     if not rec:
         return None
@@ -13052,6 +13061,8 @@ def _load_signal_report(slug):
     if "media_targets" not in data and not data.get("static_html") and not (data.get("hosted_payload_only") and data.get("all_responses")):
         return None
     data["slug"] = slug
+    if not with_access:
+        data.pop('access', None)
     return data
 
 
@@ -13606,7 +13617,7 @@ def view_signal_report(slug):
                      report — summary included — on an existing audit
                      without a fresh 50-LLM batch.
     """
-    data = _load_signal_report(slug)
+    data = _load_signal_report(slug, with_access=True)
     if not data:
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
@@ -13794,6 +13805,8 @@ def view_signal_report_owned(slug):
     if not data:
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
+    if _payload_is_client_deliverable(data) and not _operator_ok():
+        abort(404)
     owned = data.get('owned')
     if not owned:
         # Audit saved before the owned lens existed — compute on the fly from the
@@ -16082,6 +16095,8 @@ def signal_report_pdf(slug):
     if not data:
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
+    if _payload_is_client_deliverable(data) and not _operator_ok():
+        abort(404)
     try:
         from weasyprint import HTML  # imported lazily — heavy dependency
     except Exception as e:
@@ -16132,6 +16147,8 @@ def signal_report_csv(slug):
     if not data:
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
+    if _payload_is_client_deliverable(data) and not _operator_ok():
+        abort(404)
 
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -16367,8 +16384,8 @@ def signal_report_json(slug):
     if not data:
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
-    if data.get('hosted_payload_only') and not _operator_ok():
-        abort(404)        # client data payloads are read by the connector in-process, never served publicly
+    if _payload_is_client_deliverable(data) and not _operator_ok():
+        abort(404)        # gated boards and data payloads are never served raw; the connector reads them in-process
 
     brand_slug = re.sub(r'[^a-z0-9]+', '-', (data.get('brand') or 'report').lower()).strip('-') or 'report'
     filename = f"signal-finder-{brand_slug}-{slug}.json"
@@ -16730,6 +16747,8 @@ def dashboard_preview(slug):
         abort(404)
     data = _load_signal_report(slug)
     if not data:
+        abort(404)
+    if _payload_is_client_deliverable(data) and not _operator_ok():
         abort(404)
     try:
         html = _render_kit_dashboard(data)
