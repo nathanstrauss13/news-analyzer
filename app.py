@@ -11897,6 +11897,20 @@ def admin_upload_audit_payload():
     data['slug'] = slug
     data.setdefault('hosted_from', 'operator upload of an offline-assembled payload')
     data['hosted_payload_only'] = True      # served to the hosted connector in-process only; the public routes 404
+    # An offline-assembled payload usually lacks the platform's stored headline
+    # figures (brand_mention_count, per_llm_visibility, ...). Fill them with the
+    # platform's own zero-API re-analysis so get_audit reports the same
+    # conventions as every other audit; skip with recompute=0.
+    if request.form.get('recompute') != '0' and not data.get('brand_mention_count'):
+        try:
+            data = _rerender_from_cached_responses(data, regenerate_summary=False)
+            unb = set((data.get('prompt_sets') or {}).get('unbranded') or [])
+            if unb and not data.get('total_citations_extracted'):
+                data['total_citations_extracted'] = sum(len(r.get('citations') or []) for r in data['all_responses'] if r.get('prompt') in unb)
+        except Exception as e:
+            print("[upload-audit-payload] recompute skipped:", type(e).__name__, str(e)[:160])
+    if request.form.get('qa_verified') == '1':
+        data['qa_verified'] = True
     rec = SharedResult.query.filter_by(slug=slug).first()
     if rec is not None and request.form.get('replace') != '1':
         return Response("slug exists; pass replace=1 to overwrite\n", status=409, mimetype='text/plain')
