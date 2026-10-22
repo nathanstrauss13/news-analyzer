@@ -334,6 +334,25 @@ class BoardLiveFeed(db.Model):
     pulled_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     last_error = db.Column(db.Text, nullable=True)
 
+class LinkedInToken(db.Model):
+    """OAuth token for a LinkedIn organization page (Community Management API),
+    obtained once by a page administrator through /admin/linkedin/start and
+    refreshed by the daily board pull when LinkedIn grants a refresh token.
+    One row per organization URN. Token columns are never logged or returned
+    by any route; status routes expose expiry dates and roles only."""
+    __tablename__ = 'linkedin_tokens'
+    org_urn = db.Column(db.String(64), primary_key=True)
+    access_token = db.Column(db.Text, nullable=False)
+    refresh_token = db.Column(db.Text, nullable=True)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    refresh_expires_at = db.Column(db.DateTime, nullable=True)
+    scope = db.Column(db.String(255), nullable=True)
+    member_roles = db.Column(db.Text, nullable=True)       # JSON list from organizationAcls at authorization
+    authorized_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    last_pull_at = db.Column(db.DateTime, nullable=True)
+    last_error = db.Column(db.Text, nullable=True)
+
+
 class PageVisit(db.Model):
     """One row per HUMAN visit to a tool page (homepage or a shared report) —
     first-party traffic analytics for the operator /traffic view. Bots and
@@ -11749,6 +11768,27 @@ def _run_board_live_pull(slugs=None):
             body = json.dumps(parsed)
         if blog.get('error'):
             print("[board-live] blog feed note:", str(blog.get('error'))[:200], "| source", blog.get('source'))
+        # LinkedIn page statistics: same keep-last-good rule; a failure stores the
+        # previous block with a shape-only error and never fails the Google pull.
+        prev_li = None
+        with app.app_context():
+            for slug in slugs:
+                row = db.session.get(BoardLiveFeed, slug)
+                try:
+                    prev_li = prev_li or (json.loads(row.payload).get('linkedin') if row else None)
+                except Exception:
+                    pass
+        li_block, li_err = _linkedin_pull_block()
+        if li_block is not None:
+            parsed['linkedin'] = li_block
+        elif prev_li:
+            prev_li = dict(prev_li); prev_li['error'] = li_err; prev_li['stale'] = True
+            parsed['linkedin'] = prev_li
+        elif li_err:
+            parsed['linkedin'] = {"error": li_err, "months": None, "pace": None, "total_followers": None}
+        if li_err:
+            print("[board-live] linkedin note:", str(li_err)[:200])
+        body = json.dumps(parsed)
     except Exception as e:
         err = f"{type(e).__name__}: {str(e)[:300]}"
         print("[board-live] pull failed:", err)
@@ -11782,9 +11822,15 @@ def admin_board_live_run(slug):
         return Response("forbidden\n", status=403, mimetype='text/plain')
     res = _run_board_live_pull([slug])
     row = db.session.get(BoardLiveFeed, slug)
+    li = {}
+    try:
+        li_blk = (json.loads(row.payload).get('linkedin') or {}) if row else {}
+        li = {"error": li_blk.get('error'), "stale": li_blk.get('stale'), **(li_blk.get('token') or {})}
+    except Exception:
+        pass
     return jsonify({"result": res, "pulled_at": (row.pulled_at.isoformat() + 'Z') if row else None,
                     "last_error": row.last_error if row else None,
-                    "bytes": len(row.payload) if row else 0})
+                    "bytes": len(row.payload) if row else 0, "linkedin": li})
 
 
 @app.route('/admin/upload-audit-payload', methods=['POST'])
@@ -11823,6 +11869,155 @@ def admin_upload_audit_payload():
         rec.payload = body
     db.session.commit()
     return Response(f"hosted /signal/{slug} ({len(body)//1024} KB, {len(data['all_responses'])} answers, brand {data.get('brand')})\n", mimetype='text/plain')
+
+
+# ── LinkedIn page statistics (Community Management API) ──────────────────
+# Env: LINKEDIN_CLIENT_ID (public), LINKEDIN_CLIENT_SECRET (secret, Nathan sets
+# it on Render), LINKEDIN_ORG_ID (optional numeric page id; else discovered
+# from the authorizing member's roles), LINKEDIN_SCOPES (default
+# r_organization_admin), LINKEDIN_API_VERSION (default 202610).
+# Redirect URL registered on the LinkedIn app: <PUBLIC_BASE_URL>/admin/linkedin/callback
+_LI_AUTH = "https://www.linkedin.com/oauth/v2/authorization"
+_LI_TOKEN = "https://www.linkedin.com/oauth/v2/accessToken"
+
+
+def _li_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fetch_linkedin", os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'board', 'fetch_linkedin.py'))
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+
+
+def _li_redirect_uri():
+    return os.environ.get("PUBLIC_BASE_URL", "https://signal.innatec3.com").rstrip('/') + '/admin/linkedin/callback'
+
+
+def _li_version():
+    return os.environ.get('LINKEDIN_API_VERSION') or '202610'
+
+
+def _li_status_dict(tok):
+    if tok is None:
+        return {"authorized": False}
+    now = datetime.utcnow(); days = (tok.expires_at - now).days
+    rdays = (tok.refresh_expires_at - now).days if tok.refresh_expires_at else None
+    try:
+        roles = json.loads(tok.member_roles or '[]')
+    except Exception:
+        roles = []
+    return {"authorized": True, "organization": tok.org_urn, "scope": tok.scope, "authorized_at": tok.authorized_at.isoformat() + 'Z',
+            "access_token_expires": tok.expires_at.isoformat() + 'Z', "days_left": days,
+            "warning": (f"access token expires in {days} days; re-authorize at /admin/linkedin/start" if days <= 14 else None),
+            "refresh_token": bool(tok.refresh_token), "refresh_token_expires": (tok.refresh_expires_at.isoformat() + 'Z') if tok.refresh_expires_at else None, "refresh_days_left": rdays,
+            "member_roles": roles, "last_pull_at": (tok.last_pull_at.isoformat() + 'Z') if tok.last_pull_at else None, "last_error": tok.last_error}
+
+
+def _li_refresh_if_needed(tok):
+    """Refresh the access token when fewer than 10 days remain and a refresh token exists."""
+    if not tok.refresh_token or (tok.expires_at - datetime.utcnow()).days > 10:
+        return
+    r = requests.post(_LI_TOKEN, data={"grant_type": "refresh_token", "refresh_token": tok.refresh_token,
+                                       "client_id": os.environ.get('LINKEDIN_CLIENT_ID') or '', "client_secret": os.environ.get('LINKEDIN_CLIENT_SECRET') or ''}, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"token refresh failed: http {r.status_code}")
+    j = r.json()
+    tok.access_token = j['access_token']; tok.expires_at = datetime.utcnow() + timedelta(seconds=int(j.get('expires_in') or 0))
+    if j.get('refresh_token'):
+        tok.refresh_token = j['refresh_token']
+        if j.get('refresh_token_expires_in'):
+            tok.refresh_expires_at = datetime.utcnow() + timedelta(seconds=int(j['refresh_token_expires_in']))
+    db.session.commit()
+
+
+def _linkedin_pull_block():
+    """(block, None) on success, (None, shape-only error) otherwise."""
+    with app.app_context():
+        tok = LinkedInToken.query.order_by(LinkedInToken.authorized_at.desc()).first()
+        if tok is None:
+            return None, "linkedin not authorized (no token stored); authorize at /admin/linkedin/start"
+        try:
+            _li_refresh_if_needed(tok)
+        except Exception as e:
+            tok.last_error = f"refresh: {type(e).__name__}: {str(e)[:160]}"; db.session.commit()
+        if tok.expires_at <= datetime.utcnow():
+            tok.last_error = "access token expired; re-authorize at /admin/linkedin/start"; db.session.commit()
+            return None, tok.last_error
+        try:
+            block = _li_module().fetch(tok.access_token, tok.org_urn, _li_version())
+            st = _li_status_dict(tok)
+            block['token'] = {"access_token_expires": st['access_token_expires'], "days_left": st['days_left'], "warning": st['warning'], "refresh_token": st['refresh_token']}
+            tok.last_pull_at = datetime.utcnow(); tok.last_error = None; db.session.commit()
+            return block, None
+        except Exception as e:
+            err = f"{type(e).__name__}: {str(e)[:220]}"
+            tok.last_error = err; db.session.commit()
+            return None, err
+
+
+@app.route('/admin/linkedin/start')
+def admin_linkedin_start():
+    """Operator: begin LinkedIn authorization. The page ADMINISTRATOR (super admin)
+    signs in and consents; LinkedIn returns to /admin/linkedin/callback."""
+    if not _operator_ok():
+        abort(404)
+    cid = os.environ.get('LINKEDIN_CLIENT_ID')
+    if not cid or not os.environ.get('LINKEDIN_CLIENT_SECRET'):
+        return Response("LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET must be set on the service\n", status=503, mimetype='text/plain')
+    import secrets as _secrets
+    from urllib.parse import urlencode
+    state = _secrets.token_urlsafe(24); session['li_oauth_state'] = state
+    scope = os.environ.get('LINKEDIN_SCOPES') or 'r_organization_admin'
+    return redirect(_LI_AUTH + '?' + urlencode({"response_type": "code", "client_id": cid, "redirect_uri": _li_redirect_uri(), "state": state, "scope": scope}))
+
+
+@app.route('/admin/linkedin/callback')
+def admin_linkedin_callback():
+    """LinkedIn returns here with ?code and ?state. Exchanges the code, stores the
+    token server-side, discovers the member's page roles, and shows a summary
+    with no token material."""
+    if request.args.get('error'):
+        return Response(f"LinkedIn declined: {html_mod.escape(request.args.get('error_description') or request.args.get('error'))}\n", status=400, mimetype='text/plain')
+    code, state = request.args.get('code'), request.args.get('state')
+    if not code or not state or state != session.get('li_oauth_state'):
+        return Response("missing or mismatched state; start again at /admin/linkedin/start\n", status=400, mimetype='text/plain')
+    session.pop('li_oauth_state', None)
+    r = requests.post(_LI_TOKEN, data={"grant_type": "authorization_code", "code": code, "redirect_uri": _li_redirect_uri(),
+                                       "client_id": os.environ.get('LINKEDIN_CLIENT_ID') or '', "client_secret": os.environ.get('LINKEDIN_CLIENT_SECRET') or ''}, timeout=30)
+    if r.status_code != 200:
+        return Response(f"token exchange failed: http {r.status_code}\n", status=502, mimetype='text/plain')
+    j = r.json()
+    li = _li_module(); roles = []; role_err = None
+    try:
+        roles = li.member_roles(j['access_token'], _li_version())
+    except Exception as e:
+        role_err = f"{type(e).__name__}: {str(e)[:160]}"
+    org = os.environ.get('LINKEDIN_ORG_ID')
+    org_urn = f"urn:li:organization:{org}" if org else next((x['organization'] for x in roles if x.get('role') == 'ADMINISTRATOR'), None) or next((x['organization'] for x in roles), None)
+    if not org_urn:
+        return Response("authorized, but no organization found for this member and LINKEDIN_ORG_ID is not set; set it and start again\n", status=400, mimetype='text/plain')
+    now = datetime.utcnow()
+    tok = db.session.get(LinkedInToken, org_urn) or LinkedInToken(org_urn=org_urn, access_token='', expires_at=now)
+    tok.access_token = j['access_token']; tok.expires_at = now + timedelta(seconds=int(j.get('expires_in') or 0))
+    tok.refresh_token = j.get('refresh_token'); tok.refresh_expires_at = (now + timedelta(seconds=int(j['refresh_token_expires_in']))) if j.get('refresh_token_expires_in') else None
+    tok.scope = j.get('scope'); tok.member_roles = json.dumps(roles); tok.authorized_at = now; tok.last_error = role_err
+    db.session.add(tok); db.session.commit()
+    st = _li_status_dict(tok)
+    org_roles = [x['role'] for x in roles if x.get('organization') == org_urn]
+    warn = "" if 'ADMINISTRATOR' in org_roles else "<p><b>Note:</b> LinkedIn's documentation restricts the page statistics endpoints to members with the ADMINISTRATOR (super admin) role; this member's roles on the page are " + html_mod.escape(", ".join(org_roles) or "none found") + ". The first pull will show whether the API accepts them.</p>"
+    body = (f"<!doctype html><meta name='robots' content='noindex'><title>LinkedIn authorized</title><div style='font-family:system-ui;margin:3em;max-width:40em'>"
+            f"<h2>LinkedIn authorized for {html_mod.escape(org_urn)}</h2><p>Scope: {html_mod.escape(st['scope'] or '')}<br>Access token expires: {st['access_token_expires']} ({st['days_left']} days)<br>"
+            f"Refresh token granted: {'yes' if st['refresh_token'] else 'no'}{(' (expires ' + st['refresh_token_expires'] + ')') if st['refresh_token_expires'] else ''}</p>{warn}"
+            f"<p>Next: run the board pull (POST /admin/board-live/&lt;slug&gt;/run) and check live.json['linkedin'].</p></div>")
+    return Response(body, mimetype='text/html', headers={'Cache-Control': 'private, no-store'})
+
+
+@app.route('/admin/linkedin/status')
+def admin_linkedin_status():
+    """Operator: token expiry, roles, last pull and error; no token material."""
+    if not _operator_ok():
+        abort(404)
+    tok = LinkedInToken.query.order_by(LinkedInToken.authorized_at.desc()).first()
+    return jsonify({**_li_status_dict(tok), "redirect_uri": _li_redirect_uri(), "client_id_set": bool(os.environ.get('LINKEDIN_CLIENT_ID')),
+                    "client_secret_set": bool(os.environ.get('LINKEDIN_CLIENT_SECRET')), "api_version": _li_version(), "scopes_requested": os.environ.get('LINKEDIN_SCOPES') or 'r_organization_admin'})
 
 
 @app.route('/admin/mcp-registry')
