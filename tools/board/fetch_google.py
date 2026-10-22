@@ -347,6 +347,68 @@ def blog(c):
             "posts_by_month": months, "posts": out_posts}
 
 
+def _mtd_windows(last_complete, today=None):
+    """Month-to-date window of TODAY's month ending on last_complete, and the
+    same day numbers in the previous month, clamped to that month's length.
+    None when today's month has no complete day yet for this source (the 1st,
+    or the 1st and 2nd for Search Console), so the tile shows no arrow rather
+    than a zero."""
+    import calendar
+    today = today or dt.date.today()
+    cur_start = today.replace(day=1)
+    if last_complete < cur_start:
+        return None
+    py, pm = (cur_start.year - 1, 12) if cur_start.month == 1 else (cur_start.year, cur_start.month - 1)
+    plen = calendar.monthrange(py, pm)[1]
+    prior_start = dt.date(py, pm, 1); prior_end = dt.date(py, pm, min(last_complete.day, plen))
+    return {"current": (cur_start, last_complete), "prior": (prior_start, prior_end)}
+
+
+def pace(c, blog_block=None):
+    """Month-to-date against the same days of the prior month, per source.
+    Search Console ends two days ago, GA4 yesterday, blog posts yesterday. A
+    source whose current window is empty (the 1st of a month) is null, not 0."""
+    from googleapiclient.discovery import build
+    today = dt.date.today()
+    out = {}
+    # Search Console: clicks and impressions
+    w = _mtd_windows(today - dt.timedelta(days=2), today)
+    if w is None:
+        out["searchConsole"] = None
+    else:
+        svc = build("searchconsole", "v1", credentials=c, cache_discovery=False)
+        sc = {}
+        for k, (s_, e_) in w.items():
+            r = svc.searchanalytics().query(siteUrl=GSC_SITE, body={"startDate": s_.isoformat(), "endDate": e_.isoformat(), "dimensions": []}).execute()
+            row = (r.get("rows") or [{}])[0]
+            sc[k] = {"start": s_.isoformat(), "end": e_.isoformat(), "clicks": int(row.get("clicks", 0)), "impressions": int(row.get("impressions", 0))}
+        out["searchConsole"] = sc
+    # GA4: sessions
+    w = _mtd_windows(today - dt.timedelta(days=1), today)
+    if w is None:
+        out["ga4"] = None
+    else:
+        ga = build("analyticsdata", "v1beta", credentials=c, cache_discovery=False)
+        g = {}
+        for k, (s_, e_) in w.items():
+            r = ga.properties().runReport(property=GA4_PROPERTY, body={"dateRanges": [{"startDate": s_.isoformat(), "endDate": e_.isoformat()}], "metrics": [{"name": "sessions"}]}).execute()
+            rows = r.get("rows") or []
+            g[k] = {"start": s_.isoformat(), "end": e_.isoformat(), "sessions": int(rows[0]["metricValues"][0]["value"]) if rows else 0}
+        out["ga4"] = g
+    # Blog posts: from the dated post list; null without a dated source
+    w = _mtd_windows(today - dt.timedelta(days=1), today)
+    if w is None or not blog_block or not blog_block.get("dated_source"):
+        out["blogPosts"] = None
+    else:
+        posts = blog_block.get("posts") or []
+        b = {}
+        for k, (s_, e_) in w.items():
+            b[k] = {"start": s_.isoformat(), "end": e_.isoformat(), "posts": sum(1 for p in posts if p.get("published") and s_.isoformat() <= p["published"] <= e_.isoformat())}
+        out["blogPosts"] = b
+    out["note"] = "month to date against the same day numbers of the prior month, clamped to that month's length; Search Console ends 2 days ago, GA4 and blog posts yesterday"
+    return out
+
+
 def main():
     if "--auth" in sys.argv:
         creds(interactive=True); print("Authorised."); return
@@ -356,6 +418,10 @@ def main():
         out["blog"] = blog(c)
     except Exception as e:                     # the Google feed must never fail because the blog step did
         out["blog"] = {"source": "none", "error": f"{type(e).__name__}: {str(e)[:200]}", "posts": [], "post_count": 0}
+    try:
+        out["pace"] = pace(c, out["blog"])
+    except Exception as e:
+        out["pace"] = {"error": f"{type(e).__name__}: {str(e)[:200]}", "searchConsole": None, "ga4": None, "blogPosts": None}
     if "--stdout" in sys.argv:
         print(json.dumps(out)); return
     (HERE / "google_live.json").write_text(json.dumps(out, indent=1))
