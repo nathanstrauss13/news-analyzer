@@ -33,6 +33,7 @@ from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response, session, abort
 from markupsafe import Markup
 from dotenv import load_dotenv
+import html as html_mod
 from anthropic import Anthropic
 from openai import OpenAI
 from google import genai
@@ -11397,6 +11398,16 @@ _MCP_NAMED_PROFILES = {
             {"slug": "e9ea20b741", "label": "Xsight Signal Board"},
         ],
     },
+    "coco": {
+        "client": "coco-robotics",
+        "audits": [
+            {"slug": "coco-tranche0", "label": "Coco Robotics — Tranche 0 AI Visibility Audit (50 questions x 5 agents, Oct 19-20, 2026; delivered set)",
+             "run_date": "2026-10-19", "classes_file": "data/coco_classes.json"},
+        ],
+        "boards": [
+            {"slug": "coco-tranche0-findings", "label": "Coco Robotics Tranche 0 findings data", "data_file": "data/coco_findings.json"},
+        ],
+    },
 }
 
 
@@ -11439,7 +11450,24 @@ def _mcp_board_module():
             d['pulled'] = row.pulled_at.isoformat(timespec='seconds') + 'Z'
             return d
 
+        _file_cache = {}
+
         def _data(slug):
+            # A profile board may point at a data file shipped with the app
+            # (findings data for an engagement without a live board).
+            prof = getattr(_bt._CFG, 'profile', None) or {}
+            ent = next((b for b in (prof.get('boards') or []) if isinstance(b, dict) and b.get('slug') == slug), None)
+            if ent and ent.get('data_file'):
+                fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'mcp_server', ent['data_file'])
+                try:
+                    mt = os.path.getmtime(fp)
+                    if _file_cache.get(fp, (None, None))[0] != mt:
+                        with open(fp, encoding='utf-8') as f:
+                            _file_cache[fp] = (mt, json.load(f))
+                    dd = _file_cache[fp][1]
+                    return dd, ((dd.get('_meta') or {}).get('built') if isinstance(dd, dict) else None)
+                except Exception:
+                    return None, None
             rec = SharedResult.query.filter_by(slug=slug).first()
             if rec is None:
                 return None, None
@@ -11757,6 +11785,44 @@ def admin_board_live_run(slug):
     return jsonify({"result": res, "pulled_at": (row.pulled_at.isoformat() + 'Z') if row else None,
                     "last_error": row.last_error if row else None,
                     "bytes": len(row.payload) if row else 0})
+
+
+@app.route('/admin/upload-audit-payload', methods=['POST'])
+def admin_upload_audit_payload():
+    """Operator: host a delivered audit payload at /signal/<slug> (page and
+    .json) under a chosen slug, for payloads assembled offline (merged jobs,
+    re-collected answers, injected page checks). Body: slug=<slug> +
+    payload=<json file>. The JSON must carry brand and all_responses. Frozen
+    slugs are refused; an existing slug is replaced only with replace=1."""
+    if not _operator_ok():
+        abort(404)
+    slug = (request.form.get('slug') or '').strip()
+    if not re.fullmatch(r'[a-z0-9][a-z0-9\-]{2,30}', slug):
+        return Response("bad slug\n", status=400, mimetype='text/plain')
+    _FROZEN = {'adobe-enterprise', 'todd-snyder', 'gap', 'liquid-death'}
+    if slug in _FROZEN:
+        return Response("slug is frozen\n", status=400, mimetype='text/plain')
+    f = request.files.get('payload')
+    raw = f.read().decode('utf-8', 'replace') if f else (request.form.get('payload') or '')
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return Response("payload is not valid JSON\n", status=400, mimetype='text/plain')
+    if not isinstance(data, dict) or not data.get('brand') or not isinstance(data.get('all_responses'), list) or not data['all_responses']:
+        return Response("payload must be an audit object with brand and all_responses\n", status=400, mimetype='text/plain')
+    data['slug'] = slug
+    data.setdefault('hosted_from', 'operator upload of an offline-assembled payload')
+    data['hosted_payload_only'] = True
+    rec = SharedResult.query.filter_by(slug=slug).first()
+    if rec is not None and request.form.get('replace') != '1':
+        return Response("slug exists; pass replace=1 to overwrite\n", status=409, mimetype='text/plain')
+    body = json.dumps(data, ensure_ascii=False)
+    if rec is None:
+        rec = SharedResult(slug=slug, payload=body); db.session.add(rec)
+    else:
+        rec.payload = body
+    db.session.commit()
+    return Response(f"hosted /signal/{slug} ({len(body)//1024} KB, {len(data['all_responses'])} answers, brand {data.get('brand')})\n", mimetype='text/plain')
 
 
 @app.route('/admin/mcp-registry')
@@ -12685,8 +12751,9 @@ def _load_signal_report(slug):
     if not isinstance(data, dict):
         return None
     # Static client deliverables carry only static_html; audit payloads carry
-    # media_targets. Either is a valid report.
-    if "media_targets" not in data and not data.get("static_html"):
+    # media_targets; operator-hosted data payloads (offline-assembled runs)
+    # carry hosted_payload_only with all_responses. Each is a valid report.
+    if "media_targets" not in data and not data.get("static_html") and not (data.get("hosted_payload_only") and data.get("all_responses")):
         return None
     data["slug"] = slug
     return data
@@ -13247,6 +13314,13 @@ def view_signal_report(slug):
     if not data:
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
+    if data.get('hosted_payload_only'):
+        # An offline-assembled data payload has no rendered report: the page
+        # points at the JSON, which the hosted MCP and clients read.
+        return Response(f"<!doctype html><meta name='robots' content='noindex,nofollow'><title>{html_mod.escape(str(data.get('brand') or slug))}: data payload</title>"
+                        f"<p style='font-family:system-ui;margin:3em'>Data payload for {html_mod.escape(str(data.get('brand') or slug))} ({len(data.get('all_responses') or [])} answers). "
+                        f"<a href='/signal/{slug}.json'>Download the JSON</a>.</p>", mimetype='text/html',
+                        headers={'X-Robots-Tag': 'noindex, nofollow', 'Cache-Control': 'private, no-store'})
 
     # First-party traffic log — count a real report view, not an operator
     # re-render/persist hit (fresh/refresh/save). Bots + operator IPs are

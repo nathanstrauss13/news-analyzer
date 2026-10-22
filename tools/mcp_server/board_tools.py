@@ -177,7 +177,9 @@ def list_board_sources(board: str = "") -> dict:
             continue
         a, badge, note, src = _section_meta(data, k, data_as_of)
         m = meta.get(k) or {}
+        rows_ = v.get("rows") if isinstance(v, dict) else (v if isinstance(v, list) else None)
         sources.append({"source": k, "label": m.get("label") or k, "badge": badge, "as_of": a,
+                        **({"row_table": True, "rows": len(rows_), "columns": (v.get("columns") if isinstance(v, dict) else None)} if isinstance(rows_, list) else {}),
                         **({"data_source": src} if src else {}), **({"note": note} if note else {})})
     return {**_hdr(b, "board", live.get("pulled") or data_as_of, "mixed"), "sources": sources,
             "board_notes": scalars, "data_file_as_of": data_as_of,
@@ -316,6 +318,45 @@ def get_ai_visibility(board: str = "") -> dict:
     return _reported(board, "aiVisibility", "get_ai_visibility")
 
 
+def query_section(board: str = "", section: str = "", where: dict = None, min: dict = None, contains: dict = None,
+                  since: str = "", until: str = "", sort: str = "", limit: int = 100, offset: int = 0) -> dict:
+    """Rows from a row table in the board's data file (see list_board_sources;
+    a section with "columns" and "rows", or a list of rows), filtered: where =
+    {field: value} exact (case-insensitive), contains = {field: text}
+    substring, min = {field: number} at-least, since/until on ISO date fields,
+    sort = field name (prefix '-' for descending), limit/offset for paging.
+    Returns matching rows as dicts plus the total matched."""
+    if not section or section.startswith("_"):
+        raise ValueError("name a section from list_board_sources")
+    b = _board(board)
+    body, as_of, badge, note = _section(b, section)
+    cols = body.get("columns") if isinstance(body, dict) else None
+    rows = body.get("rows") if isinstance(body, dict) and isinstance(body.get("rows"), list) else (body if isinstance(body, list) else None)
+    if rows is None:
+        raise ValueError(f"'{section}' is not a row table; use get_board_section")
+    out = _as_dicts(rows, cols)
+    for k, v in (where or {}).items():
+        out = [r for r in out if str(r.get(k, "")).lower() == str(v).lower()]
+    for k, v in (contains or {}).items():
+        out = [r for r in out if str(v).lower() in str(r.get(k, "")).lower()]
+    for k, v in (min or {}).items():
+        try:
+            out = [r for r in out if float(r.get(k) or 0) >= float(v)]
+        except (TypeError, ValueError):
+            raise ValueError(f"min.{k} needs a number")
+    if since or until:
+        out = [r for r in out if not _ISO.match(str(r.get("date") or r.get("published") or r.get("month") or "")) or _in_range(str(r.get("date") or r.get("published") or r.get("month")), since, until)]
+    if sort:
+        key, rev = (sort[1:], True) if sort.startswith("-") else (sort, False)
+        out.sort(key=lambda r: (r.get(key) is None, r.get(key) if isinstance(r.get(key), (int, float)) else str(r.get(key) or "")), reverse=rev)
+    total = len(out); limit = max(1, _min(int(limit or 100), 500)); offset = max(0, int(offset or 0))
+    return {**_hdr(b, section, as_of, badge, note), "columns": cols, "matched": total, "offset": offset, "returned": len(out[offset:offset + limit]),
+            "rows": out[offset:offset + limit]}
+
+
+_min = min  # the builtin, shadowed by query_section's parameter name
+
+
 def get_board_section(board: str = "", section: str = "") -> dict:
     """Any other section of the board's data file by name (see
     list_board_sources), returned as the board carries it."""
@@ -355,6 +396,8 @@ TOOLS_REG = {
     "get_message_testing": (get_message_testing, {"type": "object", "properties": {"board": _S}, "required": []}),
     "get_ai_visibility": (get_ai_visibility, {"type": "object", "properties": {"board": _S}, "required": []}),
     "get_board_section": (get_board_section, {"type": "object", "properties": {"board": _S, "section": _S}, "required": ["section"]}),
+    "query_section": (query_section, {"type": "object", "properties": {"board": _S, "section": _S, "where": {"type": "object"}, "contains": {"type": "object"}, "min": {"type": "object"},
+                                                                       "since": _S, "until": _S, "sort": _S, "limit": _I, "offset": _I}, "required": ["section"]}),
     "request_refresh": (request_refresh, {"type": "object", "properties": {"board": _S, "reason": _S}, "required": []}),
 }
 TOOL_DESCRIPTIONS = {n: (f.__doc__ or "").strip() for n, (f, _s) in TOOLS_REG.items()}
