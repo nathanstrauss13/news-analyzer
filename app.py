@@ -11387,6 +11387,28 @@ def _mcp_signal_module():
         _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                          'tools', 'mcp_server'))
         import signal_mcp as _sm
+        _orig_payload = _sm._payload
+
+        def _payload_local(slug):
+            """Hosted connector runs inside the app: read the stored payload
+            directly for slugs in the profile, so operator-hosted data payloads
+            (hosted_payload_only) never have to be served on a public URL."""
+            cfg = _sm._cfg()
+            if slug not in cfg["_by_slug"]:
+                raise ValueError(f"slug '{slug}' is not in this client's audit list — "
+                                 f"use list_audits for the slugs available to you")
+            rec = SharedResult.query.filter_by(slug=slug).first()
+            if rec is not None:
+                try:
+                    data = json.loads(rec.payload or '{}')
+                except Exception:
+                    data = None
+                if isinstance(data, dict) and data.get('all_responses'):
+                    data = {k: v for k, v in data.items() if k != 'qa'}
+                    data['slug'] = slug
+                    return data
+            return _orig_payload(slug)
+        _sm._payload = _payload_local
         _MCP_SM = _sm
     return _MCP_SM
 
@@ -11436,7 +11458,7 @@ _MCP_NAMED_PROFILES = {
     "coco": {
         "client": "coco-robotics",
         "audits": [
-            {"slug": "coco-tranche0", "label": "Coco Robotics — Tranche 0 AI Visibility Audit (50 questions x 5 agents, Oct 19-20, 2026; delivered set)",
+            {"slug": "7f29d1a057", "label": "Coco Robotics — Tranche 0 AI Visibility Audit (50 questions x 5 agents, Oct 19-20, 2026; delivered set)",
              "run_date": "2026-10-19", "classes_file": "data/coco_classes.json"},
         ],
         "boards": [
@@ -11874,7 +11896,7 @@ def admin_upload_audit_payload():
         return Response("payload must be an audit object with brand and all_responses\n", status=400, mimetype='text/plain')
     data['slug'] = slug
     data.setdefault('hosted_from', 'operator upload of an offline-assembled payload')
-    data['hosted_payload_only'] = True
+    data['hosted_payload_only'] = True      # served to the hosted connector in-process only; the public routes 404
     rec = SharedResult.query.filter_by(slug=slug).first()
     if rec is not None and request.form.get('replace') != '1':
         return Response("slug exists; pass replace=1 to overwrite\n", status=409, mimetype='text/plain')
@@ -13589,8 +13611,10 @@ def view_signal_report(slug):
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
     if data.get('hosted_payload_only'):
+        if not _operator_ok():
+            abort(404)    # never public: the connector reads these in-process
         # An offline-assembled data payload has no rendered report: the page
-        # points at the JSON, which the hosted MCP and clients read.
+        # points at the JSON (operator only), which the hosted MCP reads in-process.
         return Response(f"<!doctype html><meta name='robots' content='noindex,nofollow'><title>{html_mod.escape(str(data.get('brand') or slug))}: data payload</title>"
                         f"<p style='font-family:system-ui;margin:3em'>Data payload for {html_mod.escape(str(data.get('brand') or slug))} ({len(data.get('all_responses') or [])} answers). "
                         f"<a href='/signal/{slug}.json'>Download the JSON</a>.</p>", mimetype='text/html',
@@ -16343,6 +16367,8 @@ def signal_report_json(slug):
     if not data:
         flash("Report not found or expired.")
         return redirect(url_for('citation_audit'))
+    if data.get('hosted_payload_only') and not _operator_ok():
+        abort(404)        # client data payloads are read by the connector in-process, never served publicly
 
     brand_slug = re.sub(r'[^a-z0-9]+', '-', (data.get('brand') or 'report').lower()).strip('-') or 'report'
     filename = f"signal-finder-{brand_slug}-{slug}.json"
