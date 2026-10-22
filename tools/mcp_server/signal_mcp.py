@@ -219,7 +219,17 @@ def _payload(slug):
             return json.load(f)
     url = f"{cfg['base_url']}/signal/{slug}.json"
     req = Request(url, headers={"User-Agent": "signal-mcp/1.0"})
-    data = json.loads(urlopen(req, timeout=60, context=_SSL_CTX).read().decode("utf-8"))
+    raw = urlopen(req, timeout=60, context=_SSL_CTX).read().decode("utf-8")
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        # The route redirects to the app's front page (HTML) when no payload
+        # is hosted under the slug; say that rather than "parse error".
+        raise ValueError(f"audit '{slug}' is listed for this client but no data payload is hosted "
+                         f"at {url} yet; the operator has to publish it (the findings board, if any, "
+                         f"is unaffected)")
+    if not isinstance(data, dict) or not data.get("all_responses"):
+        raise ValueError(f"audit '{slug}' is hosted but carries no answers")
     with open(fp, "w") as f:
         json.dump(data, f)
     return data
