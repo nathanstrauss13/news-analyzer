@@ -11380,6 +11380,26 @@ _MCP_DEMO_PROFILE = {
 }
 
 
+# Named profiles: a SIGNAL_MCP_CLIENTS entry may be {"profile": "<name>"} instead
+# of a full profile, so the allowlist lives in code (reviewed, versioned) and the
+# env var holds only the key. The Xsight profile serves the Signal Board
+# (e9ea20b741) and the branded audit (22ded22780) and nothing else: the stray
+# unbranded run and the message-testing runs are not listed, so no tool can
+# reach them (every tool resolves slugs through the profile).
+_MCP_NAMED_PROFILES = {
+    "xsight": {
+        "client": "xsight-labs",
+        "audits": [
+            {"slug": "22ded22780", "label": "Xsight Labs — branded AI visibility audit (the board's AI answers card)",
+             "run_date": "2026-08"},
+        ],
+        "boards": [
+            {"slug": "e9ea20b741", "label": "Xsight Signal Board"},
+        ],
+    },
+}
+
+
 def _mcp_resolve_client(key):
     if not key or len(key) < 12:
         return None
@@ -11388,10 +11408,64 @@ def _mcp_resolve_client(key):
     except Exception:
         clients = {}
     if key in clients:
-        return clients[key]
+        ent = clients[key]
+        if isinstance(ent, dict) and ent.get('profile') and 'audits' not in ent:
+            return _MCP_NAMED_PROFILES.get(ent['profile'])
+        return ent
     if key == _mcp_demo_key():
         return _MCP_DEMO_PROFILE
     return None
+
+
+_MCP_BT = None
+
+
+def _mcp_board_module():
+    """Board tools, with loaders that read only the two board stores."""
+    global _MCP_BT
+    if _MCP_BT is None:
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'mcp_server'))
+        import board_tools as _bt
+
+        def _live(slug):
+            row = db.session.get(BoardLiveFeed, slug)
+            if row is None:
+                return None
+            try:
+                d = json.loads(row.payload)
+            except Exception:
+                return None
+            d['pulled'] = row.pulled_at.isoformat(timespec='seconds') + 'Z'
+            return d
+
+        def _data(slug):
+            rec = SharedResult.query.filter_by(slug=slug).first()
+            if rec is None:
+                return None, None
+            try:
+                d = json.loads(rec.payload or '{}')
+            except Exception:
+                return None, None
+            if not d.get('static_html'):
+                return None, None
+            return d.get('board_data'), d.get('board_data_as_of')
+        _bt.LOADERS['live'] = _live
+        _bt.LOADERS['data'] = _data
+        _MCP_BT = _bt
+    return _MCP_BT
+
+
+def _mcp_registry(profile):
+    """Tool registry for a profile: audit tools always; board tools when the
+    profile lists boards."""
+    sm = _mcp_signal_module()
+    reg = {n: (f, sch, sm.TOOL_DESCRIPTIONS[n]) for n, (f, sch) in sm.TOOLS_REG.items()}
+    if profile.get('boards'):
+        bt = _mcp_board_module()
+        for n, (f, sch) in bt.TOOLS_REG.items():
+            reg[n] = (f, sch, bt.TOOL_DESCRIPTIONS[n])
+    return reg
 
 
 @app.route('/mcp/<key>', methods=['POST', 'GET'])
@@ -11423,18 +11497,20 @@ def mcp_hosted(key):
         return Response(status=202)
     if method == 'ping':
         return jsonify({"jsonrpc": "2.0", "id": mid, "result": {}})
+    reg = _mcp_registry(profile)
     if method == 'tools/list':
-        tools = [{"name": n, "description": sm.TOOL_DESCRIPTIONS[n], "inputSchema": sch}
-                 for n, (_f, sch) in sm.TOOLS_REG.items()]
+        tools = [{"name": n, "description": desc, "inputSchema": sch} for n, (_f, sch, desc) in reg.items()]
         return jsonify({"jsonrpc": "2.0", "id": mid, "result": {"tools": tools}})
     if method == 'tools/call':
         params = msg.get('params') or {}
         name = params.get('name')
-        if name not in sm.TOOLS_REG:
+        if name not in reg:
             return jsonify({"jsonrpc": "2.0", "id": mid,
                             "error": {"code": -32602, "message": f"unknown tool {name}"}})
-        fn, _sch = sm.TOOLS_REG[name]
+        fn, _sch, _desc = reg[name]
         sm._CFG_LOCAL.cfg = profile
+        if profile.get('boards'):
+            _mcp_board_module()._CFG.profile = profile
         try:
             result = fn(**(params.get('arguments') or {}))
             payload_txt = json.dumps(result, default=str)
@@ -11446,6 +11522,8 @@ def mcp_hosted(key):
                 "isError": True}})
         finally:
             sm._CFG_LOCAL.cfg = None
+            if _MCP_BT is not None:
+                _MCP_BT._CFG.profile = None
     return jsonify({"jsonrpc": "2.0", "id": mid,
                     "error": {"code": -32601, "message": f"method {method} not supported"}})
 
@@ -11834,6 +11912,24 @@ def admin_upload_static_report():
         payload['access'] = {'user': a_user, 'hash': generate_password_hash(a_pass)}
     elif _prev.get('access') and request.form.get('auth_clear') != '1':
         payload['access'] = _prev['access']
+    # Optional structured data file (data=<file or form field>, JSON object):
+    # the figures the page embeds, stored beside the HTML so the hosted MCP
+    # board tools read structure instead of parsing the page. A republish
+    # that omits it KEEPS the previous file; data_clear=1 removes it.
+    df = request.files.get('data')
+    data_txt = df.read().decode('utf-8', 'replace') if df else (request.form.get('data') or '')
+    if data_txt.strip():
+        try:
+            bd = json.loads(data_txt)
+        except Exception:
+            return Response("data is not valid JSON\n", status=400, mimetype='text/plain')
+        if not isinstance(bd, dict):
+            return Response("data must be a JSON object\n", status=400, mimetype='text/plain')
+        payload['board_data'] = bd
+        payload['board_data_as_of'] = (request.form.get('data_as_of') or '').strip() or datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+    elif _prev.get('board_data') and request.form.get('data_clear') != '1':
+        payload['board_data'] = _prev['board_data']
+        payload['board_data_as_of'] = _prev.get('board_data_as_of')
     if rec is None:
         rec = SharedResult(slug=slug, payload=json.dumps(payload))
         db.session.add(rec)
@@ -11841,7 +11937,8 @@ def admin_upload_static_report():
         rec.payload = json.dumps(payload)
     db.session.commit()
     gate = " [gated: basic auth]" if payload.get('access') else ""
-    return Response(f"published /signal/{slug} ({len(html_body)//1024} KB){gate}\n", mimetype='text/plain')
+    bdn = f" [data: {len(payload['board_data'])} sections, as of {payload.get('board_data_as_of')}]" if payload.get('board_data') else ""
+    return Response(f"published /signal/{slug} ({len(html_body)//1024} KB){gate}{bdn}\n", mimetype='text/plain')
 
 
 @app.route('/admin/annotate-scanner-clicks', methods=['POST'])
