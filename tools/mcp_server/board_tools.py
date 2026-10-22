@@ -40,15 +40,18 @@ def _boards():
 
 
 def _board(board=None):
+    """Resolve the board by slug or label (case-insensitive). A profile with one
+    board always resolves to it, whatever was passed."""
     bs = _boards()
     if not bs:
         raise ValueError("this client's profile lists no boards")
-    if not board:
+    if not board or len(bs) == 1:
         return bs[0]
+    want = str(board).strip().lower()
     for b in bs:
-        if b["slug"] == board:
+        if want in (b["slug"].lower(), (b.get("label") or "").lower()):
             return b
-    raise ValueError("board not in this client's board list")
+    raise ValueError("board not in this client's board list; boards available: " + ", ".join(f"{b['slug']} ({b.get('label')})" for b in bs))
 
 
 def _live(slug):
@@ -61,9 +64,23 @@ def _data(slug):
     return fn(slug) if fn else (None, None)
 
 
+CONTRACT = ("Report the board's figures and windows as given; do not project, extrapolate, or estimate "
+            "full-month totals; facts only, no interpretation.")
+
+
+def _convention():
+    """The same build block the audit tools carry (server_build, stale_server
+    when applicable), so a client sees one provenance stamp on every response."""
+    try:
+        import signal_mcp as _sm
+        return _sm._build_block()
+    except Exception as e:
+        return {"server_build": "unavailable", "build_check": f"unavailable: {type(e).__name__}"}
+
+
 def _hdr(b, source, as_of, badge, note=None):
     out = {"board": b["slug"], "board_label": b.get("label"), "source": source, "as_of": as_of, "badge": badge,
-           "contract": "facts only; figures as the board shows them; no interpretation"}
+           "contract": CONTRACT, "convention": _convention()}
     if note:
         out["note"] = note
     return out
@@ -171,7 +188,7 @@ def get_search(board: str = "", months_from: str = "", months_to: str = "", top:
     """Google Search Console for the board's site: monthly clicks, impressions,
     CTR and position (last 12 months plus the partial current month), top
     queries and top pages over the trailing 90 days, and the branded share of
-    clicks. months_from/months_to filter the monthly series by 'YYYY-MM'."""
+    clicks. months_from/months_to filter the monthly series by 'YYYY-MM'. Report figures and windows as given; do not project or estimate full-month totals."""
     b = _board(board)
     live = _live(b["slug"]) or {}
     sc = live.get("searchConsole")
@@ -180,15 +197,18 @@ def get_search(board: str = "", months_from: str = "", months_to: str = "", top:
     months = [m for m in sc.get("months", []) if _in_range(m.get("start"), months_from, months_to)]
     top = max(1, min(int(top or 20), 200))
     return {**_hdr(b, "searchConsole", live.get("pulled"), "Live"),
-            "months": months, "top_queries_90d": (sc.get("topQueries90d") or [])[:top],
-            "top_pages_90d": (sc.get("topPages90d") or [])[:top], "branded_share_90d": sc.get("brandedShare90d")}
+            "months": months, "months_note": "calendar months; the last entry is the current month to date (partial)",
+            "top_queries_90d": (sc.get("topQueries90d") or [])[:top], "top_pages_90d": (sc.get("topPages90d") or [])[:top],
+            "window_90d": "trailing 90 days ending two days before the pull (Search Console lag)",
+            "branded_share_90d": sc.get("brandedShare90d"),
+            "branded_share_90d_basis": "share of clicks among the top 200 queries by clicks over the trailing 90 days, where a branded query contains 'xsight'; not a share of all clicks"}
 
 
 def get_site_traffic(board: str = "", months_from: str = "", months_to: str = "", top: int = 20) -> dict:
     """Google Analytics 4 for the board's site: monthly sessions by channel
     group (last 12 months plus the partial current month), top sources and
     top pages over the trailing 90 days, and sessions referred by AI
-    assistants. months_from/months_to filter the monthly series by 'YYYY-MM'."""
+    assistants. months_from/months_to filter the monthly series by 'YYYY-MM'. Report figures and windows as given; do not project or estimate full-month totals."""
     b = _board(board)
     live = _live(b["slug"]) or {}
     ga = live.get("ga4")
@@ -206,7 +226,7 @@ def get_blog(board: str = "", sort: str = "published", limit: int = 50, publishe
     """Blog posts with per-post Search Console clicks and impressions and GA4
     page views over 12 months and 90 days, plus posts per month and totals.
     sort: published | clicks_12m | views_12m | impressions_12m. Posts the
-    feed lacks but Google reports carry from_google_only and no date."""
+    feed lacks but Google reports carry from_google_only and no date. Report figures and windows as given; do not project or estimate full-month totals."""
     b = _board(board)
     live = _live(b["slug"]) or {}
     blog = live.get("blog")
@@ -229,7 +249,7 @@ def get_blog(board: str = "", sort: str = "published", limit: int = 50, publishe
 def get_pace(board: str = "") -> dict:
     """Month-to-date against the same day numbers of the prior month: Search
     Console clicks and impressions, GA4 sessions, blog posts. A source whose
-    current month has no complete day yet is null."""
+    current month has no complete day yet is null. Report figures and windows as given; do not project or estimate full-month totals."""
     b = _board(board)
     live = _live(b["slug"]) or {}
     pace = live.get("pace")
