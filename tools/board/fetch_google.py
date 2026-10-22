@@ -82,7 +82,11 @@ def creds(interactive=False):
         print("Token saved to", TOKEN)
     return c
 
-def month_ranges(n=12):
+def month_ranges(n=12, partial_end=None):
+    """Last n full calendar months, then the current month to date. The partial
+    month ends on partial_end (the source's last complete day: Search Console
+    two days ago, GA4 yesterday); when that day falls before the 1st, the
+    partial entry is omitted rather than reported as a zero."""
     today = dt.date.today()
     first = today.replace(day=1)
     out = []
@@ -93,19 +97,21 @@ def month_ranges(n=12):
         start = dt.date(y, m, 1)
         end = (dt.date(y + (m // 12), (m % 12) + 1, 1) - dt.timedelta(days=1))
         out.append((start.strftime("%b %y"), start.isoformat(), end.isoformat()))
-    out.append(("partial", first.isoformat(), today.isoformat()))
+    pe = partial_end or today
+    if pe >= first:
+        out.append(("partial", first.isoformat(), pe.isoformat()))
     return out
 
 def ga4(c):
     from googleapiclient.discovery import build
     svc = build("analyticsdata", "v1beta", credentials=c, cache_discovery=False)
     months = []
-    for label, s, e in month_ranges():
+    for label, s, e in month_ranges(partial_end=dt.date.today() - dt.timedelta(days=1)):
         body = {"dateRanges": [{"startDate": s, "endDate": e}],
                 "dimensions": [{"name": "sessionDefaultChannelGroup"}],
                 "metrics": [{"name": "sessions"}]}
         r = svc.properties().runReport(property=GA4_PROPERTY, body=body).execute()
-        row = {"month": label, "start": s, "end": e, "byChannel": {}}
+        row = {"month": label, "start": s, "end": e, "data_through": e, "partial": label == "partial", "byChannel": {}}
         for x in r.get("rows", []):
             row["byChannel"][x["dimensionValues"][0]["value"]] = int(x["metricValues"][0]["value"])
         row["total"] = sum(row["byChannel"].values())
@@ -129,10 +135,10 @@ def gsc(c):
     from googleapiclient.discovery import build
     svc = build("searchconsole", "v1", credentials=c, cache_discovery=False)
     months = []
-    for label, s, e in month_ranges():
+    for label, s, e in month_ranges(partial_end=dt.date.today() - dt.timedelta(days=2)):
         r = svc.searchanalytics().query(siteUrl=GSC_SITE, body={"startDate": s, "endDate": e, "dimensions": []}).execute()
         row = (r.get("rows") or [{}])[0]
-        months.append({"month": label, "start": s, "end": e, "clicks": int(row.get("clicks", 0)),
+        months.append({"month": label, "start": s, "end": e, "data_through": e, "partial": label == "partial", "clicks": int(row.get("clicks", 0)),
                        "impressions": int(row.get("impressions", 0)), "ctr": row.get("ctr", 0), "position": row.get("position", 0)})
     end = dt.date.today() - dt.timedelta(days=2); start = end - dt.timedelta(days=90)
     def top(dim, n):

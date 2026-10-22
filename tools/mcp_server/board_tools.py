@@ -197,7 +197,7 @@ def get_search(board: str = "", months_from: str = "", months_to: str = "", top:
     months = [m for m in sc.get("months", []) if _in_range(m.get("start"), months_from, months_to)]
     top = max(1, min(int(top or 20), 200))
     return {**_hdr(b, "searchConsole", live.get("pulled"), "Live"),
-            "months": months, "months_note": "calendar months; the last entry is the current month to date (partial)",
+            "months": months, "months_note": "calendar months; an entry with partial=true is the current month to date, and its end and data_through are Search Console's last complete day (two days before the pull), not the pull date",
             "top_queries_90d": (sc.get("topQueries90d") or [])[:top], "top_pages_90d": (sc.get("topPages90d") or [])[:top],
             "window_90d": "trailing 90 days ending two days before the pull (Search Console lag)",
             "branded_share_90d": sc.get("brandedShare90d"),
@@ -218,7 +218,7 @@ def get_site_traffic(board: str = "", months_from: str = "", months_to: str = ""
     top = max(1, min(int(top or 20), 200))
     srcs = ga.get("topSources90d") or {}
     return {**_hdr(b, "ga4", live.get("pulled"), "Live"),
-            "months": months, "top_sources_90d": dict(list(srcs.items())[:top]),
+            "months": months, "months_note": "calendar months; an entry with partial=true is the current month to date, and its end and data_through are the day before the pull", "top_sources_90d": dict(list(srcs.items())[:top]),
             "ai_assistant_referrals_90d": ga.get("aiAssistants90d") or {}, "top_pages_90d": (ga.get("topPages90d") or [])[:top]}
 
 
