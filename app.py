@@ -11677,6 +11677,52 @@ def admin_board_live_run(slug):
                     "bytes": len(row.payload) if row else 0})
 
 
+@app.route('/admin/board-live/<slug>/blog-seed', methods=['POST'])
+def admin_board_live_blog_seed(slug):
+    """Operator: store a known-good blog post list as the board's last good list,
+    for when the publisher's feed refuses the server's address. Body: RSS XML
+    (Content-Type application/xml or text/xml) or JSON {"posts": [{title, url,
+    path?, published}]}. Stores into the row's blog block with source "seed"
+    and, unless ?pull=0, runs the pull at once so the fetcher recomputes the
+    Google metrics against the seeded list (source becomes "prior" while the
+    feed stays blocked, "rss" once it clears)."""
+    if not _operator_ok():
+        return Response("forbidden\n", status=403, mimetype='text/plain')
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("board_fetch_google", os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'board', 'fetch_google.py'))
+    FG = importlib.util.module_from_spec(spec); spec.loader.exec_module(FG)
+    ctype = (request.content_type or '').lower()
+    if 'json' in ctype:
+        posts = (request.get_json(silent=True) or {}).get('posts') or []
+        posts = [{"title": (x.get('title') or '').strip(), "url": x.get('url') or '', "path": x.get('path') or FG._blog_path(x.get('url') or ''),
+                  "published": (x.get('published') or None)} for x in posts if isinstance(x, dict) and x.get('url')]
+        err = None if posts else "no posts in body"
+    else:
+        posts, err = FG.parse_rss(request.get_data(as_text=True) or '')
+    if err:
+        return jsonify({"error": err}), 400
+    with app.app_context():
+        row = db.session.get(BoardLiveFeed, slug)
+        payload = {}
+        if row is not None:
+            try: payload = json.loads(row.payload)
+            except Exception: payload = {}
+        payload['blog'] = {"source": "seed", "error": None, "post_count": len(posts), "posts": posts}
+        if row is None:
+            row = BoardLiveFeed(slug=slug, payload=json.dumps(payload)); db.session.add(row)
+        else:
+            row.payload = json.dumps(payload)
+        db.session.commit()
+    res = {} if request.args.get('pull') == '0' else _run_board_live_pull([slug])
+    row = db.session.get(BoardLiveFeed, slug)
+    blog = {}
+    try: blog = json.loads(row.payload).get('blog') or {}
+    except Exception: pass
+    return jsonify({"seeded": len(posts), "dated": sum(1 for p in posts if p.get('published')), "pull": res,
+                    "blog_source": blog.get('source'), "blog_error": blog.get('error'), "post_count": blog.get('post_count'),
+                    "pulled_at": (row.pulled_at.isoformat() + 'Z') if row else None})
+
+
 @app.route('/admin/preflight', methods=['POST'])
 def admin_preflight():
     """Operator: before a paid run, one grounded call per audit provider in

@@ -144,8 +144,8 @@ def gsc(c):
     return {"months": months, "topQueries90d": queries[:50], "topPages90d": top("page", 40),
             "brandedShare90d": round(brand / total, 3)}
 
-BLOG_RSS = "https://xsightlabs.com/blog/rss.xml"
-BLOG_SITEMAP = "https://xsightlabs.com/sitemap.xml"
+BLOG_RSS = os.environ.get("BOARD_BLOG_RSS_URL") or "https://xsightlabs.com/blog/rss.xml"          # env override: tests only
+BLOG_SITEMAP = os.environ.get("BOARD_BLOG_SITEMAP_URL") or "https://xsightlabs.com/sitemap.xml"
 BLOG_PREFIX = "/blog/"
 BROWSER_HEADERS = {   # the header shape that clears the Vercel checkpoint without JavaScript (tested Oct 22, 2026)
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -175,13 +175,10 @@ def _get(url, attempts=3):
     return None, last
 
 
-def blog_posts_from_rss():
-    """[{title, url, path, published}] newest first, or (None, error)."""
+def parse_rss(txt):
+    """RSS text -> [{title, url, path, published}] newest first, or (None, error)."""
     import xml.etree.ElementTree as ET
     from email.utils import parsedate_to_datetime
-    txt, err = _get(BLOG_RSS)
-    if txt is None:
-        return None, f"rss: {err}"
     try:
         root = ET.fromstring(txt.encode("utf-8") if isinstance(txt, str) else txt)
     except Exception as e:
@@ -203,6 +200,29 @@ def blog_posts_from_rss():
     return posts, None
 
 
+def blog_posts_from_rss():
+    """Direct fetch with browser-shaped headers; optionally (BOARD_BLOG_READER_FALLBACK=1)
+    the product's reader proxy, which fetches from its own network when the
+    direct path is refused. Returns (posts, error, via)."""
+    txt, err = _get(BLOG_RSS)
+    via = "direct"
+    if txt is None and os.environ.get("BOARD_BLOG_READER_FALLBACK") == "1":
+        import requests
+        try:
+            r = requests.get("https://r.jina.ai/" + BLOG_RSS, headers={"User-Agent": BROWSER_HEADERS["User-Agent"], "Accept": "text/plain",
+                                                                        "X-Return-Format": "text"}, timeout=40)
+            if r.status_code == 200 and "<item>" in r.text:
+                txt, err, via = r.text[r.text.find("<"):], None, "reader"
+            else:
+                err = f"{err}; reader: http {r.status_code}"
+        except Exception as e:
+            err = f"{err}; reader: {type(e).__name__}"
+    if txt is None:
+        return None, f"rss: {err}", None
+    posts, perr = parse_rss(txt)
+    return (posts, None, via) if posts else (None, perr, None)
+
+
 def blog_posts_from_sitemap():
     import xml.etree.ElementTree as ET
     txt, err = _get(BLOG_SITEMAP)
@@ -222,12 +242,24 @@ def blog_posts_from_sitemap():
     return (posts, None) if posts else (None, "sitemap: no blog urls")
 
 
+def _clean_title(t, path):
+    """GA4 page titles carry the site suffix; a missing title falls back to the slug."""
+    import re
+    t = re.sub(r"\s*[|\-\u2013\u2014]\s*Xsight[^|]*$", "", (t or "").strip()).strip()
+    if not t:
+        slug = path.rstrip("/").rsplit("/", 1)[-1]
+        t = " ".join(w.upper() if w in ("dpu", "npb", "xisa", "e1", "e1l", "x2", "tco", "ai") else w.capitalize() for w in slug.split("-"))
+    return t
+
+
 def blog(c):
     """Post list plus per-post Google metrics. Never raises on the feed side: a
     blocked feed yields the last good list (BOARD_PRIOR_BLOG) and an error note."""
     from googleapiclient.discovery import build
     source, err = "rss", None
-    posts, err = blog_posts_from_rss()
+    posts, err, via = blog_posts_from_rss()
+    if via == "reader":
+        source = "rss-reader"
     prior = []
     try:
         prior = json.loads(os.environ.get("BOARD_PRIOR_BLOG") or "[]")
@@ -283,7 +315,7 @@ def blog(c):
             continue
         if (m.get("clicks_12m", 0) + m.get("views_12m", 0)) == 0:
             continue
-        extra.append({"title": titles.get(path, "").replace(" | Xsight Labs", "").strip(), "url": "https://xsightlabs.com" + path, "path": path, "published": None, "from_google_only": True})
+        extra.append({"title": _clean_title(titles.get(path, ""), path), "url": "https://xsightlabs.com" + path, "path": path, "published": None, "from_google_only": True})
     out_posts = []
     for p in posts + extra:
         m = metrics.get(p["path"], {})
