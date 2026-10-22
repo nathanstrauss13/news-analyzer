@@ -11611,18 +11611,22 @@ def _run_board_live_pull(slugs=None):
     # Last good blog post list, so a blocked feed still yields a complete card
     # (the fetcher recomputes the Google metrics for it). Titles, urls, paths,
     # dates only: no token, no metrics.
-    prior_blog = []
+    prior_blog, prior_captured = [], None
     with app.app_context():
         for slug in slugs:
             row = db.session.get(BoardLiveFeed, slug)
             try:
-                pb = (json.loads(row.payload).get('blog') or {}).get('posts') or [] if row else []
+                pblog = (json.loads(row.payload).get('blog') or {}) if row else {}
             except Exception:
-                pb = []
+                pblog = {}
+            pb = pblog.get('posts') or []
             if pb and not prior_blog:
                 prior_blog = [{k: x.get(k) for k in ('title', 'url', 'path', 'published')} for x in pb if isinstance(x, dict) and not x.get('from_google_only')]
+                prior_captured = pblog.get('captured')
     if prior_blog:
         env['BOARD_PRIOR_BLOG'] = json.dumps(prior_blog)
+        if prior_captured:
+            env['BOARD_PRIOR_BLOG_CAPTURED'] = str(prior_captured)
     results = {}
     try:
         out = subprocess.run([_sys.executable, script, '--stdout'], env=env, capture_output=True,
@@ -11635,7 +11639,7 @@ def _run_board_live_pull(slugs=None):
         if not blog.get('posts') and prior_blog:
             # feed, sitemap and the fetcher's own carry-forward all failed: keep the last good list
             parsed['blog'] = {"source": "prior", "error": (blog.get('error') or 'blog step returned no posts') + "; carried last good post list",
-                              "post_count": len(prior_blog), "posts": prior_blog}
+                              "captured": prior_captured, "post_count": len(prior_blog), "posts": prior_blog}
             body = json.dumps(parsed)
         if blog.get('error'):
             print("[board-live] blog feed note:", str(blog.get('error'))[:200], "| source", blog.get('source'))
@@ -11707,7 +11711,9 @@ def admin_board_live_blog_seed(slug):
         if row is not None:
             try: payload = json.loads(row.payload)
             except Exception: payload = {}
-        payload['blog'] = {"source": "seed", "error": None, "post_count": len(posts), "posts": posts}
+        captured = (request.args.get('captured') or ((request.get_json(silent=True) or {}).get('captured') if 'json' in ctype else None)
+                    or datetime.utcnow().replace(microsecond=0).isoformat() + 'Z')
+        payload['blog'] = {"source": "seed", "error": None, "captured": captured, "post_count": len(posts), "posts": posts}
         if row is None:
             row = BoardLiveFeed(slug=slug, payload=json.dumps(payload)); db.session.add(row)
         else:

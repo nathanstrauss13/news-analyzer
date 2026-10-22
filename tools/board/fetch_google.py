@@ -257,6 +257,8 @@ def blog(c):
     blocked feed yields the last good list (BOARD_PRIOR_BLOG) and an error note."""
     from googleapiclient.discovery import build
     source, err = "rss", None
+    now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    captured = now_iso                     # when this post list was captured from the publisher
     posts, err, via = blog_posts_from_rss()
     if via == "reader":
         source = "rss-reader"
@@ -278,9 +280,10 @@ def blog(c):
         elif prior:
             source, err = "prior", f"{err}; {err2}"
             posts = [{k: p.get(k) for k in ("title", "url", "path", "published")} for p in prior if isinstance(p, dict)]
+            captured = os.environ.get("BOARD_PRIOR_BLOG_CAPTURED") or None
         else:
             source, err = "none", f"{err}; {err2}"
-            posts = []
+            posts = []; captured = None
         if source == "sitemap":
             err = f"{err}; {err2}" if err2 else err
     # Google metrics, joined by path
@@ -338,7 +341,7 @@ def blog(c):
         n = sum(1 for p in out_posts if p["published"] and ms <= p["published"] <= me) if dated_source else None
         months.append({"month": ms[:7], "label": label if label != "partial" else dt.date.today().strftime("%b %y"),
                        "start": ms, "end": me, "posts": n, "partial": label == "partial"})
-    return {"source": source, "error": err, "feed_url": BLOG_RSS, "post_count": len(out_posts),
+    return {"source": source, "error": err, "feed_url": BLOG_RSS, "captured": captured, "post_count": len(out_posts),
             "undated_count": sum(1 for p in out_posts if not p["published"]), "dated_source": dated_source,
             "windows": {k: {"start": v[0], "end": v[1]} for k, v in windows.items()}, "totals": tot,
             "posts_by_month": months, "posts": out_posts}
