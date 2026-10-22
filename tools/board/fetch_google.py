@@ -10,6 +10,17 @@ Server use: set GOOGLE_TOKEN_JSON to the contents of that token file and run wit
 Dependencies: google-auth, google-api-python-client (runtime); google-auth-oauthlib (only for --auth).
 Output: google_live.json, or print to stdout with --stdout for a job that stores it elsewhere.
 Scopes are read-only. Property: GA4 462267417 (Xsighlab). Site: sc-domain:xsightlabs.com.
+
+Blog (added Oct 22, 2026): the output also carries a "blog" key: the post list
+from https://xsightlabs.com/blog/rss.xml (title, url, path, published, newest
+first), each joined by path to Search Console clicks/impressions and GA4 page
+views over the trailing 12 months and 90 days. xsightlabs.com sits behind a
+Vercel checkpoint that rejects bare clients, so the feed is requested with a
+browser-shaped header set and retried; if it still fails, the sitemap supplies
+the URL list, and if that fails too the job carries the last good post list
+forward (BOARD_PRIOR_BLOG env var, JSON, set by the server job). Blog URLs that
+Google reports but the feed lacks are appended with GA4's page title and no
+date, so the card never misses a post that has traffic.
 """
 import json, os, sys, glob, datetime as dt
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")  # Google adds openid/email to the granted scopes
@@ -133,11 +144,171 @@ def gsc(c):
     return {"months": months, "topQueries90d": queries[:50], "topPages90d": top("page", 40),
             "brandedShare90d": round(brand / total, 3)}
 
+BLOG_RSS = "https://xsightlabs.com/blog/rss.xml"
+BLOG_SITEMAP = "https://xsightlabs.com/sitemap.xml"
+BLOG_PREFIX = "/blog/"
+BROWSER_HEADERS = {   # the header shape that clears the Vercel checkpoint without JavaScript (tested Oct 22, 2026)
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Ch-Ua": '"Chromium";v="129", "Not=A?Brand";v="8"', "Sec-Ch-Ua-Mobile": "?0", "Sec-Ch-Ua-Platform": '"macOS"',
+    "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Site": "none", "Upgrade-Insecure-Requests": "1"}
+
+
+def _blog_path(url):
+    from urllib.parse import urlsplit
+    p = (urlsplit(url).path or "/").split("?")[0].rstrip("/")
+    return p or "/"
+
+
+def _get(url, attempts=3):
+    import time, requests
+    last = None
+    for i in range(attempts):
+        try:
+            r = requests.get(url, headers=BROWSER_HEADERS, timeout=25)
+            if r.status_code == 200 and "Security Checkpoint" not in r.text[:2000]:
+                return r.text, None
+            last = f"http {r.status_code}" + (" (Vercel checkpoint)" if "Security Checkpoint" in r.text[:2000] else "")
+        except Exception as e:
+            last = f"{type(e).__name__}"
+        time.sleep(3 * (i + 1))
+    return None, last
+
+
+def blog_posts_from_rss():
+    """[{title, url, path, published}] newest first, or (None, error)."""
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    txt, err = _get(BLOG_RSS)
+    if txt is None:
+        return None, f"rss: {err}"
+    try:
+        root = ET.fromstring(txt.encode("utf-8") if isinstance(txt, str) else txt)
+    except Exception as e:
+        return None, f"rss parse: {type(e).__name__}"
+    posts = []
+    for it in root.iter("item"):
+        link = (it.findtext("link") or "").strip()
+        if not link:
+            continue
+        pub = (it.findtext("pubDate") or "").strip()
+        try:
+            iso = parsedate_to_datetime(pub).date().isoformat() if pub else None
+        except Exception:
+            iso = None
+        posts.append({"title": (it.findtext("title") or "").strip(), "url": link, "path": _blog_path(link), "published": iso})
+    if not posts:
+        return None, "rss: no items"
+    posts.sort(key=lambda x: x["published"] or "", reverse=True)
+    return posts, None
+
+
+def blog_posts_from_sitemap():
+    import xml.etree.ElementTree as ET
+    txt, err = _get(BLOG_SITEMAP)
+    if txt is None:
+        return None, f"sitemap: {err}"
+    try:
+        root = ET.fromstring(txt.encode("utf-8"))
+    except Exception as e:
+        return None, f"sitemap parse: {type(e).__name__}"
+    posts = []
+    for u in root.iter():
+        if u.tag.endswith("url"):
+            loc = next((c.text.strip() for c in u if c.tag.endswith("loc") and c.text), "")
+            mod = next((c.text.strip()[:10] for c in u if c.tag.endswith("lastmod") and c.text), None)
+            if BLOG_PREFIX in loc and _blog_path(loc) not in (BLOG_PREFIX.rstrip("/"), "/blog/rss.xml"):
+                posts.append({"title": "", "url": loc, "path": _blog_path(loc), "published": None, "lastmod": mod})
+    return (posts, None) if posts else (None, "sitemap: no blog urls")
+
+
+def blog(c):
+    """Post list plus per-post Google metrics. Never raises on the feed side: a
+    blocked feed yields the last good list (BOARD_PRIOR_BLOG) and an error note."""
+    from googleapiclient.discovery import build
+    source, err = "rss", None
+    posts, err = blog_posts_from_rss()
+    prior = []
+    try:
+        prior = json.loads(os.environ.get("BOARD_PRIOR_BLOG") or "[]")
+    except Exception:
+        prior = []
+    if posts is None:
+        source = "sitemap"
+        sm, err2 = blog_posts_from_sitemap()
+        if sm is not None:
+            byp = {p["path"]: p for p in prior if isinstance(p, dict)}
+            for p in sm:                                   # keep titles/dates from the last good list
+                q = byp.get(p["path"])
+                if q:
+                    p["title"], p["published"] = q.get("title", ""), q.get("published")
+            posts = sm
+        elif prior:
+            source, err = "prior", f"{err}; {err2}"
+            posts = [{k: p.get(k) for k in ("title", "url", "path", "published")} for p in prior if isinstance(p, dict)]
+        else:
+            source, err = "none", f"{err}; {err2}"
+            posts = []
+        if source == "sitemap":
+            err = f"{err}; {err2}" if err2 else err
+    # Google metrics, joined by path
+    today = dt.date.today(); end = today - dt.timedelta(days=2)
+    windows = {"12m": ((end - dt.timedelta(days=365)).isoformat(), end.isoformat()),
+               "90d": ((end - dt.timedelta(days=90)).isoformat(), end.isoformat())}
+    gscv = build("searchconsole", "v1", credentials=c, cache_discovery=False)
+    ga = build("analyticsdata", "v1beta", credentials=c, cache_discovery=False)
+    metrics = {}
+    titles = {}
+    for w, (s, e) in windows.items():
+        r = gscv.searchanalytics().query(siteUrl=GSC_SITE, body={
+            "startDate": s, "endDate": e, "dimensions": ["page"], "rowLimit": 1000,
+            "dimensionFilterGroups": [{"filters": [{"dimension": "page", "operator": "contains", "expression": BLOG_PREFIX}]}]}).execute()
+        for x in r.get("rows", []):
+            m = metrics.setdefault(_blog_path(x["keys"][0]), {})
+            m[f"clicks_{w}"] = m.get(f"clicks_{w}", 0) + int(x["clicks"])
+            m[f"impressions_{w}"] = m.get(f"impressions_{w}", 0) + int(x["impressions"])
+        body = {"dateRanges": [{"startDate": s, "endDate": e}],
+                "dimensions": [{"name": "pagePath"}, {"name": "pageTitle"}], "metrics": [{"name": "screenPageViews"}],
+                "dimensionFilter": {"filter": {"fieldName": "pagePath", "stringFilter": {"matchType": "BEGINS_WITH", "value": BLOG_PREFIX}}},
+                "limit": 1000}
+        r = ga.properties().runReport(property=GA4_PROPERTY, body=body).execute()
+        for x in r.get("rows", []):
+            path = _blog_path(x["dimensionValues"][0]["value"]); m = metrics.setdefault(path, {})
+            m[f"views_{w}"] = m.get(f"views_{w}", 0) + int(x["metricValues"][0]["value"])
+            titles.setdefault(path, x["dimensionValues"][1]["value"])
+    known = {p["path"] for p in posts}
+    extra = []
+    for path, m in metrics.items():
+        if path in known or path in (BLOG_PREFIX.rstrip("/"), "/blog/rss.xml") or not path.startswith(BLOG_PREFIX):
+            continue
+        if (m.get("clicks_12m", 0) + m.get("views_12m", 0)) == 0:
+            continue
+        extra.append({"title": titles.get(path, "").replace(" | Xsight Labs", "").strip(), "url": "https://xsightlabs.com" + path, "path": path, "published": None, "from_google_only": True})
+    out_posts = []
+    for p in posts + extra:
+        m = metrics.get(p["path"], {})
+        row = {"title": p.get("title", ""), "url": p["url"], "path": p["path"], "published": p.get("published"),
+               "clicks_12m": m.get("clicks_12m", 0), "impressions_12m": m.get("impressions_12m", 0),
+               "clicks_90d": m.get("clicks_90d", 0), "impressions_90d": m.get("impressions_90d", 0),
+               "views_12m": m.get("views_12m", 0), "views_90d": m.get("views_90d", 0)}
+        if p.get("from_google_only"):
+            row["from_google_only"] = True
+        out_posts.append(row)
+    out_posts.sort(key=lambda x: (x["published"] or "0000", x["clicks_12m"]), reverse=True)
+    tot = {k: sum(p[k] for p in out_posts) for k in ("clicks_12m", "impressions_12m", "clicks_90d", "impressions_90d", "views_12m", "views_90d")}
+    return {"source": source, "error": err, "feed_url": BLOG_RSS, "post_count": len(out_posts),
+            "windows": {k: {"start": v[0], "end": v[1]} for k, v in windows.items()}, "totals": tot, "posts": out_posts}
+
+
 def main():
     if "--auth" in sys.argv:
         creds(interactive=True); print("Authorised."); return
     c = creds()
     out = {"pulled": dt.datetime.now().isoformat(timespec="minutes"), "ga4": ga4(c), "searchConsole": gsc(c)}
+    try:
+        out["blog"] = blog(c)
+    except Exception as e:                     # the Google feed must never fail because the blog step did
+        out["blog"] = {"source": "none", "error": f"{type(e).__name__}: {str(e)[:200]}", "posts": [], "post_count": 0}
     if "--stdout" in sys.argv:
         print(json.dumps(out)); return
     (HERE / "google_live.json").write_text(json.dumps(out, indent=1))

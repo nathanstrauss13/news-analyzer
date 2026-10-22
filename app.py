@@ -11608,6 +11608,21 @@ def _run_board_live_pull(slugs=None):
         return {s: err for s in slugs}
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'board', 'fetch_google.py')
     env = dict(os.environ, GOOGLE_TOKEN_JSON=token, OAUTHLIB_RELAX_TOKEN_SCOPE='1')
+    # Last good blog post list, so a blocked feed still yields a complete card
+    # (the fetcher recomputes the Google metrics for it). Titles, urls, paths,
+    # dates only: no token, no metrics.
+    prior_blog = []
+    with app.app_context():
+        for slug in slugs:
+            row = db.session.get(BoardLiveFeed, slug)
+            try:
+                pb = (json.loads(row.payload).get('blog') or {}).get('posts') or [] if row else []
+            except Exception:
+                pb = []
+            if pb and not prior_blog:
+                prior_blog = [{k: x.get(k) for k in ('title', 'url', 'path', 'published')} for x in pb if isinstance(x, dict) and not x.get('from_google_only')]
+    if prior_blog:
+        env['BOARD_PRIOR_BLOG'] = json.dumps(prior_blog)
     results = {}
     try:
         out = subprocess.run([_sys.executable, script, '--stdout'], env=env, capture_output=True,
@@ -11615,7 +11630,15 @@ def _run_board_live_pull(slugs=None):
         if out.returncode != 0:
             raise RuntimeError(((out.stderr or out.stdout or 'fetch failed').strip().splitlines() or ['fetch failed'])[-1][:300])
         body = out.stdout.strip()
-        json.loads(body)                       # must be valid JSON before we store it
+        parsed = json.loads(body)              # must be valid JSON before we store it
+        blog = parsed.get('blog') or {}
+        if not blog.get('posts') and prior_blog:
+            # feed, sitemap and the fetcher's own carry-forward all failed: keep the last good list
+            parsed['blog'] = {"source": "prior", "error": (blog.get('error') or 'blog step returned no posts') + "; carried last good post list",
+                              "post_count": len(prior_blog), "posts": prior_blog}
+            body = json.dumps(parsed)
+        if blog.get('error'):
+            print("[board-live] blog feed note:", str(blog.get('error'))[:200], "| source", blog.get('source'))
     except Exception as e:
         err = f"{type(e).__name__}: {str(e)[:300]}"
         print("[board-live] pull failed:", err)
