@@ -69,12 +69,28 @@ def _hdr(b, source, as_of, badge, note=None):
     return out
 
 
+def _section_meta(data, name, file_as_of):
+    """as_of, badge, note, source for a section: _meta.sections.<name> first,
+    then the section's own asOf/source fields (the board's cards carry them),
+    then the data file's upload time."""
+    meta = ((data.get("_meta") or {}).get("sections") or {}).get(name) or {}
+    sec = data.get(name)
+    own = sec if isinstance(sec, dict) else {}
+    as_of = meta.get("asOf") or meta.get("as_of") or own.get("asOf") or own.get("as_of") or file_as_of
+    badge = meta.get("badge") or ("Live" if name in ("searchConsole", "analytics", "blog", "pace") else "Reported")
+    source = meta.get("source") or own.get("source")
+    note = meta.get("note") or own.get("note")
+    return as_of, badge, note, source
+
+
 def _section(b, name):
     data, as_of = _data(b["slug"])
     if not data or name not in data:
         raise ValueError(f"the board's data file has no '{name}' section")
-    meta = ((data.get("_meta") or {}).get("sections") or {}).get(name) or {}
-    return data[name], (meta.get("asOf") or meta.get("as_of") or as_of), (meta.get("badge") or "Reported"), meta.get("note")
+    if name.startswith("_") or not isinstance(data[name], (dict, list)):
+        raise ValueError(f"'{name}' is not a section")
+    a, badge, note, source = _section_meta(data, name, as_of)
+    return data[name], a, badge, (f"source: {source}; {note}" if source and note else (f"source: {source}" if source else note))
 
 
 def _in_range(s, since, until):
@@ -120,13 +136,19 @@ def list_board_sources(board: str = "") -> dict:
             sources.append({"source": k, "label": label, "badge": "Live", "as_of": live.get("pulled"),
                             **({"post_list_captured": blk.get("captured"), "post_list_source": blk.get("source")} if k == "blog" else {})})
     meta = ((data or {}).get("_meta") or {}).get("sections") or {}
+    scalars = {}
     for k, v in (data or {}).items():
         if k.startswith("_"):
             continue
+        if not isinstance(v, (dict, list)):
+            scalars[k] = v                      # liveNote, period, updated: board-level notes, not sections
+            continue
+        a, badge, note, src = _section_meta(data, k, data_as_of)
         m = meta.get(k) or {}
-        sources.append({"source": k, "label": m.get("label") or k, "badge": m.get("badge") or "Reported",
-                        "as_of": m.get("asOf") or m.get("as_of") or data_as_of})
+        sources.append({"source": k, "label": m.get("label") or k, "badge": badge, "as_of": a,
+                        **({"data_source": src} if src else {}), **({"note": note} if note else {})})
     return {**_hdr(b, "board", live.get("pulled") or data_as_of, "mixed"), "sources": sources,
+            "board_notes": scalars, "data_file_as_of": data_as_of,
             "boards_in_profile": [{"slug": x["slug"], "label": x.get("label")} for x in _boards()]}
 
 
