@@ -296,8 +296,17 @@ def blog(c):
         out_posts.append(row)
     out_posts.sort(key=lambda x: (x["published"] or "0000", x["clicks_12m"]), reverse=True)
     tot = {k: sum(p[k] for p in out_posts) for k in ("clicks_12m", "impressions_12m", "clicks_90d", "impressions_90d", "views_12m", "views_90d")}
+    # Posts published per month, last 12 full months plus the current (partial) month,
+    # counted from the feed's pubDates; undated posts are reported, not placed.
+    months = []
+    for label, ms, me in month_ranges():
+        n = sum(1 for p in out_posts if p["published"] and ms <= p["published"] <= me)
+        months.append({"month": ms[:7], "label": label if label != "partial" else dt.date.today().strftime("%b %y"),
+                       "start": ms, "end": me, "posts": n, "partial": label == "partial"})
     return {"source": source, "error": err, "feed_url": BLOG_RSS, "post_count": len(out_posts),
-            "windows": {k: {"start": v[0], "end": v[1]} for k, v in windows.items()}, "totals": tot, "posts": out_posts}
+            "undated_count": sum(1 for p in out_posts if not p["published"]),
+            "windows": {k: {"start": v[0], "end": v[1]} for k, v in windows.items()}, "totals": tot,
+            "posts_by_month": months, "posts": out_posts}
 
 
 def main():
