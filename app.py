@@ -11759,6 +11759,46 @@ def admin_board_live_run(slug):
                     "bytes": len(row.payload) if row else 0})
 
 
+@app.route('/admin/mcp-registry')
+def admin_mcp_registry():
+    """Operator: where the hosted-connector registry comes from and what it
+    holds, with NO key material: count of keys, each entry's client name (or
+    named profile), and whether SIGNAL_MCP_CLIENTS is present in the process
+    environment and/or in a .env file at the repo root (Render Secret File),
+    which load_dotenv(override=True) lets win over service variables."""
+    if not _operator_ok():
+        abort(404)
+    raw = os.environ.get('SIGNAL_MCP_CLIENTS') or ''
+    try:
+        clients = json.loads(raw) if raw else {}
+        parse_ok = True
+    except Exception:
+        clients, parse_ok = {}, False
+    entries = []
+    for k, v in (clients.items() if isinstance(clients, dict) else []):
+        if isinstance(v, dict) and v.get('profile') and 'audits' not in v:
+            prof = _MCP_NAMED_PROFILES.get(v['profile'])
+            entries.append({"kind": "named profile", "profile": v['profile'], "resolves": prof is not None,
+                            "client": (prof or {}).get('client'), "audits": len((prof or {}).get('audits') or []), "boards": len((prof or {}).get('boards') or []),
+                            "key_length": len(k)})
+        elif isinstance(v, dict):
+            entries.append({"kind": "inline profile", "client": v.get('client'), "audits": len(v.get('audits') or []), "boards": len(v.get('boards') or []), "key_length": len(k)})
+        else:
+            entries.append({"kind": "malformed", "key_length": len(k)})
+    dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    in_file = False
+    if os.path.exists(dotenv_path):
+        try:
+            in_file = any(l.strip().startswith('SIGNAL_MCP_CLIENTS=') for l in open(dotenv_path, encoding='utf-8', errors='replace'))
+        except Exception:
+            in_file = False
+    return jsonify({"registry_present_in_process_env": bool(raw), "parses_as_json": parse_ok, "keys": len(entries), "entries": entries,
+                    "dotenv_file_at_repo_root": os.path.exists(dotenv_path), "dotenv_file_defines_registry": in_file,
+                    "demo_key_profile": {"client": _MCP_DEMO_PROFILE.get('client'), "audits": len(_MCP_DEMO_PROFILE.get('audits') or [])},
+                    "named_profiles_in_code": sorted(_MCP_NAMED_PROFILES),
+                    "note": "load_dotenv(override=True) runs at startup: a .env file at the repo root (a Render Secret File named .env) overrides service variables of the same name."})
+
+
 @app.route('/admin/board-live/<slug>/blog-seed', methods=['POST'])
 def admin_board_live_blog_seed(slug):
     """Operator: store a known-good blog post list as the board's last good list,
