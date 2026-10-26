@@ -10095,6 +10095,15 @@ def _llm_batch_deadline(tier, total_calls, operator=False):
     return base
 
 
+def _panel_timing_line(elapsed, completed, total_calls, deadline):
+    """One line on how long the LLM panel took against its deadline. Seconds per
+    answer is wall time through the pool (elapsed / completed), the figure the
+    LLM_SECONDS_PER_CALL budget is checked against, not single-call latency."""
+    per = f"{elapsed / completed:.1f}s per answer" if completed else "no answers"
+    return (f"Answer collection: {completed}/{total_calls} in {elapsed:.0f}s "
+            f"({per}; {elapsed / deadline:.0%} of the {deadline}s deadline)")
+
+
 def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts_override=None,
                        prompt_sets_override=None, operator=False):
     """Full agent pipeline: one prompt in, ranked media/partnership/analyst lists out.
@@ -10226,6 +10235,7 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     batch_deadline_seconds = _llm_batch_deadline(tier, total_calls, operator=operator)
 
     emit("llm", f"Querying {len(llms)} LLMs × {len(prompts)} prompts ({total_calls} calls)...", 0, total_calls)
+    _panel_t0 = time.monotonic()
     executor = ThreadPoolExecutor(max_workers=max_workers)
     try:
         # Run each panel task inside a copy of the current context so its Claude
@@ -10285,6 +10295,14 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
         # Don't wait for in-flight workers — shutdown(wait=False) lets the executor
         # release without blocking on hung Grok calls. Cancelled futures won't run.
         executor.shutdown(wait=False, cancel_futures=True)
+
+    # Panel timing for every run goes to the server log; operator runs also get
+    # it in the progress stream, which carries no timestamps of its own.
+    _timing = _panel_timing_line(time.monotonic() - _panel_t0, completed, total_calls,
+                                 batch_deadline_seconds)
+    print(f"[audit] {_timing}")
+    if operator:
+        emit("llm", _timing, completed, total_calls)
 
     # Treat ERRORED responses like timed-out ones: NOT delivered. They were
     # being kept in all_responses and counted as "delivered non-mentions",
