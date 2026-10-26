@@ -10010,14 +10010,48 @@ def _degenerate_answer(text):
             return f"runaway repetition ({n:,} chars; compresses to {ratio:.0%})"
     return None
 
+# Deadline budget per panel call. The slowest measured grounded run drained
+# about 8.65s per call through the pool (Coco Robotics, Oct 19, 2026: 104 of 250
+# calls in 900s); 12s leaves headroom for a slow inference day.
+LLM_SECONDS_PER_CALL = 12
+LLM_BATCH_CEILING_SECONDS = 3600
+# Largest panel one operator job may run: 250 calls = 50 prompts x 5 agents,
+# a 50-minute deadline. Bigger audits go in batches, one at a time, each saved
+# before the next (Oct 10, 2026: a 500-answer single run is untested on this
+# instance). Tunable on Render without a deploy, but saving an env var restarts
+# the service and kills in-flight audits. Clamped to what the ceiling can drain,
+# so the route guard and the deadline can never disagree.
+OPERATOR_MAX_CALLS = min(LLM_BATCH_CEILING_SECONDS // LLM_SECONDS_PER_CALL,
+                         max(1, int(os.environ.get("OPERATOR_MAX_CALLS", "250") or "250")))
+
+
+def _llm_batch_deadline(tier, total_calls, operator=False):
+    """Wall-clock ceiling (seconds) for the LLM panel batch.
+
+    Self-serve keeps its fixed ceiling. Paid and operator runs scale with the
+    call count: operator runs go through the web route as tier 'free', and the
+    fixed 420s cut slug 961b629f74 (Oct 26, 2026) at 123 of 500 answers.
+    """
+    if ALL_GROUNDED:
+        # Grounded calls run live web searches (slower: ~15-40s each), so the
+        # batch needs a longer wall-clock ceiling than the parametric path.
+        base = 420 if tier == "free" else 1200
+    else:
+        base = 180 if tier == "free" else 900
+    if tier != "free" or operator:
+        return max(base, min(LLM_BATCH_CEILING_SECONDS, int(total_calls * LLM_SECONDS_PER_CALL)))
+    return base
+
+
 def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts_override=None,
-                       prompt_sets_override=None):
+                       prompt_sets_override=None, operator=False):
     """Full agent pipeline: one prompt in, ranked media/partnership/analyst lists out.
 
     If `prompts_override` is provided (paid-tier prompt-editor flow), the
     prompt-generation step is skipped and the supplied prompts are used as-is.
     Brand + category are derived from a lightweight extraction call so the
-    downstream analysis still gets them.
+    downstream analysis still gets them. `operator` (key, exempt IP, ops+
+    email) sizes the LLM batch deadline to the call count.
     """
     cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
     prompt_count = cfg["prompt_count"]
@@ -10137,18 +10171,7 @@ def run_citation_audit(problem_statement, on_progress=None, tier="free", prompts
     # audits still finish in 3-5 min; the higher ceiling only kicks in on slow
     # inference days. If one provider hangs, we still proceed to analysis with
     # the partial responses we've collected.
-    if ALL_GROUNDED:
-        # Grounded calls run live web searches (slower: ~15-40s each), so the
-        # batch needs a longer wall-clock ceiling than the parametric path.
-        batch_deadline_seconds = 420 if tier == "free" else 1200
-    else:
-        batch_deadline_seconds = 180 if tier == "free" else 900
-    if tier != "free":
-        # Paid runs scale with the work: the Coco Robotics run (Oct 19, 2026)
-        # drained 104 of 250 grounded calls in 900s, so a fixed ceiling cuts
-        # any run past ~20 prompts. Observed throughput is ~9s per call with
-        # the pool; cap at an hour so a 100-prompt audit still runs as two jobs.
-        batch_deadline_seconds = max(batch_deadline_seconds, min(3600, int(total_calls * 9)))
+    batch_deadline_seconds = _llm_batch_deadline(tier, total_calls, operator=operator)
 
     emit("llm", f"Querying {len(llms)} LLMs × {len(prompts)} prompts ({total_calls} calls)...", 0, total_calls)
     executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -12652,7 +12675,8 @@ def citation_audit():
     raw_sets = (request.form.get('prompt_sets') or '').strip()
     raw_prompts = (request.form.get('prompts') or '').strip()
     # Operator runs (key, exempt IP, ops+ email) carry client-approved sets of
-    # up to 120 prompts (the paid audit is 100+). Self-serve stays at 5-20.
+    # up to 120 prompts (the paid audit is 100+), but one run is further held to
+    # OPERATOR_MAX_CALLS below; larger sets run as batches. Self-serve stays at 5-20.
     # Decided here, before the lead/email block, so the parse below can use it.
     _early_operator = bool(_operator_ok() or _ip_is_exempt_from_cap(_client_ip())
                            or _is_operator_email(_normalize_email(request.form.get('email', ''))))
@@ -12681,6 +12705,22 @@ def citation_audit():
                 # Trim per-prompt length to a sane ceiling so a malicious
                 # client can't blow Claude's input budget.
                 prompts_override = [p[:500] for p in cleaned]
+    # An operator set the batch deadline can't drain is refused up front, not
+    # truncated mid-run (slug 961b629f74: 100 prompts, 123 of 500 answers).
+    if _early_operator and prompts_override:
+        _calls = len(prompts_override) * len(TIER_CONFIG['free']['llms'])
+        if _calls > OPERATOR_MAX_CALLS:
+            _per_job = OPERATOR_MAX_CALLS // len(TIER_CONFIG['free']['llms'])
+            print(f"[audit] operator run REFUSED: {len(prompts_override)} prompts = {_calls} calls "
+                  f"> OPERATOR_MAX_CALLS {OPERATOR_MAX_CALLS}")
+            return jsonify({
+                "error": (f"{len(prompts_override)} prompts x {len(TIER_CONFIG['free']['llms'])} agents = "
+                          f"{_calls} calls, over the {OPERATOR_MAX_CALLS}-call limit for one run. "
+                          f"Split into jobs of at most {_per_job} prompts and run them one at a time."),
+                "code": "operator_run_too_large",
+                "max_calls": OPERATOR_MAX_CALLS,
+                "max_prompts_per_job": _per_job,
+            }), 400
 
     # Cost control on free audits (email is OPTIONAL — not required to run):
     #   1. Per-IP per-day cap (primary): FREE_DAILY_CAP audits per IP per day —
@@ -12829,6 +12869,7 @@ def citation_audit():
                 tier=tier,
                 prompts_override=prompts_override,
                 prompt_sets_override=prompt_sets_override,
+                operator=_is_operator,
             )
             slug = uuid.uuid4().hex[:10]
             # Strip the debug-only keys (leading underscore) before the
