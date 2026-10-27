@@ -11473,6 +11473,9 @@ _MCP_NAMED_PROFILES = {
         "audits": [
             {"slug": "22ded22780", "label": "Xsight Labs — branded AI visibility audit (the board's AI answers card)",
              "run_date": "2026-08"},
+            {"slug": "xsight-baseline-aug2026",
+             "label": "Xsight Labs — August 12, 2026 AI visibility baseline (100 questions x 5 agents, earlier method: earlier models, per-agent prompting; compare with October directionally)",
+             "run_date": "2026-08-12", "classes_file": "data/xsight_baseline_aug2026_classes.json"},
             {"slug": "xsight-oct2026", "label": "Xsight Labs — October 2026 AI Visibility Audit (100 questions x 5 agents, current method; August figures are an earlier-method reference)",
              "run_date": "2026-10-26", "classes_file": "data/xsight_oct2026_classes.json",
              "evidence_file": "data/xsight_oct2026_checks.json", "evidence_mode": "replace"},

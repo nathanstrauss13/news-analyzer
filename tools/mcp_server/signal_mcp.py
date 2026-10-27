@@ -788,6 +788,63 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
             "convention": _convention(p)}
 
 
+def _prompt_class_map(pa, pb):
+    """prompt text -> class label for the comparison. Taken from whichever run
+    carries `prompt_classes` (a payload converted from an earlier collection
+    keeps its intents: branded / competitor / unbranded); prompts match by
+    exact text, so one run's map applies to both. Without one, the split is
+    prompt_sets' branded / unbranded. Returns (map, source_note)."""
+    for p, which in ((pa, "run_a"), (pb, "run_b")):
+        m = p.get("prompt_classes")
+        if isinstance(m, dict) and m:
+            return {k: str(v) for k, v in m.items()}, f"prompt_classes recorded on {which}"
+    for p, which in ((pa, "run_a"), (pb, "run_b")):
+        ps = p.get("prompt_sets") or {}
+        if ps.get("branded") or ps.get("unbranded"):
+            m = {q: "branded" for q in (ps.get("branded") or [])}
+            m.update({q: "unbranded" for q in (ps.get("unbranded") or [])})
+            return m, f"prompt_sets branded/unbranded on {which}"
+    return {}, "no prompt classes on either run"
+
+
+def _by_class(pa, pb, pat):
+    """Named-in-prose answers per prompt class, both runs, over every shared
+    prompt (branded included). The figure the board quotes (e.g. 3 of 300
+    category answers, 11 of 100 vendor-comparison answers) with denominators."""
+    cmap, note = _prompt_class_map(pa, pb)
+    if not cmap:
+        return None
+    rows_a = pa.get("all_responses") or []
+    rows_b = pb.get("all_responses") or []
+    shared = {r.get("prompt") for r in rows_a} & {r.get("prompt") for r in rows_b}
+    out = {}
+    for label in sorted(set(cmap.values())):
+        qs = {q for q, c in cmap.items() if c == label and q in shared}
+        def _count(rows):
+            sel = [r for r in rows if r.get("prompt") in qs]
+            named = sum(1 for r in sel if pat.search(URLISH_RE.sub(" ", r.get("response") or "")))
+            return {"named_in_prose": named, "of": len(sel)}
+        out[label] = {"prompts": len(qs), "run_a": _count(rows_a), "run_b": _count(rows_b)}
+    return {"classes": out, "class_source": note,
+            "counting": "brand named in the answer text with URLs stripped; one count per answer; "
+                        "all shared prompts of the class, both runs, same pattern"}
+
+
+def _method_caveat(pa, pb):
+    """Method notes recorded on either payload (an earlier-method baseline,
+    a comparability caveat). Reported, never enforced."""
+    parts = []
+    for p, which in ((pa, "run_a"), (pb, "run_b")):
+        note = p.get("method_note")
+        comp = p.get("comparability") or {}
+        cav = comp.get("caveat") if isinstance(comp, dict) else None
+        if note:
+            parts.append(f"{which}: {note}")
+        if cav:
+            parts.append(f"{which} comparability: {cav}")
+    return " | ".join(parts) if parts else None
+
+
 @server.tool()
 def compare_runs(slug_a: str, slug_b: str) -> dict:
     """Deltas between two runs of the same audit series. Both runs are
@@ -864,7 +921,17 @@ def compare_runs(slug_a: str, slug_b: str) -> dict:
     tot_b = sum(len(B[q]["agents_mentioning"]) for q in shared)
     den_a = sum(A[q]["n"] for q in shared)
     den_b = sum(B[q]["n"] for q in shared)
+    # Per-class recount over ALL shared prompts (branded included), named in
+    # prose only. The class map comes from whichever run carries
+    # `prompt_classes` (prompt text -> label such as branded / competitor /
+    # unbranded); prompts are matched by exact text, so one run's map applies
+    # to both. Without a map, the split is prompt_sets' branded / unbranded.
+    by_class = _by_class(pa, pb, pat_a)
+    # A method caveat travels with the comparison when either run records one
+    # (an earlier-method baseline, for instance). It never blocks the numbers.
+    caveat = _method_caveat(pa, pb)
     return {
+        **({"method_caveat": caveat} if caveat else {}),
         "run_a": {**_label(slug_a, pa), "ungrounded_answers": _ungrounded(unb_a)},
         "run_b": {**_label(slug_b, pb), "ungrounded_answers": _ungrounded(unb_b)},
         "convention": {
@@ -889,6 +956,7 @@ def compare_runs(slug_a: str, slug_b: str) -> dict:
                               "absent": "no brand presence in the answer"},
         "brand_presence_total": {"run_a": {"answers": tot_a, "of": den_a},
                                  "run_b": {"answers": tot_b, "of": den_b}},
+        **({"named_in_prose_by_class": by_class} if by_class else {}),
         "per_prompt": prompts,
         "measurement_note": "A movement of <=1 agent on a single prompt is within observed "
                             "run-to-run variation on this instrument. This tool reports what "
