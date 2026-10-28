@@ -34,13 +34,23 @@ class AiReferrals(unittest.TestCase):
 
 
 class NonBranded(unittest.TestCase):
+    def test_classes(self):
+        for q, k in {"xsight labs": "brand", "x sight labs": "brand", "x-sight": "brand", "excite labs": "brand", "אקסייט לאבס": "brand",
+                     "XsightLabs": "brand", "avigdor willenz": "people", "yossi meyouhas": "people", "x2 switch": "product",
+                     "e1 dpu": "product", "e1l": "product", "dpu vs smartnic": None, "excited labs": None, "x20 switch": None,
+                     "insight labs": None, "nvme1 drive": None}.items():
+            self.assertEqual(FG.classify_query(q), k, q)
+
     def test_split_with_unattributed_remainder(self):
-        rows = [("xsight labs", 50, 500), ("dpu vs smartnic", 30, 900), ("Xsight E1", 10, 100), ("switch silicon 12.8t", 5, 300)]
-        sp = FG.split_queries(rows, total_clicks=120, total_impressions=2500)
-        self.assertEqual(sp["branded"], {"clicks": 60, "impressions": 600})
-        self.assertEqual(sp["nonBranded"], {"clicks": 35, "impressions": 1200})
+        rows = [("xsight labs", 50, 500), ("dpu vs smartnic", 30, 900), ("Xsight E1", 10, 100), ("switch silicon 12.8t", 5, 300),
+                ("avigdor willenz", 8, 80), ("x2 switch", 7, 70)]
+        sp = FG.split_queries(rows, total_clicks=135, total_impressions=2650)
+        self.assertEqual(sp["classes"]["brand"], {"clicks": 60, "impressions": 600, "queries": 2})
+        self.assertEqual(sp["classes"]["people"], {"clicks": 8, "impressions": 80, "queries": 1})
+        self.assertEqual(sp["classes"]["product"], {"clicks": 7, "impressions": 70, "queries": 1})
+        self.assertEqual(sp["nonBranded"], {"clicks": 35, "impressions": 1200, "queries": 2})
         self.assertEqual(sp["unattributed"], {"clicks": 25, "impressions": 700})
-        self.assertEqual(sp["total"], {"clicks": 120, "impressions": 2500}); self.assertEqual(sp["queries"], 4)
+        self.assertEqual(sp["total"], {"clicks": 135, "impressions": 2650}); self.assertEqual(sp["queries"], 6)
 
     def test_unattributed_never_negative(self):
         sp = FG.split_queries([("a", 10, 10)], 5, 5)
@@ -55,7 +65,7 @@ class Connector(unittest.TestCase):
                                                                       "partial": False, "bySource": {"chatgpt.com": 4}, "total": 4, "ai_channel_present": False}],
                                                            "basis": FG.AI_REFERRALS_BASIS, "sources": list(FG.AI_ASSISTANT_SOURCES) + ["others"]}},
                      "searchConsole": {"months": [], "nonBranded": {"months": [{"month": "Sep 26", "start": "2026-09-01", "end": "2026-09-30", "data_through": "2026-09-30", "partial": False,
-                                                                               "nonBranded": {"clicks": 35, "impressions": 1200}, "branded": {"clicks": 60, "impressions": 600},
+                                                                               "nonBranded": {"clicks": 35, "impressions": 1200, "queries": 2}, "classes": {"brand": {"clicks": 60, "impressions": 600, "queries": 2}},
                                                                                "unattributed": {"clicks": 25, "impressions": 700}, "total": {"clicks": 120, "impressions": 2500}, "queries": 4}],
                                                                     "topQueries90d": [{"query": "dpu vs smartnic", "clicks": 30, "impressions": 900, "position": 4.2}],
                                                                     "brandedShare90dAllQueries": 0.632, "window_90d": {"start": "2026-07-27", "end": "2026-10-25"}, "basis": FG.NON_BRANDED_BASIS}},

@@ -83,29 +83,72 @@ def ai_referrals_split(rows):
 
 
 def is_branded(query):
+    """The original rule, kept for brandedShare90d (top 200 queries): contains 'xsight'."""
     return BRAND_TERM in (query or "").lower()
+
+
+# Query classes for the non-branded series (Oct 28, 2026, after the first
+# pull showed the top "non-branded" queries were the brand misspelt or
+# transliterated, the founders, and a product name). Each term matches on
+# word boundaries, case-insensitively; classes are tested in this order and
+# the first hit wins. Non-branded is net of all three classes; the class
+# counts travel with every figure so a reader can add a class back (Nathan
+# rules on whether product-name queries are discovery). Per board: set
+# BOARD_QUERY_CLASSES_JSON to {"brand": [...], "people": [...], "product": [...]}
+# to override.
+QUERY_CLASSES = {
+    "brand": ["xsight", "x sight", "x-sight", "xsightlabs", "excite labs", "אקסייט"],
+    "people": ["willenz", "meyouhas"],
+    "product": ["x2", "e1", "e1l"],
+}
+try:
+    _env_classes = json.loads(os.environ.get("BOARD_QUERY_CLASSES_JSON") or "null")
+    if isinstance(_env_classes, dict) and _env_classes:
+        QUERY_CLASSES = {k: [str(t) for t in (v or [])] for k, v in _env_classes.items()}
+except Exception:
+    pass
+import re as _re
+_CLASS_RES = [(k, _re.compile("|".join(r"(?<!\w)" + _re.escape(t.lower()) + r"(?!\w)" for t in terms), _re.I))
+              for k, terms in QUERY_CLASSES.items() if terms]
+
+
+def classify_query(query):
+    """'brand' | 'people' | 'product' (first class whose term list matches on
+    word boundaries) or None for a non-branded query."""
+    q = (query or "").lower()
+    for k, rx in _CLASS_RES:
+        if rx.search(q):
+            return k
+    return None
 
 
 def split_queries(rows, total_clicks, total_impressions):
     """rows: iterable of (query, clicks, impressions) at query granularity;
     totals: the property's own totals for the same window (dimensions=[]).
-    Search Console withholds anonymised low-volume queries from query rows,
-    so the remainder (total minus the sum of rows) is reported as unattributed
-    rather than folded into either share."""
-    nb = {"clicks": 0, "impressions": 0}; br = {"clicks": 0, "impressions": 0}; n = 0
+    nonBranded is net of every class in QUERY_CLASSES; each class carries its
+    own clicks, impressions and query count. Search Console withholds
+    anonymised low-volume queries from query rows, so the remainder (total
+    minus the sum of rows) is reported as unattributed rather than folded
+    into any share."""
+    classes = {k: {"clicks": 0, "impressions": 0, "queries": 0} for k in QUERY_CLASSES}
+    nb = {"clicks": 0, "impressions": 0, "queries": 0}
     for q, c, i in rows:
-        n += 1
-        tgt = br if is_branded(q) else nb
-        tgt["clicks"] += int(c); tgt["impressions"] += int(i)
-    un = {"clicks": max(0, int(total_clicks) - nb["clicks"] - br["clicks"]),
-          "impressions": max(0, int(total_impressions) - nb["impressions"] - br["impressions"])}
-    return {"nonBranded": nb, "branded": br, "unattributed": un,
-            "total": {"clicks": int(total_clicks), "impressions": int(total_impressions)}, "queries": n}
+        k = classify_query(q)
+        tgt = classes[k] if k else nb
+        tgt["clicks"] += int(c); tgt["impressions"] += int(i); tgt["queries"] += 1
+    attributed_c = nb["clicks"] + sum(v["clicks"] for v in classes.values())
+    attributed_i = nb["impressions"] + sum(v["impressions"] for v in classes.values())
+    un = {"clicks": max(0, int(total_clicks) - attributed_c), "impressions": max(0, int(total_impressions) - attributed_i)}
+    return {"nonBranded": nb, "classes": classes, "unattributed": un,
+            "total": {"clicks": int(total_clicks), "impressions": int(total_impressions)},
+            "queries": nb["queries"] + sum(v["queries"] for v in classes.values())}
 
 
 NON_BRANDED_BASIS = ("clicks and impressions summed over every query row Search Console returns for the window (query granularity, paged, "
-                     f"not a top-N list), where a branded query contains '{BRAND_TERM}'; 'unattributed' is the property total minus the sum of "
-                     "query rows, the anonymised low-volume queries Search Console withholds, and belongs to neither share")
+                     "not a top-N list); a query is classed brand, people or product when it contains one of that class's terms on word "
+                     "boundaries (first class wins, in that order), and nonBranded is net of all three; 'unattributed' is the property "
+                     "total minus the sum of query rows, the anonymised low-volume queries Search Console withholds, and belongs to no share; "
+                     "class terms: " + "; ".join(f"{k}: {', '.join(v)}" for k, v in QUERY_CLASSES.items()))
 
 
 def gsc_rows(svc, s, e, dimensions, page=25000, extra=None):
@@ -276,14 +319,18 @@ def gsc_non_branded(svc, months, start90, end90):
         sp = split_queries(rows, m["clicks"], m["impressions"])
         out_months.append({"month": m["month"], "start": m["start"], "end": m["end"], "data_through": m["data_through"],
                            "partial": m["partial"], **sp})
-    rows90 = gsc_rows(svc, start90.isoformat(), end90.isoformat(), ["query"])
-    nb90 = sorted((x for x in rows90 if not is_branded(x["keys"][0])), key=lambda x: (-x["clicks"], -x["impressions"]))
-    top10 = [{"query": x["keys"][0], "clicks": int(x["clicks"]), "impressions": int(x["impressions"]), "position": round(x["position"], 1)} for x in nb90[:10]]
+    rows90 = sorted(gsc_rows(svc, start90.isoformat(), end90.isoformat(), ["query"]), key=lambda x: (-x["clicks"], -x["impressions"]))
+    def _row(x):
+        return {"query": x["keys"][0], "clicks": int(x["clicks"]), "impressions": int(x["impressions"]), "position": round(x["position"], 1)}
+    top10 = [_row(x) for x in rows90 if classify_query(x["keys"][0]) is None][:10]
+    by_class = {k: [_row(x) for x in rows90 if classify_query(x["keys"][0]) == k][:5] for k in QUERY_CLASSES}
     all90 = split_queries([(x["keys"][0], x["clicks"], x["impressions"]) for x in rows90], 0, 0)
-    attributed = all90["nonBranded"]["clicks"] + all90["branded"]["clicks"]
-    return {"months": out_months, "topQueries90d": top10,
-            "brandedShare90dAllQueries": round(all90["branded"]["clicks"] / attributed, 3) if attributed else None,
-            "brandedShare90dAllQueries_basis": f"share of clicks among every query row Search Console returns over the trailing 90 days (branded = contains '{BRAND_TERM}'); anonymised queries excluded from both numerator and denominator",
+    classed = sum(v["clicks"] for v in all90["classes"].values())
+    attributed = all90["nonBranded"]["clicks"] + classed
+    return {"months": out_months, "topQueries90d": top10, "topQueriesByClass90d": by_class,
+            "classes90d": all90["classes"], "nonBranded90d": all90["nonBranded"],
+            "brandedShare90dAllQueries": round(classed / attributed, 3) if attributed else None,
+            "brandedShare90dAllQueries_basis": "share of clicks in the brand, people and product classes among every query row Search Console returns over the trailing 90 days; anonymised queries excluded from both numerator and denominator",
             "window_90d": {"start": start90.isoformat(), "end": end90.isoformat()}, "basis": NON_BRANDED_BASIS}
 
 BLOG_RSS = os.environ.get("BOARD_BLOG_RSS_URL") or "https://xsightlabs.com/blog/rss.xml"          # env override: tests only
@@ -533,7 +580,8 @@ def pace(c, blog_block=None):
                 rows = [(x["keys"][0], x["clicks"], x["impressions"]) for x in gsc_rows(svc, s_.isoformat(), e_.isoformat(), ["query"])]
                 sp = split_queries(rows, sc[k]["clicks"], sc[k]["impressions"])
                 nb[k] = {"start": s_.isoformat(), "end": e_.isoformat(), "clicks": sp["nonBranded"]["clicks"],
-                         "impressions": sp["nonBranded"]["impressions"], "unattributed_clicks": sp["unattributed"]["clicks"]}
+                         "impressions": sp["nonBranded"]["impressions"], "unattributed_clicks": sp["unattributed"]["clicks"],
+                         "classes": {c: v["clicks"] for c, v in sp["classes"].items()}}
             nb["basis"] = NON_BRANDED_BASIS
             out["nonBrandedClicks"] = nb
         except Exception as e:

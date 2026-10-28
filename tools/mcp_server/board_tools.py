@@ -217,8 +217,9 @@ def _non_branded(sc, months_from, months_to):
         return {"available": False, "error": nb["error"], "basis": nb.get("basis")}
     months = [m for m in nb.get("months", []) if _in_range(m.get("start"), months_from, months_to)]
     return {"available": True, "months": months,
-            "months_note": "per month: nonBranded, branded and unattributed clicks and impressions, total = the property's own figure; an entry with partial=true is the current month to date and its data_through is Search Console's last complete day",
-            "top_non_branded_queries_90d": nb.get("topQueries90d") or [], "window_90d": nb.get("window_90d"),
+            "months_note": "per month: nonBranded (net of the brand, people and product classes), classes (each with clicks, impressions, queries), unattributed, total = the property's own figure; an entry with partial=true is the current month to date and its data_through is Search Console's last complete day",
+            "top_non_branded_queries_90d": nb.get("topQueries90d") or [], "top_queries_by_class_90d": nb.get("topQueriesByClass90d"),
+            "classes_90d": nb.get("classes90d"), "non_branded_90d": nb.get("nonBranded90d"), "window_90d": nb.get("window_90d"),
             "branded_share_90d_all_queries": nb.get("brandedShare90dAllQueries"),
             "branded_share_90d_all_queries_basis": nb.get("brandedShare90dAllQueries_basis"),
             "basis": nb.get("basis")}
