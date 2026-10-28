@@ -40,7 +40,8 @@ class NonBranded(unittest.TestCase):
                      "x-sight labs dpu": "brand", "avigdor willenz": "people", "yossi meyouhas": "people", "erez shaizaf": "people",
                      "eric vallone": "people", "x2 switch": "product", "e1 dpu": "product", "e1l": "product", "xisa": "product",
                      "dpu vs smartnic": None, "excited labs": None, "x20 switch": None, "insight labs": None, "nvme1 drive": None,
-                     "x series.in": None, "xseries": None, "exit labs": None}.items():
+                     "x series.in": None, "xseries": None, "exit labs": None, "exite labs": "brand", "gal malach": "people",
+                     "avigdor jeremias": "people", "avigdor vilnitz": "people", "0xide computer": None, "guy koren": None}.items():
             self.assertEqual(FG.classify_query(q), k, q)
 
     def test_split_with_unattributed_remainder(self):

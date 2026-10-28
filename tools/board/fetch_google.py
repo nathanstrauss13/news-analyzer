@@ -102,10 +102,10 @@ def is_branded(query):
 # regular expression (still wrapped in word boundaries, still case-insensitive).
 QUERY_CLASSES = {
     "brand": ["re:x[\\s-]?s?ight\\w*",          # xsight, xsightlabs, xsightlab, x sight, x-sight, xight
-              "re:x(?:s?ite|cite)[\\s-]?labs?",  # xsite labs, xcite labs
-              "excite labs", "אקסייט", "אקסייט לאבס"],
-    "people": ["willenz", "meyouhas", "shaizaf", "vallone",
-               "avigdor willenz", "yossi meyouhas", "erez shaizaf", "eric vallone"],
+              "re:e?x[ck]?s?ite[\\s-]?labs?",     # xsite, xcite, excite, exite labs
+              "אקסייט", "אקסייט לאבס"],
+    "people": ["willenz", "meyouhas", "shaizaf", "vallone", "malach", "avigdor",   # avigdor alone: the founder's first name, misspelt surnames seen
+               "avigdor willenz", "yossi meyouhas", "erez shaizaf", "eric vallone", "gal malach"],
     "product": ["x2", "e1", "e1l", "xisa"],
 }
 NON_BRANDED_EXCLUDES = tuple(t.strip() for t in (os.environ.get("BOARD_NON_BRANDED_EXCLUDES") or "brand,people").split(",") if t.strip())
