@@ -7183,7 +7183,10 @@ _BOT_CHALLENGE_RE = re.compile(
     r"|captcha-delivery\.com"                           # DataDome
     r"|_Incapsula_Resource"                              # Imperva
     r"|px-captcha"                                       # PerimeterX / HUMAN
-    r"|/\.well-known/sgcaptcha",                        # SiteGround
+    r"|/\.well-known/sgcaptcha"                         # SiteGround
+    r"|google\.com/sorry/"                               # Google / YouTube "unusual traffic" (Oct 27, 2026: 11 YouTube links)
+    r"|/captcha/wall\?"                                  # Mercado Libre
+    r"|walmart\.com/blocked\?",                          # Walmart
     re.I)
 _ERROR_PAGE_PATH_RE = re.compile(
     r"/(?:404|410|not[-_]?found|page[-_]?not[-_]?found|error[-_]?404)(?:\.\w{2,5})?/?$", re.I)
