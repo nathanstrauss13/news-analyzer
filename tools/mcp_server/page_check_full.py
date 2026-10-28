@@ -106,8 +106,8 @@ def main():
     out, t0 = {}, time.time()
     resumed = {}
     if a.resume_direct:
-        resumed = json.load(open(a.resume_direct))
-        urls = [u for u in urls if u not in resumed]
+        resumed = {u: v for u, v in json.load(open(a.resume_direct)).items() if v.get("status") != "unchecked"}
+        urls = [u for u in urls if u not in resumed]      # deadline leftovers are fetched directly again, not sent to Chrome
         print(f"resume: {len(resumed)} rows from checkpoint, {len(urls)} URLs still to fetch directly", flush=True)
     # whole-batch deadline, same doctrine as _resolve_and_verify_urls: never hang
     waves = -(-len(urls) // max(1, a.workers))
