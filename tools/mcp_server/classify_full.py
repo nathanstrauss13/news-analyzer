@@ -90,11 +90,19 @@ def _universe(p):
     return counts
 
 
-def classify(payload_path, out_path):
+def classify(payload_path, out_path, seed_path=None):
+    """seed_path: a reviewed classes file for an earlier version of the same
+    payload. Its types (analyst decisions included) are kept for every root
+    still cited; only roots it lacks go to the model, and only those can raise
+    exceptions. Added Oct 27, 2026 for the L'Oreal Gemini reinstatement (26
+    new roots on 1,458) so a re-merge does not re-roll 1,400 reviewed types."""
     raw = open(payload_path, "rb").read()
     p = json.loads(raw)
     A = _app()
     valid = set(A._DOMAIN_TYPES_VALID) | {"owned", "namesake"}
+    seeded = {}
+    if seed_path:
+        seeded = {r: t for r, t in json.load(open(seed_path)).items() if not r.startswith("_") and t in valid}
     brand = (p.get("brand") or "").strip()
     aliases = [a for a in (p.get("brand_aliases") or []) if isinstance(a, str) and a.strip()]
     comps = [c.get("name") for c in (p.get("competitors") or []) if isinstance(c, dict) and c.get("name")]
@@ -116,6 +124,9 @@ def classify(payload_path, out_path):
         if root in owned_roots:
             out[root] = "owned"; source["owned"] += 1
             continue
+        if root in seeded:
+            out[root] = seeded[root]; source["seed"] += 1
+            continue
         t = payload_types.get(root)
         if t in valid:
             out[root] = t; source["payload"] += 1
@@ -132,6 +143,8 @@ def classify(payload_path, out_path):
 
     for root in sorted(counts, key=lambda r: (-counts[r], r)):
         t = out.get(root)
+        if root in seeded:
+            continue    # reviewed in the seed file; its decision stands
         if root not in owned_roots and any(_own_site(A, root, n) for n in [brand] + aliases if n):
             flag(root, "owned", f"matches the brand's name but isn't in brand_domains (typed {t or 'none'}); confirm owned")
         named_comp = [n for n in comps if _own_site(A, root, n)]
@@ -148,7 +161,8 @@ def classify(payload_path, out_path):
             "slug": p.get("slug"), "brand": brand,
             "roots": len(counts), "classified": sum(1 for r in counts if out.get(r) in valid),
             "from_owned": source["owned"], "from_payload": source["payload"],
-            "from_model": source["model"], "exceptions": len(exc),
+            "from_model": source["model"], "from_seed": source["seed"],
+            "seed": os.path.basename(seed_path) if seed_path else None, "exceptions": len(exc),
             "status": "needs_review" if exc else "complete",
             "created": datetime.date.today().isoformat(),
             "types": sorted(valid)}
@@ -223,6 +237,8 @@ if __name__ == "__main__":
     ap.add_argument("--decide", action="append", metavar="ROOT=accept|keep|TYPE",
                     help="decision for one exception (repeatable); also read from the JSON")
     ap.add_argument("--force", action="store_true", help="overwrite a file already marked reviewed")
+    ap.add_argument("--seed", metavar="PRIOR_CLASSES_JSON",
+                    help="reviewed classes file for an earlier version of this payload; keeps its types, models only new roots")
     a = ap.parse_args()
     if a.check:
         check(a.payload, a.out, a.decide)
@@ -230,4 +246,4 @@ if __name__ == "__main__":
         if os.path.exists(a.out) and not a.force:
             if (json.load(open(a.out)).get("_meta") or {}).get("status") == "reviewed":
                 sys.exit(f"{a.out} is already reviewed; pass --force to rebuild it from scratch")
-        classify(a.payload, a.out)
+        classify(a.payload, a.out, a.seed)
