@@ -22,7 +22,7 @@ import page_check_full as PC  # noqa: E402
 import app as A  # noqa: E402
 
 WALLS = ["Access Denied - Macy's", "Pardon Our Interruption", "ULTA.com :: Our Apologies", "Robot or human?",
-         "Just a moment...", "Too many requests"]
+         "Just a moment...", "Too many requests", "Seguridad — Mercado Libre"]
 MISSING = ["404 Not Found", "Page not found - Remezcla", "Not Found | CHANEL", "– Page not found",
            "404 - Page Not Found | iScentive", "Oops! Something went wrong"]
 CONTENT = ["Azzaro Chrome vs Legend vs United [Comparison 2026]", "Forbidden Smell is Sweet: IFRA and Fragrance",

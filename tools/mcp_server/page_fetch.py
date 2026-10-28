@@ -57,7 +57,8 @@ WALL_MARKERS = re.compile(r"checking your browser|verify you are human|access de
 WALL_TITLE = re.compile(r"access denied|just a moment|attention required|pardon our interruption|are you a robot|"
                         r"robot or human|verify you are|human verification|bot detection|request blocked|"
                         r"403 forbidden|security check|checking your browser|our apologies|too many requests|"
-                        r"service unavailable|site maintenance|temporarily unavailable", re.I)
+                        r"service unavailable|site maintenance|temporarily unavailable|"
+                        r"^seguridad\b.*mercado libre", re.I)
 MISSING_TITLE = re.compile(r"^\s*(?:\W*\s*)?(?:404\b|page not found|not found\b|page cannot be found|page doesn.t exist|"
                            r"oops[!,]?\s)|(?:\s|^)(?:page not found|404 - page not found|404 not found)(?:\s|$)|"
                            r"\b404\b.{0,20}not found", re.I)

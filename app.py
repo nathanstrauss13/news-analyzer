@@ -7186,7 +7186,8 @@ _BOT_CHALLENGE_RE = re.compile(
     r"|/\.well-known/sgcaptcha"                         # SiteGround
     r"|google\.com/sorry/"                               # Google / YouTube "unusual traffic" (Oct 27, 2026: 11 YouTube links)
     r"|/captcha/wall\?"                                  # Mercado Libre
-    r"|walmart\.com/blocked\?",                          # Walmart
+    r"|walmart\.com/blocked\?"                           # Walmart (www. and business.)
+    r"|/splashui/challenge\?",                           # eBay
     re.I)
 _ERROR_PAGE_PATH_RE = re.compile(
     r"/(?:404|410|not[-_]?found|page[-_]?not[-_]?found|error[-_]?404)(?:\.\w{2,5})?/?$", re.I)
@@ -7695,7 +7696,8 @@ _HUSK_CHARS = 400   # visible text below this on a 200 = challenge / JS-only hus
 _WALL_TITLE_RE = re.compile(r"access denied|just a moment|attention required|pardon our interruption|are you a robot|"
                             r"robot or human|verify you are|human verification|bot detection|request blocked|"
                             r"403 forbidden|security check|checking your browser|our apologies|too many requests|"
-                            r"service unavailable|site maintenance|temporarily unavailable", re.I)
+                            r"service unavailable|site maintenance|temporarily unavailable|"
+                            r"^seguridad\b.*mercado libre", re.I)
 _MISSING_TITLE_RE = re.compile(r"^\s*(?:\W*\s*)?(?:404\b|page not found|not found\b|page cannot be found|page doesn.t exist|"
                                r"oops[!,]?\s)|(?:\s|^)(?:page not found|404 - page not found|404 not found)(?:\s|$)|"
                                r"\b404\b.{0,20}not found", re.I)

@@ -57,7 +57,9 @@ class LandingChallenge(unittest.TestCase):
     def test_known_walls_keep_the_cited_page(self):
         for wall in ("https://www.google.com/sorry/index?continue=https://www.youtube.com/watch%3Fv%3Dx&q=E",
                      "https://www.mercadolibre.com.mx/captcha/wall?go_url=https%3A%2F%2Fwww.mercadolibre.com.mx%2Fblog",
-                     "https://www.walmart.com/blocked?url=L2Jyb3dzZS9iZWF1dHk"):
+                     "https://www.walmart.com/blocked?url=L2Jyb3dzZS9iZWF1dHk",
+                     "https://business.walmart.com/blocked?url=L2Jyb3dzZS9iZWF1dHk",
+                     "https://www.ebay.de/splashui/challenge?ru=https%3A%2F%2Fwww.ebay.de%2Fitm%2F1"):
             self.assertEqual(A._redirect_landing_problem("https://example.com/page", wall), "challenge", wall)
         self.assertEqual(A._redirect_landing_problem("https://example.com/page", "https://example.com/page"), "")
         self.assertEqual(A._redirect_landing_problem("https://example.com/page", "https://example.com/404"), "error_page")
