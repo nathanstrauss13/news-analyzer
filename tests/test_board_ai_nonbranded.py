@@ -36,9 +36,11 @@ class AiReferrals(unittest.TestCase):
 class NonBranded(unittest.TestCase):
     def test_classes(self):
         for q, k in {"xsight labs": "brand", "x sight labs": "brand", "x-sight": "brand", "excite labs": "brand", "אקסייט לאבס": "brand",
-                     "XsightLabs": "brand", "avigdor willenz": "people", "yossi meyouhas": "people", "x2 switch": "product",
-                     "e1 dpu": "product", "e1l": "product", "dpu vs smartnic": None, "excited labs": None, "x20 switch": None,
-                     "insight labs": None, "nvme1 drive": None}.items():
+                     "XsightLabs": "brand", "xsightlab": "brand", "xight": "brand", "xcite labs": "brand", "xsite labs": "brand",
+                     "x-sight labs dpu": "brand", "avigdor willenz": "people", "yossi meyouhas": "people", "erez shaizaf": "people",
+                     "eric vallone": "people", "x2 switch": "product", "e1 dpu": "product", "e1l": "product", "xisa": "product",
+                     "dpu vs smartnic": None, "excited labs": None, "x20 switch": None, "insight labs": None, "nvme1 drive": None,
+                     "x series.in": None, "xseries": None, "exit labs": None}.items():
             self.assertEqual(FG.classify_query(q), k, q)
 
     def test_split_with_unattributed_remainder(self):

@@ -98,10 +98,15 @@ def is_branded(query):
 # are editable without a code change: BOARD_QUERY_CLASSES_JSON =
 # {"brand": [...], "people": [...], "product": [...]} and
 # BOARD_NON_BRANDED_EXCLUDES = "brand,people".
+# A term is a literal unless it starts with "re:", in which case the rest is a
+# regular expression (still wrapped in word boundaries, still case-insensitive).
 QUERY_CLASSES = {
-    "brand": ["xsight", "x sight", "x-sight", "xsightlabs", "excite labs", "אקסייט", "אקסייט לאבס"],
-    "people": ["willenz", "meyouhas", "avigdor willenz", "yossi meyouhas"],
-    "product": ["x2", "e1", "e1l"],
+    "brand": ["re:x[\\s-]?s?ight\\w*",          # xsight, xsightlabs, xsightlab, x sight, x-sight, xight
+              "re:x(?:s?ite|cite)[\\s-]?labs?",  # xsite labs, xcite labs
+              "excite labs", "אקסייט", "אקסייט לאבס"],
+    "people": ["willenz", "meyouhas", "shaizaf", "vallone",
+               "avigdor willenz", "yossi meyouhas", "erez shaizaf", "eric vallone"],
+    "product": ["x2", "e1", "e1l", "xisa"],
 }
 NON_BRANDED_EXCLUDES = tuple(t.strip() for t in (os.environ.get("BOARD_NON_BRANDED_EXCLUDES") or "brand,people").split(",") if t.strip())
 try:
@@ -111,8 +116,10 @@ try:
 except Exception:
     pass
 import re as _re
-_CLASS_RES = [(k, _re.compile("|".join(r"(?<!\w)" + _re.escape(t.lower()) + r"(?!\w)" for t in terms), _re.I))
-              for k, terms in QUERY_CLASSES.items() if terms]
+def _term_re(t):
+    body = t[3:] if t.startswith("re:") else _re.escape(t.lower())
+    return r"(?<!\w)(?:" + body + r")(?!\w)"
+_CLASS_RES = [(k, _re.compile("|".join(_term_re(t) for t in terms), _re.I)) for k, terms in QUERY_CLASSES.items() if terms]
 
 
 def classify_query(query):
