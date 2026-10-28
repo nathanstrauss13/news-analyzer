@@ -21,6 +21,14 @@ the URL list, and if that fails too the job carries the last good post list
 forward (BOARD_PRIOR_BLOG env var, JSON, set by the server job). Blog URLs that
 Google reports but the feed lacks are appended with GA4's page title and no
 date, so the card never misses a post that has traffic.
+
+AI referrals and non-branded search (added Oct 27, 2026, Nathan via the ops
+session): ga4.aiReferrals (monthly sessions from AI assistants by source,
+12 months plus the partial) and searchConsole.nonBranded (monthly clicks and
+impressions for queries not containing "xsight", at query granularity, with
+the unattributed remainder Search Console withholds), each with a basis
+string, plus pace.aiReferrals and pace.nonBrandedClicks. Same token, same
+read-only scopes; no new access.
 """
 import json, os, sys, glob, datetime as dt
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")  # Google adds openid/email to the granted scopes
@@ -31,6 +39,88 @@ SCOPES = ["https://www.googleapis.com/auth/analytics.readonly",
 GA4_PROPERTY = "properties/462267417"
 GSC_SITE = "sc-domain:xsightlabs.com"
 TOKEN = Path.home() / ".config/xsight-signal/google_token.json"
+BRAND_TERM = "xsight"            # a branded query contains this (same rule as brandedShare90d)
+
+# AI assistant referrals: a session counts when its source (the GA4
+# sessionSource, usually the referrer domain) matches a known assistant, or
+# when GA4's own default channel group names it an AI channel (properties
+# with the newer channel definitions). The referrer match covers months
+# before the channel existed. Labels are the assistant's domain.
+AI_ASSISTANT_SOURCES = {
+    "chatgpt.com": ("chatgpt.com", "chat.openai.com", "openai.com"),
+    "gemini.google.com": ("gemini.google.com", "bard.google.com"),
+    "perplexity.ai": ("perplexity.ai", "perplexity"),
+    "claude.ai": ("claude.ai", "anthropic.com"),
+    "copilot": ("copilot.microsoft.com", "copilot"),
+    "grok": ("grok.com", "x.ai"),
+}
+AI_CHANNEL_NAMES = ("ai assistant", "ai referral", "ai traffic")
+AI_REFERRALS_BASIS = ("sessions whose GA4 session source matches a known assistant domain (chatgpt.com incl. chat.openai.com and openai.com; "
+                      "gemini.google.com incl. bard.google.com; perplexity.ai; claude.ai incl. anthropic.com; copilot.microsoft.com; grok.com and x.ai), "
+                      "plus sessions GA4's default channel group labels as an AI channel whose source is none of these (reported as 'others'); "
+                      "the referrer match applies to every month, so months before the channel existed are not undercounted")
+
+
+def ai_label(source, channel=""):
+    """Assistant label for a GA4 (sessionSource, sessionDefaultChannelGroup) pair, or None."""
+    src = (source or "").lower(); ch = (channel or "").lower()
+    for label, pats in AI_ASSISTANT_SOURCES.items():
+        if any(pat in src for pat in pats):
+            return label
+    if any(n in ch for n in AI_CHANNEL_NAMES):
+        return "others"
+    return None
+
+
+def ai_referrals_split(rows):
+    """rows: iterable of (source, channel, sessions) -> {label: sessions} for assistant sessions only."""
+    out = {}
+    for src, ch, n in rows:
+        lab = ai_label(src, ch)
+        if lab:
+            out[lab] = out.get(lab, 0) + int(n)
+    return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def is_branded(query):
+    return BRAND_TERM in (query or "").lower()
+
+
+def split_queries(rows, total_clicks, total_impressions):
+    """rows: iterable of (query, clicks, impressions) at query granularity;
+    totals: the property's own totals for the same window (dimensions=[]).
+    Search Console withholds anonymised low-volume queries from query rows,
+    so the remainder (total minus the sum of rows) is reported as unattributed
+    rather than folded into either share."""
+    nb = {"clicks": 0, "impressions": 0}; br = {"clicks": 0, "impressions": 0}; n = 0
+    for q, c, i in rows:
+        n += 1
+        tgt = br if is_branded(q) else nb
+        tgt["clicks"] += int(c); tgt["impressions"] += int(i)
+    un = {"clicks": max(0, int(total_clicks) - nb["clicks"] - br["clicks"]),
+          "impressions": max(0, int(total_impressions) - nb["impressions"] - br["impressions"])}
+    return {"nonBranded": nb, "branded": br, "unattributed": un,
+            "total": {"clicks": int(total_clicks), "impressions": int(total_impressions)}, "queries": n}
+
+
+NON_BRANDED_BASIS = ("clicks and impressions summed over every query row Search Console returns for the window (query granularity, paged, "
+                     f"not a top-N list), where a branded query contains '{BRAND_TERM}'; 'unattributed' is the property total minus the sum of "
+                     "query rows, the anonymised low-volume queries Search Console withholds, and belongs to neither share")
+
+
+def gsc_rows(svc, s, e, dimensions, page=25000, extra=None):
+    """Every row for a Search Console query, following startRow until a short page."""
+    rows, start = [], 0
+    while True:
+        body = {"startDate": s, "endDate": e, "dimensions": dimensions, "rowLimit": page, "startRow": start}
+        if extra:
+            body.update(extra)
+        r = svc.searchanalytics().query(siteUrl=GSC_SITE, body=body).execute()
+        got = r.get("rows") or []
+        rows.extend(got)
+        if len(got) < page:
+            return rows
+        start += page
 HERE = Path(__file__).resolve().parent
 
 def client_secret():
@@ -129,7 +219,28 @@ def ga4(c):
             "orderBys": [{"metric": {"metricName": "screenPageViews"}, "desc": True}], "limit": 40}
     r = svc.properties().runReport(property=GA4_PROPERTY, body=body).execute()
     pages = [{"path": x["dimensionValues"][0]["value"], "views": int(x["metricValues"][0]["value"])} for x in r.get("rows", [])]
-    return {"months": months, "topSources90d": sources, "aiAssistants90d": ai, "topPages90d": pages}
+    out = {"months": months, "topSources90d": sources, "aiAssistants90d": ai, "topPages90d": pages}
+    try:
+        out["aiReferrals"] = ga4_ai_referrals(svc)
+    except Exception as e:                      # the feed must not fail because the new block did
+        out["aiReferrals"] = {"error": f"{type(e).__name__}: {str(e)[:200]}", "months": [], "basis": AI_REFERRALS_BASIS}
+    return out
+
+
+def ga4_ai_referrals(svc):
+    """Monthly sessions from AI assistants by source, 12 full months plus the partial."""
+    months = []
+    for label, s, e in month_ranges(partial_end=dt.date.today() - dt.timedelta(days=1)):
+        body = {"dateRanges": [{"startDate": s, "endDate": e}],
+                "dimensions": [{"name": "sessionSource"}, {"name": "sessionDefaultChannelGroup"}],
+                "metrics": [{"name": "sessions"}], "limit": 10000}
+        r = svc.properties().runReport(property=GA4_PROPERTY, body=body).execute()
+        rows = [(x["dimensionValues"][0]["value"], x["dimensionValues"][1]["value"], int(x["metricValues"][0]["value"])) for x in r.get("rows", [])]
+        by = ai_referrals_split(rows)
+        months.append({"month": label, "start": s, "end": e, "data_through": e, "partial": label == "partial",
+                       "bySource": by, "total": sum(by.values()),
+                       "ai_channel_present": any(any(n in (ch or "").lower() for n in AI_CHANNEL_NAMES) for _, ch, _ in rows)})
+    return {"months": months, "basis": AI_REFERRALS_BASIS, "sources": list(AI_ASSISTANT_SOURCES) + ["others"]}
 
 def gsc(c):
     from googleapiclient.discovery import build
@@ -145,10 +256,35 @@ def gsc(c):
         r = svc.searchanalytics().query(siteUrl=GSC_SITE, body={"startDate": start.isoformat(), "endDate": end.isoformat(), "dimensions": [dim], "rowLimit": n}).execute()
         return [{dim: x["keys"][0], "clicks": int(x["clicks"]), "impressions": int(x["impressions"]), "position": round(x["position"], 1)} for x in r.get("rows", [])]
     queries = top("query", 200)
-    brand = sum(q["clicks"] for q in queries if "xsight" in q["query"].lower())
+    brand = sum(q["clicks"] for q in queries if is_branded(q["query"]))
     total = sum(q["clicks"] for q in queries) or 1
-    return {"months": months, "topQueries90d": queries[:50], "topPages90d": top("page", 40),
-            "brandedShare90d": round(brand / total, 3)}
+    out = {"months": months, "topQueries90d": queries[:50], "topPages90d": top("page", 40),
+           "brandedShare90d": round(brand / total, 3)}
+    try:
+        out["nonBranded"] = gsc_non_branded(svc, months, start, end)
+    except Exception as e:
+        out["nonBranded"] = {"error": f"{type(e).__name__}: {str(e)[:200]}", "months": [], "basis": NON_BRANDED_BASIS}
+    return out
+
+
+def gsc_non_branded(svc, months, start90, end90):
+    """Monthly non-branded / branded / unattributed split at query granularity,
+    plus the top 10 non-branded queries over the trailing 90 days."""
+    out_months = []
+    for m in months:
+        rows = [(x["keys"][0], x["clicks"], x["impressions"]) for x in gsc_rows(svc, m["start"], m["end"], ["query"])]
+        sp = split_queries(rows, m["clicks"], m["impressions"])
+        out_months.append({"month": m["month"], "start": m["start"], "end": m["end"], "data_through": m["data_through"],
+                           "partial": m["partial"], **sp})
+    rows90 = gsc_rows(svc, start90.isoformat(), end90.isoformat(), ["query"])
+    nb90 = sorted((x for x in rows90 if not is_branded(x["keys"][0])), key=lambda x: (-x["clicks"], -x["impressions"]))
+    top10 = [{"query": x["keys"][0], "clicks": int(x["clicks"]), "impressions": int(x["impressions"]), "position": round(x["position"], 1)} for x in nb90[:10]]
+    all90 = split_queries([(x["keys"][0], x["clicks"], x["impressions"]) for x in rows90], 0, 0)
+    attributed = all90["nonBranded"]["clicks"] + all90["branded"]["clicks"]
+    return {"months": out_months, "topQueries90d": top10,
+            "brandedShare90dAllQueries": round(all90["branded"]["clicks"] / attributed, 3) if attributed else None,
+            "brandedShare90dAllQueries_basis": f"share of clicks among every query row Search Console returns over the trailing 90 days (branded = contains '{BRAND_TERM}'); anonymised queries excluded from both numerator and denominator",
+            "window_90d": {"start": start90.isoformat(), "end": end90.isoformat()}, "basis": NON_BRANDED_BASIS}
 
 BLOG_RSS = os.environ.get("BOARD_BLOG_RSS_URL") or "https://xsightlabs.com/blog/rss.xml"          # env override: tests only
 BLOG_SITEMAP = os.environ.get("BOARD_BLOG_SITEMAP_URL") or "https://xsightlabs.com/sitemap.xml"
@@ -381,6 +517,7 @@ def pace(c, blog_block=None):
     w = _mtd_windows(today - dt.timedelta(days=2), today)
     if w is None:
         out["searchConsole"] = None
+        out["nonBrandedClicks"] = None
     else:
         svc = build("searchconsole", "v1", credentials=c, cache_discovery=False)
         sc = {}
@@ -389,10 +526,23 @@ def pace(c, blog_block=None):
             row = (r.get("rows") or [{}])[0]
             sc[k] = {"start": s_.isoformat(), "end": e_.isoformat(), "clicks": int(row.get("clicks", 0)), "impressions": int(row.get("impressions", 0))}
         out["searchConsole"] = sc
+        # non-branded clicks, same windows, query granularity
+        try:
+            nb = {}
+            for k, (s_, e_) in w.items():
+                rows = [(x["keys"][0], x["clicks"], x["impressions"]) for x in gsc_rows(svc, s_.isoformat(), e_.isoformat(), ["query"])]
+                sp = split_queries(rows, sc[k]["clicks"], sc[k]["impressions"])
+                nb[k] = {"start": s_.isoformat(), "end": e_.isoformat(), "clicks": sp["nonBranded"]["clicks"],
+                         "impressions": sp["nonBranded"]["impressions"], "unattributed_clicks": sp["unattributed"]["clicks"]}
+            nb["basis"] = NON_BRANDED_BASIS
+            out["nonBrandedClicks"] = nb
+        except Exception as e:
+            out["nonBrandedClicks"] = {"error": f"{type(e).__name__}: {str(e)[:200]}"}
     # GA4: sessions
     w = _mtd_windows(today - dt.timedelta(days=1), today)
     if w is None:
         out["ga4"] = None
+        out["aiReferrals"] = None
     else:
         ga = build("analyticsdata", "v1beta", credentials=c, cache_discovery=False)
         g = {}
@@ -401,6 +551,19 @@ def pace(c, blog_block=None):
             rows = r.get("rows") or []
             g[k] = {"start": s_.isoformat(), "end": e_.isoformat(), "sessions": int(rows[0]["metricValues"][0]["value"]) if rows else 0}
         out["ga4"] = g
+        try:
+            a = {}
+            for k, (s_, e_) in w.items():
+                body = {"dateRanges": [{"startDate": s_.isoformat(), "endDate": e_.isoformat()}],
+                        "dimensions": [{"name": "sessionSource"}, {"name": "sessionDefaultChannelGroup"}],
+                        "metrics": [{"name": "sessions"}], "limit": 10000}
+                r = ga.properties().runReport(property=GA4_PROPERTY, body=body).execute()
+                by = ai_referrals_split((x["dimensionValues"][0]["value"], x["dimensionValues"][1]["value"], int(x["metricValues"][0]["value"])) for x in r.get("rows", []))
+                a[k] = {"start": s_.isoformat(), "end": e_.isoformat(), "sessions": sum(by.values()), "bySource": by}
+            a["basis"] = AI_REFERRALS_BASIS
+            out["aiReferrals"] = a
+        except Exception as e:
+            out["aiReferrals"] = {"error": f"{type(e).__name__}: {str(e)[:200]}"}
     # Blog posts: from the dated post list; null without a dated source
     w = _mtd_windows(today - dt.timedelta(days=1), today)
     if w is None or not blog_block or not blog_block.get("dated_source"):

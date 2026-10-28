@@ -189,8 +189,10 @@ def list_board_sources(board: str = "") -> dict:
 def get_search(board: str = "", months_from: str = "", months_to: str = "", top: int = 20) -> dict:
     """Google Search Console for the board's site: monthly clicks, impressions,
     CTR and position (last 12 months plus the partial current month), top
-    queries and top pages over the trailing 90 days, and the branded share of
-    clicks. months_from/months_to filter the monthly series by 'YYYY-MM'. Report figures and windows as given; do not project or estimate full-month totals."""
+    queries and top pages over the trailing 90 days, the branded share of
+    clicks, and non_branded: the monthly non-branded / branded / unattributed
+    split at query granularity with the top 10 non-branded queries over 90
+    days. months_from/months_to filter the monthly series by 'YYYY-MM'. Report figures and windows as given; do not project or estimate full-month totals."""
     b = _board(board)
     live = _live(b["slug"]) or {}
     sc = live.get("searchConsole")
@@ -203,14 +205,32 @@ def get_search(board: str = "", months_from: str = "", months_to: str = "", top:
             "top_queries_90d": (sc.get("topQueries90d") or [])[:top], "top_pages_90d": (sc.get("topPages90d") or [])[:top],
             "window_90d": "trailing 90 days ending two days before the pull (Search Console lag)",
             "branded_share_90d": sc.get("brandedShare90d"),
-            "branded_share_90d_basis": "share of clicks among the top 200 queries by clicks over the trailing 90 days, where a branded query contains 'xsight'; not a share of all clicks"}
+            "branded_share_90d_basis": "share of clicks among the top 200 queries by clicks over the trailing 90 days, where a branded query contains 'xsight'; not a share of all clicks",
+            "non_branded": _non_branded(sc, months_from, months_to)}
+
+
+def _non_branded(sc, months_from, months_to):
+    nb = sc.get("nonBranded")
+    if not nb:
+        return {"available": False, "note": "the stored feed predates the non-branded pull; ask for a refresh"}
+    if nb.get("error"):
+        return {"available": False, "error": nb["error"], "basis": nb.get("basis")}
+    months = [m for m in nb.get("months", []) if _in_range(m.get("start"), months_from, months_to)]
+    return {"available": True, "months": months,
+            "months_note": "per month: nonBranded, branded and unattributed clicks and impressions, total = the property's own figure; an entry with partial=true is the current month to date and its data_through is Search Console's last complete day",
+            "top_non_branded_queries_90d": nb.get("topQueries90d") or [], "window_90d": nb.get("window_90d"),
+            "branded_share_90d_all_queries": nb.get("brandedShare90dAllQueries"),
+            "branded_share_90d_all_queries_basis": nb.get("brandedShare90dAllQueries_basis"),
+            "basis": nb.get("basis")}
 
 
 def get_site_traffic(board: str = "", months_from: str = "", months_to: str = "", top: int = 20) -> dict:
     """Google Analytics 4 for the board's site: monthly sessions by channel
     group (last 12 months plus the partial current month), top sources and
-    top pages over the trailing 90 days, and sessions referred by AI
-    assistants. months_from/months_to filter the monthly series by 'YYYY-MM'. Report figures and windows as given; do not project or estimate full-month totals."""
+    top pages over the trailing 90 days, sessions referred by AI assistants
+    over 90 days, and ai_referrals: monthly assistant sessions by source
+    (chatgpt.com, gemini.google.com, perplexity.ai, claude.ai, copilot, grok,
+    others) with the matching rule in basis. months_from/months_to filter the monthly series by 'YYYY-MM'. Report figures and windows as given; do not project or estimate full-month totals."""
     b = _board(board)
     live = _live(b["slug"]) or {}
     ga = live.get("ga4")
@@ -221,7 +241,20 @@ def get_site_traffic(board: str = "", months_from: str = "", months_to: str = ""
     srcs = ga.get("topSources90d") or {}
     return {**_hdr(b, "ga4", live.get("pulled"), "Live"),
             "months": months, "months_note": "calendar months; an entry with partial=true is the current month to date, and its end and data_through are the day before the pull", "top_sources_90d": dict(list(srcs.items())[:top]),
-            "ai_assistant_referrals_90d": ga.get("aiAssistants90d") or {}, "top_pages_90d": (ga.get("topPages90d") or [])[:top]}
+            "ai_assistant_referrals_90d": ga.get("aiAssistants90d") or {}, "top_pages_90d": (ga.get("topPages90d") or [])[:top],
+            "ai_referrals": _ai_referrals(ga, months_from, months_to)}
+
+
+def _ai_referrals(ga, months_from, months_to):
+    ar = ga.get("aiReferrals")
+    if not ar:
+        return {"available": False, "note": "the stored feed predates the AI-referrals pull; ask for a refresh"}
+    if ar.get("error"):
+        return {"available": False, "error": ar["error"], "basis": ar.get("basis")}
+    months = [m for m in ar.get("months", []) if _in_range(m.get("start"), months_from, months_to)]
+    return {"available": True, "months": months,
+            "months_note": "per month: bySource sessions per assistant and total; an entry with partial=true is the current month to date and its data_through is the day before the pull; ai_channel_present says whether GA4 itself labelled an AI channel that month",
+            "sources": ar.get("sources"), "basis": ar.get("basis")}
 
 
 def get_blog(board: str = "", sort: str = "published", limit: int = 50, published_since: str = "", min_clicks_12m: int = 0) -> dict:
@@ -250,8 +283,10 @@ def get_blog(board: str = "", sort: str = "published", limit: int = 50, publishe
 
 def get_pace(board: str = "") -> dict:
     """Month-to-date against the same day numbers of the prior month: Search
-    Console clicks and impressions, GA4 sessions, blog posts. A source whose
-    current month has no complete day yet is null. Report figures and windows as given; do not project or estimate full-month totals."""
+    Console clicks and impressions, non-branded clicks (nonBrandedClicks), GA4
+    sessions, AI-assistant sessions (aiReferrals), blog posts. A source whose
+    current month has no complete day yet is null; a key the stored feed lacks
+    predates that pull. Report figures and windows as given; do not project or estimate full-month totals."""
     b = _board(board)
     live = _live(b["slug"]) or {}
     pace = live.get("pace")
