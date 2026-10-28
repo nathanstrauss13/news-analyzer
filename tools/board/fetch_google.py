@@ -102,7 +102,7 @@ def is_branded(query):
 # regular expression (still wrapped in word boundaries, still case-insensitive).
 QUERY_CLASSES = {
     "brand": ["re:x[\\s-]?s?ight\\w*",          # xsight, xsightlabs, xsightlab, x sight, x-sight, xight
-              "re:e?x[ck]?s?ite[\\s-]?labs?",     # xsite, xcite, excite, exite labs
+              "re:e?x[ck]?s?ite[\\s-]?(?:labs?|careers)",     # xsite, xcite, excite, exite labs; xcite careers
               "אקסייט", "אקסייט לאבס"],
     "people": ["willenz", "meyouhas", "shaizaf", "vallone", "malach", "avigdor",   # avigdor alone: the founder's first name, misspelt surnames seen
                "avigdor willenz", "yossi meyouhas", "erez shaizaf", "eric vallone", "gal malach"],
