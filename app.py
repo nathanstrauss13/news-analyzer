@@ -7278,6 +7278,7 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
     connection error) is retried once with a streaming GET before deciding.
     """
     out = {}
+    resolved_targets = {}   # redirector -> real page, once the Location is read
 
     def check(u):
         # SSRF guard: never fire HEAD against private/loopback/reserved IPs.
@@ -7303,6 +7304,7 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
             u = real
             if not _is_safe_url(u):
                 return (original_u, None)
+            resolved_targets[original_u] = u
         # 2026-10-10 fix (IREN 802fd06e1e: 13 of 55 "dead" links were live,
         # 5 of them on iren.com; Azzaro surfaces: 25 of 26). HEAD alone is
         # not evidence: some servers 404/405 a HEAD they serve to a GET
@@ -7374,6 +7376,15 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
     if batch_deadline is None:
         _waves = -(-total // max(1, max_workers))      # ceil, no math import needed
         batch_deadline = max(60.0, _waves * (timeout * 3.0) + 30.0)
+    # Redirectors first. A Gemini vertexaisearch link resolves in ~0.1s (one
+    # HEAD, Location read) but is dropped if the batch deadline catches it
+    # unfinished, while a real page that stalls is kept. Submitting the
+    # redirectors ahead of everything else means the deadline, when it fires,
+    # falls on pages that fail open. L'Oreal Oct 26-27, 2026: four operator
+    # jobs each stalled ~14% of their URLs at the deadline and 735 Gemini
+    # citations were dropped as "unresolvable" although the tokens answered
+    # 302 when probed the next day.
+    urls = sorted(urls, key=lambda u: 0 if 'vertexaisearch' in u.lower() else 1)
     ex = ThreadPoolExecutor(max_workers=max_workers)
     try:
         fut_map = {ex.submit(check, u): u for u in urls}
@@ -7405,8 +7416,10 @@ def _resolve_and_verify_urls(urls, timeout=2.5, max_workers=40, on_progress=None
             # vertexaisearch link is not a citable source, so keeping it
             # unresolved put "vertexaisearch.cloud.google.com" in the top
             # cited domains (Kilian rerun e9d58e8a7c: 61 kept). Drop it.
+            # A redirector whose Location was already read is a real page
+            # that stalled on its own check: fail open to that page.
             if 'vertexaisearch.cloud.google.com' in u.lower():
-                out.setdefault(u, None)
+                out.setdefault(u, resolved_targets.get(u))
             else:
                 out.setdefault(u, u)
         if _stalled:
