@@ -42,9 +42,21 @@ SHARED_IR_HOSTING = {"gcs-web.com", "q4web.com", "q4ir.com", "investorroom.com",
                      "mediaroom.com", "prezly.com", "pr.co"}
 
 
+def _host(host_or_url):
+    """Host of a URL or bare host, lowercased, www. and port stripped. The
+    scheme is removed first: splitting on "//" took the path when a URL had a
+    doubled slash after the host (garmentory.com//sale/... -> "sale", Oct 27,
+    2026), which left the root untyped."""
+    s = (host_or_url or "").strip()
+    s = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", s)
+    if s.startswith("//"):
+        s = s[2:]
+    h = s.split("/")[0].split("?")[0].split("#")[0].split("@")[-1].split(":")[0].lower()
+    return h[4:] if h.startswith("www.") else h
+
+
 def root_of(host_or_url):
-    h = (host_or_url or "").split("//")[-1].split("/")[0].split(":")[0].lower()
-    h = h[4:] if h.startswith("www.") else h
+    h = _host(host_or_url)
     parts = h.split(".")
     if len(parts) >= 3 and ".".join(parts[-2:]) in SHARED_IR_HOSTING:
         return ".".join(parts[-3:])
@@ -54,8 +66,7 @@ def root_of(host_or_url):
 
 
 def host_of(url):
-    h = (url or "").split("//")[-1].split("/")[0].split(":")[0].lower()
-    return h[4:] if h.startswith("www.") else h
+    return _host(url)
 
 
 def forms_to_pattern(forms):
