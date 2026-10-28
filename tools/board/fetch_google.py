@@ -91,16 +91,19 @@ def is_branded(query):
 # pull showed the top "non-branded" queries were the brand misspelt or
 # transliterated, the founders, and a product name). Each term matches on
 # word boundaries, case-insensitively; classes are tested in this order and
-# the first hit wins. Non-branded is net of all three classes; the class
-# counts travel with every figure so a reader can add a class back (Nathan
-# rules on whether product-name queries are discovery). Per board: set
-# BOARD_QUERY_CLASSES_JSON to {"brand": [...], "people": [...], "product": [...]}
-# to override.
+# the first hit wins. Nathan's ruling (Oct 28, 2026): product-name queries
+# are discovery. So nonBranded excludes only the classes in
+# NON_BRANDED_EXCLUDES (brand, people); product queries are labelled under
+# classes.product for visibility and counted in nonBranded. Per board, both
+# are editable without a code change: BOARD_QUERY_CLASSES_JSON =
+# {"brand": [...], "people": [...], "product": [...]} and
+# BOARD_NON_BRANDED_EXCLUDES = "brand,people".
 QUERY_CLASSES = {
-    "brand": ["xsight", "x sight", "x-sight", "xsightlabs", "excite labs", "אקסייט"],
-    "people": ["willenz", "meyouhas"],
+    "brand": ["xsight", "x sight", "x-sight", "xsightlabs", "excite labs", "אקסייט", "אקסייט לאבס"],
+    "people": ["willenz", "meyouhas", "avigdor willenz", "yossi meyouhas"],
     "product": ["x2", "e1", "e1l"],
 }
+NON_BRANDED_EXCLUDES = tuple(t.strip() for t in (os.environ.get("BOARD_NON_BRANDED_EXCLUDES") or "brand,people").split(",") if t.strip())
 try:
     _env_classes = json.loads(os.environ.get("BOARD_QUERY_CLASSES_JSON") or "null")
     if isinstance(_env_classes, dict) and _env_classes:
@@ -122,33 +125,43 @@ def classify_query(query):
     return None
 
 
+def is_excluded(query):
+    """True when the query's class is one nonBranded excludes (brand, people)."""
+    return classify_query(query) in NON_BRANDED_EXCLUDES
+
+
 def split_queries(rows, total_clicks, total_impressions):
     """rows: iterable of (query, clicks, impressions) at query granularity;
     totals: the property's own totals for the same window (dimensions=[]).
-    nonBranded is net of every class in QUERY_CLASSES; each class carries its
-    own clicks, impressions and query count. Search Console withholds
+    Every classed query is counted under classes.<class>; nonBranded is the
+    sum of rows whose class is not in NON_BRANDED_EXCLUDES (so product rows
+    are in both classes.product and nonBranded). Search Console withholds
     anonymised low-volume queries from query rows, so the remainder (total
     minus the sum of rows) is reported as unattributed rather than folded
     into any share."""
     classes = {k: {"clicks": 0, "impressions": 0, "queries": 0} for k in QUERY_CLASSES}
     nb = {"clicks": 0, "impressions": 0, "queries": 0}
+    excluded = {"clicks": 0, "impressions": 0, "queries": 0}
+    n = 0
     for q, c, i in rows:
+        n += 1
         k = classify_query(q)
-        tgt = classes[k] if k else nb
+        if k:
+            classes[k]["clicks"] += int(c); classes[k]["impressions"] += int(i); classes[k]["queries"] += 1
+        tgt = excluded if k in NON_BRANDED_EXCLUDES else nb
         tgt["clicks"] += int(c); tgt["impressions"] += int(i); tgt["queries"] += 1
-    attributed_c = nb["clicks"] + sum(v["clicks"] for v in classes.values())
-    attributed_i = nb["impressions"] + sum(v["impressions"] for v in classes.values())
-    un = {"clicks": max(0, int(total_clicks) - attributed_c), "impressions": max(0, int(total_impressions) - attributed_i)}
-    return {"nonBranded": nb, "classes": classes, "unattributed": un,
-            "total": {"clicks": int(total_clicks), "impressions": int(total_impressions)},
-            "queries": nb["queries"] + sum(v["queries"] for v in classes.values())}
+    un = {"clicks": max(0, int(total_clicks) - nb["clicks"] - excluded["clicks"]),
+          "impressions": max(0, int(total_impressions) - nb["impressions"] - excluded["impressions"])}
+    return {"nonBranded": nb, "classes": classes, "excluded": excluded, "excludes": list(NON_BRANDED_EXCLUDES), "unattributed": un,
+            "total": {"clicks": int(total_clicks), "impressions": int(total_impressions)}, "queries": n}
 
 
 NON_BRANDED_BASIS = ("clicks and impressions summed over every query row Search Console returns for the window (query granularity, paged, "
                      "not a top-N list); a query is classed brand, people or product when it contains one of that class's terms on word "
-                     "boundaries (first class wins, in that order), and nonBranded is net of all three; 'unattributed' is the property "
-                     "total minus the sum of query rows, the anonymised low-volume queries Search Console withholds, and belongs to no share; "
-                     "class terms: " + "; ".join(f"{k}: {', '.join(v)}" for k, v in QUERY_CLASSES.items()))
+                     "boundaries (first class wins, in that order); nonBranded = total - " + " - ".join(NON_BRANDED_EXCLUDES) + " - unattributed, "
+                     "so product-name queries count as non-branded (discovery, Nathan's ruling Oct 28, 2026) and are also shown under classes.product; "
+                     "'unattributed' is the property total minus the sum of query rows, the anonymised low-volume queries Search Console withholds, "
+                     "and belongs to no share; class terms: " + "; ".join(f"{k}: {', '.join(v)}" for k, v in QUERY_CLASSES.items()))
 
 
 def gsc_rows(svc, s, e, dimensions, page=25000, extra=None):
@@ -322,15 +335,14 @@ def gsc_non_branded(svc, months, start90, end90):
     rows90 = sorted(gsc_rows(svc, start90.isoformat(), end90.isoformat(), ["query"]), key=lambda x: (-x["clicks"], -x["impressions"]))
     def _row(x):
         return {"query": x["keys"][0], "clicks": int(x["clicks"]), "impressions": int(x["impressions"]), "position": round(x["position"], 1)}
-    top10 = [_row(x) for x in rows90 if classify_query(x["keys"][0]) is None][:10]
+    top10 = [dict(_row(x), **({"class": classify_query(x["keys"][0])} if classify_query(x["keys"][0]) else {})) for x in rows90 if not is_excluded(x["keys"][0])][:10]
     by_class = {k: [_row(x) for x in rows90 if classify_query(x["keys"][0]) == k][:5] for k in QUERY_CLASSES}
     all90 = split_queries([(x["keys"][0], x["clicks"], x["impressions"]) for x in rows90], 0, 0)
-    classed = sum(v["clicks"] for v in all90["classes"].values())
-    attributed = all90["nonBranded"]["clicks"] + classed
+    attributed = all90["nonBranded"]["clicks"] + all90["excluded"]["clicks"]
     return {"months": out_months, "topQueries90d": top10, "topQueriesByClass90d": by_class,
-            "classes90d": all90["classes"], "nonBranded90d": all90["nonBranded"],
-            "brandedShare90dAllQueries": round(classed / attributed, 3) if attributed else None,
-            "brandedShare90dAllQueries_basis": "share of clicks in the brand, people and product classes among every query row Search Console returns over the trailing 90 days; anonymised queries excluded from both numerator and denominator",
+            "classes90d": all90["classes"], "nonBranded90d": all90["nonBranded"], "excluded90d": all90["excluded"],
+            "brandedShare90dAllQueries": round(all90["excluded"]["clicks"] / attributed, 3) if attributed else None,
+            "brandedShare90dAllQueries_basis": "share of clicks in the " + " and ".join(NON_BRANDED_EXCLUDES) + " classes among every query row Search Console returns over the trailing 90 days; anonymised queries excluded from both numerator and denominator",
             "window_90d": {"start": start90.isoformat(), "end": end90.isoformat()}, "basis": NON_BRANDED_BASIS}
 
 BLOG_RSS = os.environ.get("BOARD_BLOG_RSS_URL") or "https://xsightlabs.com/blog/rss.xml"          # env override: tests only

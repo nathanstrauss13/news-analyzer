@@ -48,9 +48,15 @@ class NonBranded(unittest.TestCase):
         self.assertEqual(sp["classes"]["brand"], {"clicks": 60, "impressions": 600, "queries": 2})
         self.assertEqual(sp["classes"]["people"], {"clicks": 8, "impressions": 80, "queries": 1})
         self.assertEqual(sp["classes"]["product"], {"clicks": 7, "impressions": 70, "queries": 1})
-        self.assertEqual(sp["nonBranded"], {"clicks": 35, "impressions": 1200, "queries": 2})
+        # product counts as non-branded (discovery); brand and people are excluded
+        self.assertEqual(sp["nonBranded"], {"clicks": 42, "impressions": 1270, "queries": 3})
+        self.assertEqual(sp["excluded"], {"clicks": 68, "impressions": 680, "queries": 3})
+        self.assertEqual(sp["excludes"], ["brand", "people"])
         self.assertEqual(sp["unattributed"], {"clicks": 25, "impressions": 700})
         self.assertEqual(sp["total"], {"clicks": 135, "impressions": 2650}); self.assertEqual(sp["queries"], 6)
+        self.assertEqual(sp["total"]["clicks"], sp["nonBranded"]["clicks"] + sp["excluded"]["clicks"] + sp["unattributed"]["clicks"])
+        self.assertTrue(FG.is_excluded("xsight labs")); self.assertTrue(FG.is_excluded("yossi meyouhas"))
+        self.assertFalse(FG.is_excluded("x2 switch")); self.assertFalse(FG.is_excluded("dpu vs smartnic"))
 
     def test_unattributed_never_negative(self):
         sp = FG.split_queries([("a", 10, 10)], 5, 5)
