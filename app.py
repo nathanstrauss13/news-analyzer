@@ -7672,6 +7672,29 @@ def _extract_page_meta(raw):
 
 
 _HUSK_CHARS = 400   # visible text below this on a 200 = challenge / JS-only husk
+# A 200 (or the reader proxy's 200 for an upstream 404) whose title is a wall or
+# a not-found template is not a readable page, whatever its length: Macy's and
+# Bloomingdale's "Access Denied" run to 10KB. Oct 27, 2026: 89 such rows were
+# counted readable in one 6,336-page pass.
+_WALL_TITLE_RE = re.compile(r"access denied|just a moment|attention required|pardon our interruption|are you a robot|"
+                            r"robot or human|verify you are|human verification|bot detection|request blocked|"
+                            r"403 forbidden|security check|checking your browser|our apologies|too many requests|"
+                            r"service unavailable|site maintenance|temporarily unavailable", re.I)
+_MISSING_TITLE_RE = re.compile(r"^\s*(?:\W*\s*)?(?:404\b|page not found|not found\b|page cannot be found|page doesn.t exist|"
+                               r"oops[!,]?\s)|(?:\s|^)(?:page not found|404 - page not found|404 not found)(?:\s|$)|"
+                               r"\b404\b.{0,20}not found", re.I)
+
+
+def _unreadable_by_title(title):
+    """'wall page served as 200' / 'page reports not found' / None."""
+    t = (title or '').strip()
+    if not t:
+        return None
+    if _WALL_TITLE_RE.search(t):
+        return 'wall page served as 200'
+    if _MISSING_TITLE_RE.search(t):
+        return 'page reports not found'
+    return None
 
 
 def _scrape_cited_page(url, names, timeout=10, keep_text=False):
@@ -7716,6 +7739,10 @@ def _scrape_cited_page(url, names, timeout=10, keep_text=False):
                 tm = re.match(r'\s*Title:\s*(.+)', text)
                 if tm:
                     result['title'] = tm.group(1).strip()[:300]
+                why = _unreadable_by_title(result['title'])
+                if why:
+                    result.update(status='blocked', counts={}, note=why)
+                    return result
                 if keep_text:
                     result['text'] = text[:60000]
                 return result
@@ -7744,11 +7771,18 @@ def _scrape_cited_page(url, names, timeout=10, keep_text=False):
                     result['text'] = rtext[:60000]
                 tm = re.match(r'\s*Title:\s*(.+)', rtext)
                 result['title'] = tm.group(1).strip()[:300] if tm else meta.get('title', '')
+                why = _unreadable_by_title(result['title'])
+                if why:
+                    result.update(status='blocked', counts={}, note=why)
                 return result
         except Exception:
             pass
         result.update(status='blocked', content_len=len(raw), title=meta.get('title', ''),
                       husk=True)
+        return result
+    why = _unreadable_by_title(meta.get('title'))
+    if why:
+        result.update(status='blocked', content_len=len(raw), title=meta.get('title', ''), note=why)
         return result
     text = meta['title'] + ' ' + visible
     result.update(status='ok', content_len=len(raw),

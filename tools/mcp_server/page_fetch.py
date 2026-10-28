@@ -51,6 +51,27 @@ MIN_ARTICLE_CHARS = 1500
 WALL_MARKERS = re.compile(r"checking your browser|verify you are human|access denied|enable javascript and cookies|"
                           r"are you a robot|unusual traffic|please enable cookies|captcha|cloudflare|"
                           r"subscribe to continue|subscription required|this content is for subscribers", re.I)
+# A page can answer 200 with a long wall or not-found template (Macy's and
+# Bloomingdale's "Access Denied" run past MIN_ARTICLE_CHARS; the reader proxy
+# returns a 404 page's text with a 200). The title says what the body is.
+WALL_TITLE = re.compile(r"access denied|just a moment|attention required|pardon our interruption|are you a robot|"
+                        r"robot or human|verify you are|human verification|bot detection|request blocked|"
+                        r"403 forbidden|security check|checking your browser|our apologies|too many requests|"
+                        r"service unavailable|site maintenance|temporarily unavailable", re.I)
+MISSING_TITLE = re.compile(r"^\s*(?:\W*\s*)?(?:404\b|page not found|not found\b|page cannot be found|page doesn.t exist|"
+                           r"oops[!,]?\s)|(?:\s|^)(?:page not found|404 - page not found|404 not found)(?:\s|$)|"
+                           r"\b404\b.{0,20}not found", re.I)
+
+
+def title_verdict(title):
+    """None when the title looks like content; 'wall' or 'missing' otherwise."""
+    t = (title or "").strip()
+    if not t: return None
+    if WALL_TITLE.search(t): return "wall"
+    if MISSING_TITLE.search(t): return "missing"
+    return None
+
+
 SITE_HOSTS_SKIP = {"youtube.com", "youtu.be", "x.com", "twitter.com", "reddit.com", "linkedin.com", "facebook.com",
                    "instagram.com", "tiktok.com"}
 
@@ -228,14 +249,14 @@ def fetch_reader(url, timeout=40):
 
 
 def fetch_wayback(url, timeout=40):
-    a = requests.get("https://archive.org/wayback/available", params={"url": url}, timeout=timeout).json()
-    snap = (a.get("archived_snapshots") or {}).get("closest") or {}
-    if not snap.get("available"): return 404, url, ""
-    snap_url = snap["url"].replace("http://", "https://", 1)
-    if re.match(r"https://web\.archive\.org/web/\d+/", snap_url):
-        snap_url = re.sub(r"(/web/\d+)/", r"\1id_/", snap_url, count=1)  # id_ = raw page without the toolbar
-    r = requests.get(snap_url, headers=HEADERS, timeout=timeout)
-    return r.status_code, snap.get("url", snap_url), r.text
+    # The availability API answers 429 to a batch of lookups (Oct 27, 2026: 0 of
+    # 1,178 read). The id_ form redirects to the latest raw snapshot in one
+    # request, or 404s when there is none.
+    r = requests.get("https://web.archive.org/web/2id_/" + url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+    if r.status_code == 429:
+        time.sleep(float(r.headers.get("Retry-After") or 5))
+        r = requests.get("https://web.archive.org/web/2id_/" + url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+    return r.status_code, r.url, r.text
 
 
 async def fetch_chrome_many(urls, concurrency=4, timeout_ms=35000, channel="chrome"):
@@ -250,26 +271,40 @@ async def fetch_chrome_many(urls, concurrency=4, timeout_ms=35000, channel="chro
         await ctx.route(re.compile(r"\.(png|jpe?g|gif|webp|svg|woff2?|ttf|otf|mp4|m3u8|mp3)(\?|$)|doubleclick|googlesyndication|adsystem|taboola|outbrain"), lambda r: asyncio.ensure_future(r.abort()))
         sem = asyncio.Semaphore(concurrency)
 
+        async def visit(page, u):
+            resp = await page.goto(u, wait_until="domcontentloaded", timeout=timeout_ms)
+            await page.wait_for_timeout(2500)
+            html = await page.content(); status = resp.status if resp else 0
+            if status in (403, 429, 503) or looks_walled(html, strip_html(html)):
+                await page.wait_for_timeout(6000)                      # let a JS challenge / consent script settle
+                if status == 429:
+                    resp = await page.goto(u, wait_until="domcontentloaded", timeout=timeout_ms); await page.wait_for_timeout(3000)
+                    status = resp.status if resp else status
+                html = await page.content()
+            out[u] = (status, page.url, html)
+
         async def one(u):
+            # Hard bound per page: goto has its own timeout, but content() and
+            # close() can hang on a page that never settles, and one such page
+            # held an asyncio.gather of 40 open for hours (Oct 27, 2026).
             async with sem:
-                page = await ctx.new_page()
                 try:
-                    resp = await page.goto(u, wait_until="domcontentloaded", timeout=timeout_ms)
-                    await page.wait_for_timeout(2500)
-                    html = await page.content(); status = resp.status if resp else 0
-                    if status in (403, 429, 503) or looks_walled(html, strip_html(html)):
-                        await page.wait_for_timeout(6000)                      # let a JS challenge / consent script settle
-                        if status == 429:
-                            resp = await page.goto(u, wait_until="domcontentloaded", timeout=timeout_ms); await page.wait_for_timeout(3000)
-                            status = resp.status if resp else status
-                        html = await page.content()
-                    out[u] = (status, page.url, html)
+                    page = await asyncio.wait_for(ctx.new_page(), timeout=30)
+                except Exception as e:
+                    out[u] = (0, u, f"__error__ {type(e).__name__}: new_page"); return
+                try:
+                    await asyncio.wait_for(visit(page, u), timeout=timeout_ms / 1000 + 30)
                 except Exception as e:
                     out[u] = (0, u, f"__error__ {type(e).__name__}: {str(e)[:120]}")
                 finally:
-                    await page.close()
-        await asyncio.gather(*(one(u) for u in urls))
-        await browser.close()
+                    try: await asyncio.wait_for(page.close(), timeout=10)
+                    except Exception: pass
+        try:
+            await asyncio.wait_for(asyncio.gather(*(one(u) for u in urls)), timeout=len(urls) * (timeout_ms / 1000 + 45) / max(1, concurrency) + 120)
+        except Exception as e:
+            for u in urls: out.setdefault(u, (0, u, f"__error__ batch {type(e).__name__}"))
+        try: await asyncio.wait_for(browser.close(), timeout=20)
+        except Exception: pass
     return out
 
 
@@ -282,6 +317,9 @@ def judge(http, html):
         return (f"http {http}" if http not in (401, 403, 429, 503) else "blocked"), ""
     text = strip_html(html)
     if looks_walled(html, text): return "blocked", text
+    tv = title_verdict(H.unescape((re.search(r"(?is)<title[^>]*>(.*?)</title>", html) or [None, ""])[1]))
+    if tv == "wall": return "blocked", text
+    if tv == "missing": return "http 404", text
     if len(text) < MIN_ARTICLE_CHARS: return "thin", text
     return "ok", text
 
@@ -313,7 +351,7 @@ def run(items, tiers, workers, chrome_conc, names, count_fn, refetch, log=print)
                 log(f"  chrome {min(i + 40, len(urls))}/{len(urls)}")
         else:
             fn = {"direct": fetch_direct, "reader": fetch_reader, "wayback": fetch_wayback}[tier]
-            with ThreadPoolExecutor(max_workers=workers if tier == "direct" else max(2, workers // 3)) as ex:
+            with ThreadPoolExecutor(max_workers=workers if tier == "direct" else (1 if tier == "wayback" else max(2, workers // 3))) as ex:
                 futs = {ex.submit(fn, u): u for u, _ in pending}
                 for f in as_completed(futs):
                     u = futs[f]
