@@ -30,7 +30,7 @@ from datetime import datetime, timedelta, date
 import hashlib
 import hmac
 from functools import wraps
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response, session, abort
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, send_from_directory, Response, session, abort
 from markupsafe import Markup
 from dotenv import load_dotenv
 import html as html_mod
@@ -14738,6 +14738,8 @@ def _tracked_link_target(slug):
         name = slug[5:]
         if not re.fullmatch(r'[a-z0-9-]+', name or ''):
             return url_for('citation_audit')
+        if name in _TRACKED_DIRECT_PDFS:
+            return url_for('static', filename=f'reports/{name}.pdf') + '?src=r'
         return url_for('static', filename=f'reports/{name}.pdf')
     if (slug or '').startswith('classic:'):
         return url_for('view_signal_report', slug=slug[8:]) + '?classic=1'
@@ -14801,14 +14803,10 @@ _OPERATOR_CLICK_IPS = {"74.101.199.69", "24.193.248.107"} | {
     ip.strip() for ip in os.environ.get("OPERATOR_CLICK_IPS", "").split(",") if ip.strip()}
 
 
-@app.route('/r/<token>')
-def track_and_redirect(token):
-    """Log a hit on a tracked pitch link, then 302 to the real target — a
-    report, the homepage, or a hosted PDF (file: slugs). Bot/preview hits are
-    recorded but never email; the first genuine human open pings the operator."""
-    link = TrackedLink.query.filter_by(token=token).first()
-    if not link:
-        return redirect(url_for('citation_audit'))
+def _record_tracked_hit(link):
+    """Log one hit on a TrackedLink (bot or human) and email the operator on a
+    new unique human visitor. Shared by /r/<token> and the direct-PDF route."""
+    token = link.token
 
     ua = request.headers.get('User-Agent', '') or ''
     ip = _client_ip()
@@ -14876,7 +14874,45 @@ def track_and_redirect(token):
             daemon=True,
         ).start()
 
+
+
+@app.route('/r/<token>')
+def track_and_redirect(token):
+    """Log a hit on a tracked pitch link, then 302 to the real target — a
+    report, the homepage, or a hosted PDF (file: slugs). Bot/preview hits are
+    recorded but never email; the first genuine human open pings the operator."""
+    link = TrackedLink.query.filter_by(token=token).first()
+    if not link:
+        return redirect(url_for('citation_audit'))
+    _record_tracked_hit(link)
     return redirect(_tracked_link_target(link.slug), code=302)
+
+
+# Hosted PDFs whose bare static URL is tracked too (the address bar after an
+# /r/ redirect is easy to copy and forward). Each gets its own TrackedLink
+# row, token "pdf-<name>", minted on first hit, so /r-stats lists it beside
+# the /r/ links. Hits that arrive from an /r/ redirect carry ?src=r and are
+# not logged twice.
+_TRACKED_DIRECT_PDFS = {'loreal-luxe-audit'}
+
+
+@app.route('/static/reports/<name>.pdf')
+def tracked_direct_pdf(name):
+    if name not in _TRACKED_DIRECT_PDFS:
+        return send_from_directory(os.path.join(app.static_folder, 'reports'), name + '.pdf')
+    if request.args.get('src') != 'r':
+        try:
+            token = 'pdf-' + name
+            link = TrackedLink.query.filter_by(token=token).first()
+            if link is None:
+                link = _mint_tracked_link('file:' + name, recipient='direct PDF link (no /r/)',
+                                          campaign='direct-pdf', token=token)
+            _record_tracked_hit(link)
+        except Exception as e:
+            db.session.rollback()
+            print("direct-pdf tracking failed:", e)
+    return send_from_directory(os.path.join(app.static_folder, 'reports'), name + '.pdf',
+                               mimetype='application/pdf')
 
 
 def _operator_ok():
