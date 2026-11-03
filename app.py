@@ -2949,6 +2949,29 @@ def one_prompt_unlock():
     return jsonify({"run_id": run_id, "findings": findings})
 
 
+@app.route("/one-prompt/runs")
+def one_prompt_runs():
+    """Operator only: the latest one-prompt runs, newest first, each with its
+    replay links. ?key=<operator key>; ?n= rows (default 30, max 200)."""
+    if not _operator_ok():
+        abort(404)
+    n = max(1, min(200, int(request.args.get("n") or 30)))
+    base = (SIGNAL_BASE_URL or "https://signal.innatec3.com").rstrip("/")
+    rows = OnePromptRun.query.order_by(OnePromptRun.created_at.desc()).limit(n).all()
+    out = []
+    for r in rows:
+        out.append({
+            "run_id": r.run_id, "started_utc": r.created_at.isoformat(timespec="seconds") if r.created_at else None,
+            "brand": r.brand, "prompt": r.prompt, "status": r.status, "email": r.email, "operator": bool(r.is_operator),
+            "est_cost_usd": r.est_cost_usd, "counts": json.loads(r.counts_json or "{}"),
+            "emailed_utc": r.emailed_at.isoformat(timespec="seconds") if r.emailed_at else None,
+            "ip": r.ip, "utm": {"source": r.utm_source, "medium": r.utm_medium, "campaign": r.utm_campaign},
+            "replay": f"{base}/one-prompt?replay={r.run_id}",
+            "replay_real_time": f"{base}/one-prompt?replay={r.run_id}&pace=real",
+        })
+    return jsonify({"runs": out})
+
+
 @app.route("/one-prompt/log/<run_id>")
 def one_prompt_log(run_id):
     """Operator only: the run's event log as JSON lines (the page's replay format)."""
