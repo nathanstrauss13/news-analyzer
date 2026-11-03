@@ -666,13 +666,14 @@ async function replayRun(id) {
   // a fixed 2.5 s playback whatever the log's length: events are spread evenly across the window by rank
   // (a real log bunches its resolve, verify, and read events into the last seconds, which compressed to a blink),
   // and the per-step beats run at 6x so each one still shows
-  const WINDOW = 2.5; speed = 6;
   const src = (j.events || []).filter((e) => e.event !== 'findings.locked').sort((a, b) => a.t - b.t);
-  const n = Math.max(1, src.length - 1);
-  const evs = src.map((e, i) => ({...e, t: (i / n) * WINDOW * speed}));
+  const real = new URLSearchParams(location.search).get('pace') === 'real';   // &pace=real: the run at its own timestamps, for product work
+  let evs, endMs;
+  if (real) { speed = 1; evs = src; endMs = (src.length ? src[src.length - 1].t : 0) * 1000 + 600; $('.ctl').classList.add('on'); }
+  else { const WINDOW = 2.5; speed = 6; const n = Math.max(1, src.length - 1); evs = src.map((e, i) => ({...e, t: (i / n) * WINDOW * speed})); endMs = WINDOW * 1000 + 600; }
   replay(evs);
   timers.push(setTimeout(() => { speed = 1; if (!S.findings && j.findings) S.findings = j.findings;   // older runs logged no findings.preview; the endpoint carries the stored findings
-    if (S.findings) { $('#findings').classList.add('on'); openFindings(); $('#findings').scrollIntoView({behavior: 'smooth', block: 'start'}); } }, WINDOW * 1000 + 600));
+    if (S.findings) { $('#findings').classList.add('on'); openFindings(); $('#findings').scrollIntoView({behavior: 'smooth', block: 'start'}); } }, endMs));
 }
 $('#form').addEventListener('submit', async (ev) => {
   ev.preventDefault(); if (S.run) return;
