@@ -524,6 +524,7 @@ const H = {
     if (!S.run_id && S.findings) dispatch('findings.preview', S.findings);            // demo replay: the findings travel with the log
     if (!S.replay) setTimeout(() => window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'}), 700);
     if (new URLSearchParams(location.search).get('open')) setTimeout(openFindings, 300);
+    shareLink();                                                                     // the address bar becomes the replay link
   },
   'findings.preview'(d) { S.findings = d; const T = $('#tiles'); if (T.classList.contains('open')) return; $('#findings').classList.add('on'); tiles(d); T.classList.add('preview'); },
   'findings.locked'() { if (!S.replay) setTimeout(() => window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'}), 200); },
@@ -691,6 +692,16 @@ $('#form').addEventListener('submit', async (ev) => {
     S.run_id = j.run_id; stream(j.stream);
   } catch (e) { note('The run could not start. Check your connection and try again.'); lockForm(false); }
 });
+// Live run finished: rewrite the address to /one-prompt?replay=<run_id> so the address bar is the share link. UTM params stay; prefill params go.
+function shareLink() {
+  if (!S.run_id || S.replay) return;
+  try {
+    const q = new URLSearchParams(location.search);
+    for (const k of ['brand', 'prompt', 'autostart', 'demo', 'open', 'pace']) q.delete(k);
+    q.set('replay', S.run_id);
+    history.replaceState(null, '', location.pathname + '?' + q.toString());
+  } catch (e) {}
+}
 function openFindings() {
   const f = S.findings; if (!f) return;
   tiles(f); buildField();
