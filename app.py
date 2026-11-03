@@ -442,6 +442,7 @@ class OnePromptRun(db.Model):
     counts_json = db.Column(db.Text, nullable=True)
     events_json = db.Column(db.Text, nullable=True)
     findings_json = db.Column(db.Text, nullable=True)
+    emailed_at = db.Column(db.DateTime, nullable=True)   # owner report sent (once per run)
 
 
 class AuditLead(db.Model):
@@ -2507,7 +2508,9 @@ def root_redirect():
     # Nov 2, 2026 (Nathan): root serves the one-prompt page. /citation-audit stays reachable directly.
     qs = request.query_string.decode('utf-8', 'ignore')
     target = "/one-prompt" + (("?" + qs) if qs else "")
-    return redirect(target, code=308)
+    # 302, never 308: browsers cache a permanent redirect, and the pre-Nov-2 308 to
+    # /citation-audit still sends returning visitors there (Marketing, Nov 3, 2026).
+    return redirect(target, code=302)
 
 
 @app.route("/one-prompt")
@@ -2651,8 +2654,37 @@ def _send_one_prompt_email(run, lead=False):
         msg = Mail(from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"), to_emails=[recipient], subject=subject,
                    plain_text_content=text_body, html_content=html_body)
         _send_mail_object(msg)
+        _one_prompt_stamp_emailed(run.run_id)
+        return True
     except Exception as e:
         print("one-prompt email send failed:", str(e)[:160])
+        return False
+
+
+def _one_prompt_stamp_emailed(run_id):
+    """Record on the run's row that its owner report went out, so a restart
+    or a second trigger never sends it twice."""
+    try:
+        with app.app_context():
+            rec = OnePromptRun.query.filter_by(run_id=run_id).first()
+            if rec is not None and rec.emailed_at is None:
+                rec.emailed_at = datetime.utcnow()
+                db.session.commit()
+    except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        print("one-prompt emailed stamp failed (continuing):", str(e)[:120])
+
+
+def _one_prompt_already_emailed(run_id):
+    try:
+        with app.app_context():
+            rec = OnePromptRun.query.filter_by(run_id=run_id).first()
+            return rec is not None and rec.emailed_at is not None
+    except Exception:
+        return False
 
 
 ONE_PROMPT_EMAIL_WAIT_S = max(60, int(os.environ.get("ONE_PROMPT_EMAIL_WAIT_S", "900") or "900"))
@@ -2661,7 +2693,8 @@ ONE_PROMPT_EMAIL_WAIT_S = max(60, int(os.environ.get("ONE_PROMPT_EMAIL_WAIT_S", 
 def _one_prompt_send_once(run, lead=False):
     """Send the run report exactly once: on unlock (with the address) or, failing
     that, after ONE_PROMPT_EMAIL_WAIT_S with a note that no email was given."""
-    if getattr(run, "emailed", False):
+    if getattr(run, "emailed", False) or _one_prompt_already_emailed(run.run_id):
+        run.emailed = True
         return
     run.emailed = True
     t = getattr(run, "email_timer", None)
@@ -2681,6 +2714,64 @@ def _one_prompt_schedule_email(run):
     t.daemon = True
     run.email_timer = t
     t.start()
+
+
+def _one_prompt_ghost(rec):
+    """A finished run rebuilt from its row, for reports sent after the process
+    that ran it is gone (deploy, restart) or when only the row is left."""
+    from types import SimpleNamespace
+    return SimpleNamespace(run_id=rec.run_id, brand=rec.brand or "", prompt=rec.prompt or "", email=rec.email, ip=rec.ip,
+                           attr={"utm_source": rec.utm_source, "utm_medium": rec.utm_medium, "utm_campaign": rec.utm_campaign},
+                           operator=bool(rec.is_operator), events=json.loads(rec.events_json or "[]"),
+                           counts=json.loads(rec.counts_json or "{}"), findings=json.loads(rec.findings_json or "null"),
+                           est_cost_usd=rec.est_cost_usd, failed=("errored" if rec.status == "errored" else None))
+
+
+# Runs before the gate-timed report shipped (Nov 3, 2026, 12:10 UTC) were reported at
+# completion and carry no stamp; the sweep never reaches back past this.
+_ONE_PROMPT_SWEEP_FLOOR = datetime(2026, 11, 3, 12, 10)
+
+
+def _one_prompt_email_sweep():
+    """Send the owner report for every finished run that never got one: the
+    in-process timer dies with a deploy or restart (six deploys on Nov 3, 2026
+    alone), so the row is the record. A run is due once ONE_PROMPT_EMAIL_WAIT_S
+    has passed since it started plus three minutes for the run itself. Runs at
+    boot and every two minutes; the emailed_at stamp keeps it to one send."""
+    try:
+        with app.app_context():
+            cutoff = datetime.utcnow() - timedelta(seconds=ONE_PROMPT_EMAIL_WAIT_S + 180)
+            due = (OnePromptRun.query
+                   .filter(OnePromptRun.status.in_(["completed", "errored"]),
+                           OnePromptRun.emailed_at.is_(None),
+                           OnePromptRun.created_at >= _ONE_PROMPT_SWEEP_FLOOR,
+                           OnePromptRun.created_at < cutoff)
+                   .order_by(OnePromptRun.created_at.asc()).limit(20).all())
+            ghosts = [_one_prompt_ghost(r) for r in due]
+    except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        print("[one-prompt-mail-sweep] query failed:", str(e)[:120])
+        return
+    import one_prompt_runner as OPR
+    for g in ghosts:
+        live = OPR.get(g.run_id)
+        if live is not None:
+            _one_prompt_send_once(live, lead=bool(live.email))
+        elif not _one_prompt_already_emailed(g.run_id):
+            _send_one_prompt_email(g, lead=bool(g.email))
+    if ghosts:
+        print(f"[one-prompt-mail-sweep] sent {len(ghosts)} overdue report(s)")
+
+
+def _one_prompt_mail_sweeper():
+    import time as _t
+    _t.sleep(20)
+    while True:
+        _one_prompt_email_sweep()
+        _t.sleep(120)
 
 
 @app.route("/one-prompt/replay/<run_id>.json")
@@ -2844,19 +2935,17 @@ def one_prompt_unlock():
     if email and not operator:
         _capture_inbound_lead("completed", f"[one prompt] {brand}: {prompt}", _client_ip(), email,
                               _is_operator_email(email), _session_inbound_attr(), brand=brand, est_cost_usd=est)
-        try:
-            if run is not None:
-                threading.Thread(target=_one_prompt_send_once, args=(run, True), daemon=True).start()
-            else:
-                # the run outlived the process: its report went out at the deadline; send the lead follow-up
-                from types import SimpleNamespace
-                ghost = SimpleNamespace(run_id=run_id, brand=brand, prompt=prompt, email=email, ip=rec.ip,
-                                        attr={"utm_source": rec.utm_source, "utm_medium": rec.utm_medium, "utm_campaign": rec.utm_campaign},
-                                        operator=bool(rec.is_operator), events=json.loads(rec.events_json or "[]"),
-                                        counts=json.loads(rec.counts_json or "{}"), findings=findings, est_cost_usd=est, failed=None)
-                threading.Thread(target=_send_one_prompt_email, args=(ghost, True), daemon=True).start()
-        except Exception as e:
-            print("one-prompt lead email failed (continuing):", str(e)[:120])
+    # Nathan (Nov 3, 2026): the report goes out the moment the findings open, operator runs
+    # included, saying who opened them. A run the process no longer holds reports from its row.
+    try:
+        if run is not None:
+            threading.Thread(target=_one_prompt_send_once, args=(run, bool(email)), daemon=True).start()
+        elif rec is not None and not _one_prompt_already_emailed(run_id):
+            ghost = _one_prompt_ghost(rec)
+            ghost.email = email or rec.email
+            threading.Thread(target=_send_one_prompt_email, args=(ghost, bool(ghost.email)), daemon=True).start()
+    except Exception as e:
+        print("one-prompt unlock email failed (continuing):", str(e)[:120])
     return jsonify({"run_id": run_id, "findings": findings})
 
 
@@ -15872,6 +15961,7 @@ def _ensure_outreach_columns():
     the column already exists (created by create_all) and the duplicate-column
     error is caught and ignored."""
     migrations = [
+        "ALTER TABLE one_prompt_runs ADD COLUMN IF NOT EXISTS emailed_at TIMESTAMP",
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS relationship VARCHAR(240)",
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS message TEXT",
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS notes TEXT",
@@ -15886,7 +15976,12 @@ def _ensure_outreach_columns():
                     db.session.commit()
                 except Exception as e:
                     db.session.rollback()
-                    print("outreach column migrate skipped:", str(e)[:120])
+                    try:   # SQLite (local dev) has no IF NOT EXISTS; a duplicate column just errors again
+                        db.session.execute(text(stmt.replace("IF NOT EXISTS ", "")))
+                        db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+                        print("outreach column migrate skipped:", str(e)[:120])
     except Exception as e:
         print("outreach column migrate error:", e)
 
@@ -17933,6 +18028,7 @@ with app.app_context():
     _expire_orphaned_inbound()   # flip worker-death orphans (started, no slug) to errored
     _ensure_outreach_seed()
     _ensure_homepage_link()
+    threading.Thread(target=_one_prompt_mail_sweeper, daemon=True).start()   # overdue one-prompt reports
 
 
 if __name__ == "__main__":
