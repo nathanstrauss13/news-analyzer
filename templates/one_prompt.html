@@ -663,12 +663,16 @@ async function replayRun(id) {
   catch (e) { note('That run could not be loaded.'); lockForm(false); return; }
   $('#brand').value = j.brand || ''; $('#prompt').value = j.prompt || '';
   S.replay = true; S.run_id = null;                                   // a replay never unlocks or writes a lead
-  const evs = (j.events || []).filter((e) => e.event !== 'findings.locked');
-  const total = evs.length ? Math.max(0.1, evs[evs.length - 1].t) : 0.1;
-  speed = total / 2.4;                                                // the whole run in about two and a half seconds
+  // a fixed 2.5 s playback whatever the log's length: events are spread evenly across the window by rank
+  // (a real log bunches its resolve, verify, and read events into the last seconds, which compressed to a blink),
+  // and the per-step beats run at 6x so each one still shows
+  const WINDOW = 2.5; speed = 6;
+  const src = (j.events || []).filter((e) => e.event !== 'findings.locked').sort((a, b) => a.t - b.t);
+  const n = Math.max(1, src.length - 1);
+  const evs = src.map((e, i) => ({...e, t: (i / n) * WINDOW * speed}));
   replay(evs);
   timers.push(setTimeout(() => { speed = 1; if (!S.findings && j.findings) S.findings = j.findings;   // older runs logged no findings.preview; the endpoint carries the stored findings
-    if (S.findings) { $('#findings').classList.add('on'); openFindings(); $('#findings').scrollIntoView({behavior: 'smooth', block: 'start'}); } }, (total * 1000) / speed + 400));
+    if (S.findings) { $('#findings').classList.add('on'); openFindings(); $('#findings').scrollIntoView({behavior: 'smooth', block: 'start'}); } }, WINDOW * 1000 + 600));
 }
 $('#form').addEventListener('submit', async (ev) => {
   ev.preventDefault(); if (S.run) return;
