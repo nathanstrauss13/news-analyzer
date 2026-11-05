@@ -9353,29 +9353,23 @@ def _call_llm(provider, enriched_prompt):
             text = (text or '').rstrip() + "\n\nSources:\n" + "\n".join(f"- {u}" for u in unique_urls)
         return (text, True)
     if provider == "Grok":
-        if XAI_API_KEY and ALL_GROUNDED:
+        # Grok runs on xAI's own API only (Nathan, Nov 5, 2026): no OpenRouter fallback,
+        # so every Grok answer in a run comes from the same model and search tools.
+        # A failed call is retried against xAI; if every attempt fails the answer
+        # is recorded as an error, like any other provider.
+        if not XAI_API_KEY:
+            raise RuntimeError("XAI_API_KEY not configured")
+        _tries = int(os.environ.get("XAI_RETRIES", "4") or 4)
+        _last = None
+        for _i in range(_tries):
             try:
                 return (_grok_direct(enriched_prompt), True)
             except Exception as e:
-                print("Grok direct (xAI) failed; OpenRouter fallback:", str(e)[:160])
-        if not openrouter_client:
-            raise RuntimeError("OPENROUTER_API_KEY not configured")
-        if ALL_GROUNDED:
-            try:
-                return (_grok_grounded(enriched_prompt), True)
-            except Exception as e:
-                print("Grok :online failed; parametric fallback:", str(e)[:160])
-        _fallback_model = os.environ.get("XAI_OPENROUTER_MODEL", "x-ai/grok-4.3")
-        resp = openrouter_client.chat.completions.create(
-            model=_fallback_model,
-            max_tokens=2000,
-            messages=[
-                {"role": "system", "content": CITATION_SYSTEM_PROMPT},
-                {"role": "user", "content": enriched_prompt},
-            ],
-        )
-        _record_oai_usage("openrouter", resp, _fallback_model)
-        return (resp.choices[0].message.content, False)
+                _last = e
+                print(f"Grok direct (xAI) attempt {_i + 1} of {_tries} failed:", str(e)[:160])
+                if _i + 1 < _tries:
+                    time.sleep(min(60, 5 * (2 ** _i)))
+        raise RuntimeError(f"Grok (xAI) failed after {_tries} attempts: {str(_last)[:160]}")
     raise ValueError(f"Unknown provider: {provider}")
 
 
