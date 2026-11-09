@@ -2651,7 +2651,7 @@ def _send_one_prompt_email(run, lead=False):
         text_body = "\n".join(lines)
         html_body = "<pre style=\"font: 13px/1.5 -apple-system, Helvetica, Arial, sans-serif; white-space: pre-wrap\">" + html.escape(text_body) + "</pre>" + \
                     f'<p><a href="{html.escape(replay)}" style="display:inline-block;padding:10px 16px;background:#1a1a1a;color:#fff;text-decoration:none;border-radius:4px">Replay the run</a></p>'
-        msg = Mail(from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"), to_emails=[recipient], subject=subject,
+        msg = Mail(from_email=("nstrauss@innatec3.com", "innate c3"), to_emails=[recipient], subject=subject,
                    plain_text_content=text_body, html_content=html_body)
         _send_mail_object(msg)
         _one_prompt_stamp_emailed(run.run_id)
@@ -9699,7 +9699,7 @@ def _send_requester_report_email(to_email, brand, slug, n_agents=5):
             "responses in the report's appendix.\n\n"
             "If you'd like a human read of what it means, reply to this email "
             "or book 30 minutes: https://calendly.com/nstrauss-innatec3/new-meeting\n\n"
-            "Nathan Strauss\nInnate C3\n")
+            "Nathan Strauss\ninnate c3\n")
         html_body = (
             f'<p>Your free AI Visibility Audit for <b>{html.escape(brand)}</b> is ready:</p>'
             f'<p><a href="{url}">{url}</a></p>'
@@ -9710,10 +9710,10 @@ def _send_requester_report_email(to_email, brand, slug, n_agents=5):
             'in the report\'s appendix.</p>'
             '<p>If you\'d like a human read of what it means, reply to this email '
             'or <a href="https://calendly.com/nstrauss-innatec3/new-meeting">book 30 minutes</a>.</p>'
-            '<p>Nathan Strauss<br>Innate C3</p>')
+            '<p>Nathan Strauss<br>innate c3</p>')
         from sendgrid.helpers.mail import Mail
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=to_email,
             subject=subject,
             plain_text_content=text,
@@ -9798,7 +9798,7 @@ def _send_audit_failure_email(error, problem_statement, tier):
         )
 
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=[recipient],
             subject=subject,
             plain_text_content=text_body,
@@ -9984,7 +9984,7 @@ def _send_audit_debug_email(result, duration_seconds, per_provider_done, per_pro
         )
 
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=[recipient],
             subject=subject,
             plain_text_content=text_body,
@@ -13187,7 +13187,7 @@ def admin_test_email():
     try:
         from sendgrid.helpers.mail import Mail
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=[to],
             subject="✅ Citation audit alert-email test",
             plain_text_content="Test send from /admin/test-email — if you're reading "
@@ -14696,7 +14696,7 @@ def _send_click_email(recipient, slug, token, ip, ua, when_et, report_url, stats
             f'Full history: <a href="{html.escape(stats_url)}">{html.escape(stats_url)}</a></p>'
         )
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=[to],
             subject=subject,
             plain_text_content=text_body,
@@ -14779,7 +14779,7 @@ def _send_dashboard_visitor_email(slug, brand, ip, ua, when_et, visitor_no, repo
             f'</table>'
         )
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=[to],
             subject=subject,
             plain_text_content=text_body,
@@ -15647,7 +15647,7 @@ def _send_outreach_digest_email(due):
             + f'<p style="font-size:12px"><a href="{board}">Open the outreach board →</a></p>'
         )
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=[to], subject=subject,
             plain_text_content=text_body, html_content=html_body,
         )
@@ -15736,7 +15736,7 @@ def _send_daily_traffic_email(rows, total_opens):
             + "".join(htm) + '</table>'
             f'<p style="font-size:12px;margin-top:14px"><a href="{board}">Open the outreach board →</a></p>')
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=[to], subject=subject,
             plain_text_content=text_body, html_content=html_body,
         )
@@ -15909,7 +15909,7 @@ def _send_daily_inbound_email(items):
             + "".join(htm) + '</table>'
             f'<p style="font-size:12px;margin-top:14px"><a href="{board}">Open the inbound view →</a></p>')
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=[to], subject=subject,
             plain_text_content=text_body, html_content=html_body,
         )
@@ -17597,7 +17597,7 @@ def citation_audit_request_demo():
 
             subject_suffix = f" from {name}" + (f" ({org})" if org else "")
             msg = Mail(
-                from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+                from_email=("nstrauss@innatec3.com", "innate c3"),
                 to_emails=["nstrauss@innatec3.com"],
                 subject=f"{subject_prefix} {lead_label}{subject_suffix}",
                 plain_text_content=text_body,
@@ -17633,7 +17633,7 @@ def signal_feedback():
             emoji = '\U0001F44D' if rating == 'up' else '\U0001F44E'
             link = (SIGNAL_BASE_URL or 'https://signal.innatec3.com') + url_for('view_signal_report', slug=slug)
             msg = Mail(
-                from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+                from_email=("nstrauss@innatec3.com", "innate c3"),
                 to_emails=["nstrauss@innatec3.com"],
                 subject=f"[Signal Finder feedback] {emoji} — {slug}",
                 plain_text_content=f"User rated audit {slug} as {rating}.\n\nReport: {link}",
@@ -17700,16 +17700,16 @@ def _send_magic_link_email(email, raw_token):
         from sendgrid import SendGridAPIClient
         from sendgrid.helpers.mail import Mail
         msg = Mail(
-            from_email=("nstrauss@innatec3.com", "Innate C3 Citation Audit"),
+            from_email=("nstrauss@innatec3.com", "innate c3"),
             to_emails=[email],
-            subject="Your PR Signal Finder sign-in link",
+            subject="Your innate c3 sign-in link",
             plain_text_content=(
-                "Click the link below to sign in to PR Signal Finder. "
+                "Click the link below to sign in to your innate c3 audit account. "
                 "Link expires in 20 minutes.\n\n"
                 f"{link}\n\nIf you didn't request this, you can ignore this email."
             ),
             html_content=(
-                f'<p>Click below to sign in to PR Signal Finder. Link expires in 20 minutes.</p>'
+                f'<p>Click below to sign in to your innate c3 audit account. Link expires in 20 minutes.</p>'
                 f'<p><a href="{link}">{link}</a></p>'
                 f'<p style="color:#888;font-size:13px">If you didn\'t request this, ignore this email.</p>'
             ),
