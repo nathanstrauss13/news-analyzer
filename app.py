@@ -15147,26 +15147,48 @@ def delete_tracked_link_route():
 
 
 def _link_stats_rows(as_json=False):
-    """Per-link open stats, sorted most-recently-opened first."""
-    links = TrackedLink.query.order_by(TrackedLink.created_at.desc()).all()
+    """Per-link open stats, sorted most-recently-opened first. One bad row
+    reports its own error instead of taking the page down (Nov 10, 2026: the
+    live page 500'd on production data that a scratch database could not
+    reproduce)."""
+    def _naive(dt):
+        # Mixed naive/aware timestamps would make the sort below raise.
+        return dt.replace(tzinfo=None) if getattr(dt, 'tzinfo', None) else dt
+    try:
+        links = TrackedLink.query.order_by(TrackedLink.created_at.desc()).all()
+    except Exception as e:
+        db.session.rollback()
+        print("link-stats query failed:", type(e).__name__, str(e)[:300])
+        return [{'token': '(stats query failed)', 'slug': '', 'recipient': None, 'campaign': None,
+                 'created_at': None, 'human_opens': 0, 'bot_hits': 0, 'unique_ips': 0,
+                 'first_open': None, 'last_open': None,
+                 'error': f"{type(e).__name__}: {str(e)[:300]}"}]
     out = []
     for lk in links:
-        humans = (LinkClick.query
-                  .filter_by(token=lk.token, is_bot=False)
-                  .order_by(LinkClick.clicked_at.asc()).all())
-        bots = LinkClick.query.filter_by(token=lk.token, is_bot=True).count()
-        out.append({
-            'token': lk.token, 'slug': lk.slug,
-            'recipient': lk.recipient, 'campaign': lk.campaign,
-            'created_at': lk.created_at,
-            'human_opens': len(humans), 'bot_hits': bots,
-            # Distinct devices/networks behind the opens: 1 IP re-opening five
-            # times is one engaged person; 4 IPs on one token means the link
-            # was forwarded — a different (stronger) buying signal.
-            'unique_ips': len({h.ip for h in humans if h.ip}),
-            'first_open': humans[0].clicked_at if humans else None,
-            'last_open': humans[-1].clicked_at if humans else None,
-        })
+        try:
+            humans = (LinkClick.query
+                      .filter_by(token=lk.token, is_bot=False)
+                      .order_by(LinkClick.clicked_at.asc()).all())
+            bots = LinkClick.query.filter_by(token=lk.token, is_bot=True).count()
+            out.append({
+                'token': lk.token, 'slug': lk.slug,
+                'recipient': lk.recipient, 'campaign': lk.campaign,
+                'created_at': _naive(lk.created_at),
+                'human_opens': len(humans), 'bot_hits': bots,
+                # Distinct devices/networks behind the opens: 1 IP re-opening five
+                # times is one engaged person; 4 IPs on one token means the link
+                # was forwarded — a different (stronger) buying signal.
+                'unique_ips': len({h.ip for h in humans if h.ip}),
+                'first_open': _naive(humans[0].clicked_at) if humans else None,
+                'last_open': _naive(humans[-1].clicked_at) if humans else None,
+            })
+        except Exception as e:
+            db.session.rollback()
+            print("link-stats row failed:", lk.token, type(e).__name__, str(e)[:200])
+            out.append({'token': lk.token, 'slug': lk.slug, 'recipient': lk.recipient,
+                        'campaign': lk.campaign, 'created_at': None, 'human_opens': 0,
+                        'bot_hits': 0, 'unique_ips': 0, 'first_open': None, 'last_open': None,
+                        'error': f"{type(e).__name__}: {str(e)[:200]}"})
     out.sort(key=lambda r: (r['last_open'] or datetime.min), reverse=True)
     if as_json:
         for r in out:
