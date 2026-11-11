@@ -18,7 +18,7 @@ python-pptx==0.6.21
 chardet==5.2.0
 Pillow>=11.0.0
 openai>=1.40.0
-google-genai>=1.0.0
+google-genai>=1.0.0,<4
 weasyprint>=60.0
 stripe>=8.0.0
 itsdangerous>=2.1.0

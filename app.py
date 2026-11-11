@@ -836,7 +836,11 @@ except Exception:
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 try:
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+    # google-genai 3.0 (Nov 6, 2026) defaults to API version v1, where Google Search as a
+    # tool is rejected ("Search as tool is not enabled for api version v1"); every grounded
+    # call then fell back to plain generation after the Nov 10 redeploy. Pin v1beta.
+    from google.genai import types as _gtypes
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY, http_options=_gtypes.HttpOptions(api_version="v1beta")) if GEMINI_API_KEY else None
 except Exception:
     gemini_client = None
 print(f"GEMINI_API_KEY is {'set' if GEMINI_API_KEY else 'NOT SET'}")
