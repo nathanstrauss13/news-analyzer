@@ -127,6 +127,7 @@ def main():
                 status = "ok" if r.get("status") == "ok" else "blocked"
                 out[u] = {"status": status,
                           "brand_count": int(sum((r.get("counts") or {}).values())),
+                          "counts": {n: int(v) for n, v in (r.get("counts") or {}).items()},
                           "title": (r.get("title") or "")[:300],
                           "checked_date": today}
                 done += 1
@@ -162,6 +163,7 @@ def main():
             for r in got:
                 if r["status"] == "ok":
                     out[r["url"]] = {"status": "ok", "brand_count": int(sum(r.get(n, 0) for n in names)),
+                                     "counts": {n: int(r.get(n, 0)) for n in names},
                                      "title": (r.get("title") or "")[:300], "checked_date": today, "tier": r["tier"],
                                      "byline": r.get("byline", ""), "published": r.get("published", "")}
             print(f"browser pass read {sum(1 for r in got if r['status']=='ok')} of {len(blocked)}", flush=True)
