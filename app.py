@@ -12777,6 +12777,42 @@ def admin_linkedin_status():
                     "client_secret_set": bool(os.environ.get('LINKEDIN_CLIENT_SECRET')), "api_version": _li_version(), "scopes_requested": os.environ.get('LINKEDIN_SCOPES') or 'r_organization_admin'})
 
 
+@app.route('/admin/meta-probe')
+def admin_meta_probe():
+    """Operator-only diagnostic for the Meta AI collector (Nov 12, 2026: the one-prompt
+    page got model_not_found from Meta while the same model answered locally). Reports
+    which env var the server reads, the key's length and first four characters (never
+    the key), the models Meta lists for it, and one minimal Responses call."""
+    if not _operator_ok():
+        abort(404)
+    import hashlib as _h
+    names = [n for n in ("META_API_KEY", "MODEL_API_KEY") if os.environ.get(n)]
+    key = next((os.environ.get(n).strip() for n in names), "")
+    out = {"env_names_present": names, "key_len": len(key), "key_prefix4": key[:4],
+           "key_sha256_12": _h.sha256(key.encode()).hexdigest()[:12] if key else None,
+           "model": os.environ.get("META_MODEL", "muse-spark-1.3")}
+    if not key:
+        return jsonify(out)
+    hdr = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    try:
+        r = requests.get("https://api.meta.ai/v1/models", headers=hdr, timeout=30)
+        d = r.json() if r.content else {}
+        items = d.get("data") or d.get("models") or []
+        out["models_http"] = r.status_code
+        out["models"] = [m.get("id") if isinstance(m, dict) else m for m in items] if isinstance(items, list) else str(d)[:300]
+    except Exception as e:
+        out["models_error"] = str(e)[:200]
+    try:
+        r = requests.post("https://api.meta.ai/v1/responses", headers=hdr, timeout=60,
+                          json={"model": out["model"], "input": "Say ok."})
+        d = r.json() if r.content else {}
+        out["probe_http"] = r.status_code
+        out["probe"] = {"status": d.get("status"), "model": d.get("model"), "error": (d.get("error") or {}).get("message") if isinstance(d.get("error"), dict) else d.get("error")}
+    except Exception as e:
+        out["probe_error"] = str(e)[:200]
+    return jsonify(out)
+
+
 @app.route('/admin/mcp-registry')
 def admin_mcp_registry():
     """Operator: where the hosted-connector registry comes from and what it
