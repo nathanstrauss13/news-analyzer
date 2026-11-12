@@ -372,7 +372,9 @@ def list_audits() -> dict:
             out.append({**_label(a["slug"], p),
                         "answers": len(rows), "unbranded_answers": len(unb),
                         "agents": sorted({r.get("llm") for r in rows if r.get("llm")}),
-                        "qa_verified": bool(p.get("qa_verified"))})
+                        # The flag lives on the payload (set at upload) or on the
+                        # audit's profile entry (set in code after a PD QA pass).
+                        "qa_verified": bool(p.get("qa_verified") or a.get("qa_verified"))})
         except Exception as e:
             out.append({"slug": a.get("slug"), "error": str(e)[:120]})
     return {"audits": out, "convention": _build_block()}
@@ -392,11 +394,16 @@ def get_audit(slug: str) -> dict:
                 if isinstance(c, dict) and c.get("url")}
     urls, urls_unb = _urls(rows), _urls(unb)
     loaded = sum(1 for v in cc.values() if v.get("status") == "ok")
+    # search_grounded is a measurement only when the rows carry a per-answer
+    # grounded flag. Payloads collected without one (e.g. the August 2026
+    # Xsight baseline) get the platform's static per-agent default at upload;
+    # report null for those rather than an assumption dressed as a reading.
+    _has_flag = any("grounded" in r for r in rows)
     per_llm = [{"agent": x.get("llm"),
                 "answers_mentioning_brand": x.get("mentions"),
                 "of_answers": x.get("total"),
                 "named_in_prose": x.get("named_prose"),
-                "search_grounded": x.get("grounded")}
+                "search_grounded": x.get("grounded") if _has_flag else None}
                for x in (p.get("per_llm_visibility") or [])]
     return {
         **_label(slug, p),
@@ -412,6 +419,8 @@ def get_audit(slug: str) -> dict:
                 "cited_only": "the name appears only inside cited link URLs — a reader "
                               "sees it only if they open the links"}},
         "per_agent": per_llm,
+        **({} if _has_flag else {"per_agent_note": "search_grounded is null: this run recorded no "
+                                 "per-answer grounded flag, so grounding was not measured"}),
         "citations": {
             "extracted_unbranded_scope": p.get("total_citations_extracted"),
             "distinct_urls_all_answers": len(urls),

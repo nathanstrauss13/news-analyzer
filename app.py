@@ -12067,10 +12067,12 @@ _MCP_NAMED_PROFILES = {
              "run_date": "2026-08"},
             {"slug": "xsight-baseline-aug2026",
              "label": "Xsight Labs — August 12, 2026 AI visibility baseline (100 questions x 5 agents, earlier method: earlier models, per-agent prompting; compare with October directionally)",
-             "run_date": "2026-08-12", "classes_file": "data/xsight_baseline_aug2026_classes.json"},
+             "run_date": "2026-08-12", "classes_file": "data/xsight_baseline_aug2026_classes.json",
+             "qa_verified": True},   # PD QA pass Nov 11, 2026 (Xsight/rerun_oct2026/QA_connector_audits_2026-11-11.md)
             {"slug": "xsight-oct2026", "label": "Xsight Labs — October 2026 AI Visibility Audit (100 questions x 5 agents, current method; August figures are an earlier-method reference)",
              "run_date": "2026-10-26", "classes_file": "data/xsight_oct2026_classes.json",
-             "evidence_file": "data/xsight_oct2026_checks.json", "evidence_mode": "replace"},
+             "evidence_file": "data/xsight_oct2026_checks.json", "evidence_mode": "replace",
+             "qa_verified": True},   # PD QA pass Nov 11, 2026
         ],
         "boards": [
             {"slug": "e9ea20b741", "label": "Xsight Signal Board"},
