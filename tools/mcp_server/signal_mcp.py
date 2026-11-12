@@ -59,7 +59,7 @@ except ImportError:
 # Confidentiality keys (profiles) fail CLOSED instead — see _cfg().
 KNOWN_TOP_KEYS = {"base_url", "client", "audits", "profiles"}
 KNOWN_AUDIT_KEYS = {"slug", "label", "run_date", "evidence_file",
-                    "evidence_mode", "classes_file"}
+                    "evidence_mode", "classes_file", "qa_verified"}
 
 CFG_PATH = os.environ.get("SIGNAL_MCP_CONFIG",
                           os.path.expanduser("~/.signal_mcp/config.json"))
