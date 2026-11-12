@@ -12791,11 +12791,18 @@ def admin_meta_probe():
     out = {"env_names_present": names, "key_len": len(key), "key_prefix4": key[:4],
            "key_sha256_12": _h.sha256(key.encode()).hexdigest()[:12] if key else None,
            "model": os.environ.get("META_MODEL", "muse-spark-1.3")}
+    try:
+        # where Meta sees this server coming from (region gating suspected Nov 12)
+        g = requests.get("http://ip-api.com/json/?fields=status,country,regionName,city,isp,org,query", timeout=15).json()
+        out["egress"] = {k: g.get(k) for k in ("query", "country", "regionName", "city", "isp", "org")}
+    except Exception as e:
+        out["egress_error"] = str(e)[:200]
     if not key:
         return jsonify(out)
     hdr = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     try:
         r = requests.get("https://api.meta.ai/v1/models", headers=hdr, timeout=30)
+        out["models_headers"] = {k: v for k, v in r.headers.items() if k.lower() in ("x-request-id", "cf-ray", "server", "x-ratelimit-remaining", "x-region", "via")}
         d = r.json() if r.content else {}
         items = d.get("data") or d.get("models") or []
         out["models_http"] = r.status_code
