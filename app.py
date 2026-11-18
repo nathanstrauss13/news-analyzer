@@ -12083,10 +12083,12 @@ _MCP_NAMED_PROFILES = {
         "audits": [
             {"slug": "azzaro-oct2026", "label": "Azzaro — AI Visibility Audit, November 2026 (100 questions x 6 agents, 600 answers, collected October 26 to November 2, 2026; the v9 deck's file of record)",
              "run_date": "2026-11-02", "classes_file": "data/azzaro_oct2026_classes.json",
-             "evidence_file": "data/azzaro_oct2026_checks.json", "evidence_mode": "replace"},
+             "evidence_file": "data/azzaro_oct2026_checks.json", "evidence_mode": "replace",
+             "videos_file": "data/azzaro_oct2026_videos.json"},
             {"slug": "ralph-lauren-oct2026", "label": "Ralph Lauren Fragrances — AI Visibility Audit, November 2026 (100 questions x 6 agents, 600 answers, collected October 26 to November 2, 2026; the combined deck's file of record)",
              "run_date": "2026-11-02", "classes_file": "data/ralph_lauren_oct2026_classes.json",
-             "evidence_file": "data/ralph_lauren_oct2026_checks.json", "evidence_mode": "replace"},
+             "evidence_file": "data/ralph_lauren_oct2026_checks.json", "evidence_mode": "replace",
+             "videos_file": "data/ralph_lauren_oct2026_videos.json"},
         ],
     },
     "coco": {
@@ -12180,6 +12182,10 @@ def _mcp_registry(profile):
     profile lists boards."""
     sm = _mcp_signal_module()
     reg = {n: (f, sch, sm.TOOL_DESCRIPTIONS[n]) for n, (f, sch) in sm.TOOLS_REG.items()}
+    # Video transcripts exist only for audits that declare a videos_file; other
+    # profiles do not see the tool.
+    if not any(x.get('videos_file') for x in profile.get('audits') or []):
+        reg.pop('get_video_transcripts', None)
     if profile.get('boards'):
         bt = _mcp_board_module()
         for n, (f, sch) in bt.TOOLS_REG.items():

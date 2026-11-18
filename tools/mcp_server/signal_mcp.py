@@ -59,7 +59,7 @@ except ImportError:
 # Confidentiality keys (profiles) fail CLOSED instead — see _cfg().
 KNOWN_TOP_KEYS = {"base_url", "client", "audits", "profiles"}
 KNOWN_AUDIT_KEYS = {"slug", "label", "run_date", "evidence_file",
-                    "evidence_mode", "classes_file", "qa_verified"}
+                    "evidence_mode", "classes_file", "qa_verified", "videos_file"}
 
 CFG_PATH = os.environ.get("SIGNAL_MCP_CONFIG",
                           os.path.expanduser("~/.signal_mcp/config.json"))
@@ -799,6 +799,107 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
             "convention": _convention(p)}
 
 
+_VID_RE = re.compile(r"(?:v=|youtu\.be/|shorts/|embed/|live/)([A-Za-z0-9_-]{11})")
+
+
+@server.tool()
+def get_video_transcripts(slug: str, house: str = "", channel_contains: str = "",
+                          only_read: bool = False, limit: int = 25, offset: int = 0) -> dict:
+    """YouTube videos cited in the audit's answers to unbranded questions, with
+    what each video's transcript says: which fragrance houses the creator
+    names (name matches per house), how often the audit's answers cite the
+    video, and up to three short excerpts where the creator names the audited
+    brand. `house_rollup` counts the read videos naming each house, over the
+    full set. Filters: house (videos naming that house), channel_contains,
+    only_read. A transcript counts as read above a minimum length; the
+    coverage block states how many cited videos were read. Transcripts are
+    auto-generated captions, so names are matched with their common
+    misspellings. Facts only: a name match says the creator named the house,
+    never whether the creator recommends it."""
+    p = _payload(slug)
+    meta = _cfg()["_by_slug"].get(slug, {})
+    vf = meta.get("videos_file")
+    if not vf or not os.path.exists(_resolve_path(vf)):
+        raise ValueError(f"no video transcript data is available for audit '{slug}'")
+    with open(_resolve_path(vf)) as f:
+        doc = json.load(f)
+    vids = doc.get("videos") or {}
+    _, unb, _ = _split_rows(p)
+    cites, answers, agents = {}, {}, {}
+    for r in unb:
+        for c in (r.get("citations") or []):
+            u = c.get("url") if isinstance(c, dict) else None
+            m = _VID_RE.search(u) if u and "youtu" in u else None
+            if not m:
+                continue
+            v = m.group(1)
+            cites[v] = cites.get(v, 0) + 1
+            answers.setdefault(v, set()).add((r.get("llm"), r.get("prompt")))
+            agents.setdefault(v, set()).add(r.get("llm"))
+    read = [v for v in cites if (vids.get(v) or {}).get("transcript") == "read"]
+    short = [v for v in cites if (vids.get(v) or {}).get("transcript") == "too_short"]
+    yt_answers = set().union(*answers.values()) if answers else set()
+    read_answers = set().union(*[answers[v] for v in read]) if read else set()
+    roll = {}
+    for v in read:
+        for h in (vids[v].get("houses") or {}):
+            roll[h] = roll.get(h, 0) + 1
+    tracked = doc.get("_houses_tracked") or sorted(roll)
+    hsel = ""
+    if house:
+        hsel = next((h for h in tracked if h.lower() == house.strip().lower()), "")
+        if not hsel:
+            raise ValueError(f"house '{house}' is not tracked; tracked houses: {', '.join(tracked)}")
+    items = []
+    for v in cites:
+        e = vids.get(v) or {"transcript": "none"}
+        if only_read and e.get("transcript") != "read":
+            continue
+        if hsel and hsel not in (e.get("houses") or {}):
+            continue
+        if channel_contains and channel_contains.lower() not in (e.get("channel") or "").lower():
+            continue
+        items.append({"video_url": f"https://www.youtube.com/watch?v={v}",
+                      "channel": (e.get("channel") or "").strip() or None, "title": (e.get("title") or "")[:140] or None,
+                      "transcript": e.get("transcript"),
+                      **({"link_status": e["link_status"]} if e.get("link_status") else {}),
+                      "times_cited": cites[v], "answers_citing": len(answers[v]),
+                      "agents_citing": sorted(a for a in agents[v] if a),
+                      **({"houses_named": dict(sorted((e.get("houses") or {}).items(),
+                                                      key=lambda kv: (-kv[1], kv[0]))),
+                          "brand_excerpts": e.get("brand_excerpts") or []}
+                         if e.get("transcript") == "read" else {})})
+    items.sort(key=lambda x: (-x["answers_citing"], -x["times_cited"], x["video_url"]))
+    lim = max(1, min(limit, 50))
+    off = max(0, offset)
+    page = items[off:off + lim]
+    return {**_label(slug, p),
+            "filter": {"house": hsel or None, "channel_contains": channel_contains or None,
+                       "only_read": only_read or None},
+            "coverage": {"scope": "answers to unbranded questions",
+                         "unbranded_answers": len(unb),
+                         "answers_citing_youtube_videos": len(yt_answers),
+                         "distinct_cited_videos": len(cites),
+                         "transcripts_read": len(read),
+                         "transcript_too_short": len(short),
+                         "no_transcript_retrieved": len(cites) - len(read) - len(short),
+                         "answers_citing_a_read_video": len(read_answers),
+                         "minimum_transcript_chars": doc.get("_floor_chars")},
+            "house_rollup": {"unit": f"videos naming the house, of {len(read)} read",
+                             "videos": dict(sorted(roll.items(), key=lambda kv: (-kv[1], kv[0]))),
+                             "houses_tracked": tracked},
+            "matching_videos": len(items),
+            "videos": page,
+            "videos_scope": f"rows {off + 1}-{off + len(page)} of {len(items)} matching videos "
+                            "(page with offset); do NOT aggregate from this slice, use "
+                            "house_rollup and coverage, which cover the full set",
+            "next_offset": off + lim if off + lim < len(items) else None,
+            "transcript_source": doc.get("_note"),
+            "excerpt_note": "Excerpts are verbatim auto-generated captions. Claims in them are the "
+                            "creator's, not innate c3's; spellings are as captioned.",
+            "convention": _convention(p)}
+
+
 def _prompt_class_map(pa, pb):
     """prompt text -> class label for the comparison. Taken from whichever run
     carries `prompt_classes` (a payload converted from an earlier collection
@@ -1032,6 +1133,11 @@ TOOLS_REG = {
                               "url_contains": _S, "title_contains": _S, "source_type": _S,
                               "sort": {"type": "string", "enum": ["times_cited"]}},
                            "required": ["slug"]}),
+    "get_video_transcripts": (_fn(get_video_transcripts),
+                              {"type": "object", "properties": {
+                                  "slug": _S, "house": _S, "channel_contains": _S,
+                                  "only_read": _B, "limit": _I, "offset": _I},
+                               "required": ["slug"]}),
     "compare_runs": (_fn(compare_runs),
                      {"type": "object", "properties": {"slug_a": _S, "slug_b": _S},
                       "required": ["slug_a", "slug_b"]}),
