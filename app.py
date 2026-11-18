@@ -513,7 +513,7 @@ class Outreach(db.Model):
     """Lightweight outreach CRM: one row per prospect we've pitched a report to.
     Tracks pipeline status, ties to the prospect's tracked link (so a genuine
     open auto-advances status to 'opened'), and drives the follow-up reminder
-    cadence ('days from sent', default 5,14)."""
+    cadence (default 5,14; see _outreach_compute_due for how steps are counted)."""
     __tablename__ = 'outreach'
     id = db.Column(db.Integer, primary_key=True)
     prospect_name = db.Column(db.String(160), nullable=False)
@@ -524,7 +524,7 @@ class Outreach(db.Model):
     channel = db.Column(db.String(24), default='linkedin', nullable=False)  # linkedin | email
     # queued | sent | opened | replied | call_scheduled | won | cold | passed
     status = db.Column(db.String(24), default='queued', nullable=False, index=True)
-    cadence = db.Column(db.String(40), default='5,14', nullable=False)  # comma days from sent
+    cadence = db.Column(db.String(40), default='5,14', nullable=False)  # comma days from sent; later steps count from the last follow-up
     followup_count = db.Column(db.Integer, default=0, nullable=False)
     insight = db.Column(db.Text, nullable=True)        # one-line lead insight, seeds proposed text
     relationship = db.Column(db.String(240), nullable=True)  # shared-connection hook (e.g. "fellow Oregon alum")
@@ -533,6 +533,9 @@ class Outreach(db.Model):
     notes = db.Column(db.Text, nullable=True)
     sent_at = db.Column(db.DateTime, nullable=True)
     last_activity_at = db.Column(db.DateTime, nullable=True)
+    # When the most recent follow-up was logged. Anchors the next reminder.
+    # last_activity_at can't serve: opens and dropdown changes also stamp it.
+    last_followup_at = db.Column(db.DateTime, nullable=True)
     next_followup_due = db.Column(db.Date, nullable=True, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -15520,15 +15523,46 @@ def _outreach_first_name(o):
     return (raw.split(' ')[0] if raw else '') or 'there'
 
 
+def _cadence_gap(steps, n):
+    """Days between follow-up n-1 and follow-up n. The cadence lists days from
+    the send ('5,14'), so the gap after the first follow-up is 14 - 5 = 9. A
+    cadence that doesn't increase ('7,7') is read as plain intervals."""
+    gap = steps[n] - steps[n - 1]
+    return gap if gap > 0 else steps[n]
+
+
+def _cadence_label(cadence):
+    """Board subtitle text for a cadence: '5,14' reads 'reminders 5 days after
+    sent, then 9 days after the last follow-up'."""
+    steps = _cadence_days(cadence)
+    text = f"reminders {steps[0]} days after sent"
+    if len(steps) > 1:
+        gaps = ", then ".join(str(_cadence_gap(steps, n)) for n in range(1, len(steps)))
+        text += f", then {gaps} days after the last follow-up"
+    return text
+
+
 def _outreach_compute_due(o):
-    """Next reminder date = sent_at + cadence[followup_count], or None if the
-    cadence is exhausted."""
+    """Next reminder date, counted from the most recent touch. None if the card
+    was never sent or the cadence is exhausted.
+
+    The first reminder is sent_at + cadence[0]. Each later reminder is the last
+    logged follow-up + the gap between cadence steps. With '5,14' a follow-up
+    logged on day 5 comes due again on day 14, as before; one logged on day 35
+    comes due on day 44. Until Nov 18, 2026 every step counted from sent_at, so
+    a late follow-up came due again at once and inflated the daily digest.
+
+    Rows with no last_followup_at fall back to the old sent_at schedule."""
     if not o.sent_at:
         return None
     steps = _cadence_days(o.cadence)
-    if o.followup_count >= len(steps):
+    n = o.followup_count or 0
+    if n >= len(steps):
         return None
-    return (o.sent_at + timedelta(days=steps[o.followup_count])).date()
+    if n == 0:
+        return (o.sent_at + timedelta(days=steps[0])).date()
+    anchor = o.last_followup_at or (o.sent_at + timedelta(days=steps[n - 1]))
+    return (anchor + timedelta(days=_cadence_gap(steps, n))).date()
 
 
 def _clean_relationship(rel):
@@ -15586,10 +15620,12 @@ def _outreach_mark(o, action):
         o.status = 'sent'
         o.sent_at = o.sent_at or now
         o.followup_count = 0
+        o.last_followup_at = None
         o.next_followup_due = _outreach_compute_due(o)
     elif action == 'followup':
         o.status = 'followed_up'
         o.followup_count = (o.followup_count or 0) + 1
+        o.last_followup_at = now
         o.next_followup_due = _outreach_compute_due(o)
     elif action == 'replied':
         o.status = 'replied'; o.next_followup_due = None
@@ -15610,7 +15646,9 @@ def _outreach_apply_status(o, status):
     """Set an arbitrary status directly (the board's manual status dropdown),
     keeping the derived fields consistent: 'sent'/'opened' stamp sent_at (once)
     and recompute the next reminder; terminal/closed states clear the reminder;
-    'queued' resets to not-yet-sent. Unknown statuses are ignored."""
+    'queued' resets to not-yet-sent. Unknown statuses are ignored. A dropdown
+    change is not a touch: it leaves followup_count and last_followup_at alone,
+    so the reminder stays anchored to the last logged follow-up."""
     if status not in _OUTREACH_STATUS_LABELS:
         return
     now = datetime.utcnow()
@@ -16098,6 +16136,7 @@ def _ensure_outreach_columns():
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS message TEXT",
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS notes TEXT",
         "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS linkedin VARCHAR(255)",
+        "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS last_followup_at TIMESTAMP",
     ]
     try:
         with app.app_context():
@@ -16116,6 +16155,41 @@ def _ensure_outreach_columns():
                         print("outreach column migrate skipped:", str(e)[:120])
     except Exception as e:
         print("outreach column migrate error:", e)
+
+
+def _backfill_outreach_last_followup():
+    """Anchor cards that logged follow-ups before last_followup_at existed
+    (added Nov 18, 2026). The best record of when that follow-up happened is
+    last_activity_at: on a card still in followed_up, the follow-up is the last
+    thing that stamped it. Active cards then get their reminder recomputed under
+    the last-touch rule. Idempotent: it only touches rows whose last_followup_at
+    is still empty, and every follow-up logged from now on sets it."""
+    try:
+        with app.app_context():
+            rows = Outreach.query.filter(Outreach.followup_count > 0,
+                                         Outreach.last_followup_at.is_(None)).all()
+            filled, moved = 0, 0
+            for o in rows:
+                anchor = o.last_activity_at or o.sent_at
+                if not anchor:
+                    continue
+                o.last_followup_at = anchor
+                filled += 1
+                if o.status in _OUTREACH_ACTIVE:
+                    due = _outreach_compute_due(o)
+                    if due != o.next_followup_due:
+                        o.next_followup_due = due
+                        moved += 1
+            if filled:
+                db.session.commit()
+                print(f"[outreach] backfilled last_followup_at on {filled} cards; "
+                      f"{moved} active reminders moved to the last-touch schedule")
+    except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        print("outreach last_followup_at backfill skipped:", str(e)[:120])
 
 
 def _ensure_inbound_columns():
@@ -16784,7 +16858,7 @@ def outreach_board():
     else:
         banner = ''
 
-    cadence_label = html.escape(rows[0].cadence) if rows else "5,14"
+    cadence_label = html.escape(_cadence_label(rows[0].cadence if rows else "5,14"))
     toolbar = (
         '<div class="toolbar"><div class="chips">' + chips + '</div>'
         '<div class="tools"><input id="search" class="search" placeholder="Search name / company…">'
@@ -16799,7 +16873,7 @@ def outreach_board():
         + _operator_nav('outreach')
         + '<h1>Outreach board</h1>'
         + f'<p class="sub">{len(rows)} prospects · {active} active · {won} won · '
-          f'opens auto-advance to “Opened” · reminders at days {cadence_label} after sent</p>'
+          f'opens auto-advance to “Opened” · {cadence_label}</p>'
         + banner + toolbar + add_form
         + '<div id="cards">' + ''.join(cards) + '</div>'
         + ('' if rows else '<p class="emptymsg">No prospects yet — use ＋ Add prospect above.</p>')
@@ -18155,6 +18229,7 @@ def _ensure_homepage_link():
 # it at import time), harmless under gunicorn where these already worked.
 with app.app_context():
     _ensure_outreach_columns()
+    _backfill_outreach_last_followup()
     _ensure_inbound_columns()
     _backfill_inbound_operator_flags()
     _expire_orphaned_inbound()   # flip worker-death orphans (started, no slug) to errored
