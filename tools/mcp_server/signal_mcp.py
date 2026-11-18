@@ -790,6 +790,11 @@ def get_page_evidence(slug: str, only_missing_brand: bool = False, limit: int = 
                             "only if none of its loaded pages mentions the brand",
             "evidence_source": ev_note,
             "source_type_source": _cls_note,
+            **({"youtube_note": "YouTube pages are bot-walled in this page pass, so their rows "
+                                "carry titles only. The cited videos' transcripts were read "
+                                "separately: use get_video_transcripts for which houses each "
+                                "creator names."}
+               if _cfg()["_by_slug"].get(slug, {}).get("videos_file") else {}),
             "pages": page,
             "pages_scope": f"rows {off + 1}-{off + len(page)} of {len(items)} matching evidence "
                            "rows (page with offset) — do NOT aggregate from this slice; use "
@@ -810,8 +815,10 @@ def get_video_transcripts(slug: str, house: str = "", channel_contains: str = ""
     names (name matches per house), how often the audit's answers cite the
     video, and up to three short excerpts where the creator names the audited
     brand. `house_rollup` counts the read videos naming each house, over the
-    full set. Filters: house (videos naming that house), channel_contains,
-    only_read. A transcript counts as read above a minimum length; the
+    full set. Filters: house (videos naming that house; adds co_named_rollup,
+    the other houses those same videos name), channel_contains, only_read.
+    Use this tool, never get_page_evidence, for what YouTube creators say:
+    the page pass could not load YouTube. A transcript counts as read above a minimum length; the
     coverage block states how many cited videos were read. Transcripts are
     auto-generated captions, so names are matched with their common
     misspellings. Facts only: a name match says the creator named the house,
@@ -870,6 +877,12 @@ def get_video_transcripts(slug: str, house: str = "", channel_contains: str = ""
                           "brand_excerpts": e.get("brand_excerpts") or []}
                          if e.get("transcript") == "read" else {})})
     items.sort(key=lambda x: (-x["answers_citing"], -x["times_cited"], x["video_url"]))
+    co = {}
+    if hsel:
+        for it in items:
+            for h in it.get("houses_named") or {}:
+                if h != hsel:
+                    co[h] = co.get(h, 0) + 1
     lim = max(1, min(limit, 50))
     off = max(0, offset)
     page = items[off:off + lim]
@@ -889,6 +902,9 @@ def get_video_transcripts(slug: str, house: str = "", channel_contains: str = ""
                              "videos": dict(sorted(roll.items(), key=lambda kv: (-kv[1], kv[0]))),
                              "houses_tracked": tracked},
             "matching_videos": len(items),
+            **({"co_named_rollup": {
+                "unit": f"videos that also name the house, of {len(items)} read videos naming {hsel}",
+                "videos": dict(sorted(co.items(), key=lambda kv: (-kv[1], kv[0])))}} if hsel else {}),
             "videos": page,
             "videos_scope": f"rows {off + 1}-{off + len(page)} of {len(items)} matching videos "
                             "(page with offset); do NOT aggregate from this slice, use "
