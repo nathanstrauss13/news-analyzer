@@ -252,7 +252,7 @@
 "Chanel": 2,
 "Armani": 2,
 "Rabanne": 3,
-"Carolina Herrera": 6,
+"Carolina Herrera": 4,
 "Tom Ford": 1,
 "Azzaro": 2,
 "Ralph Lauren": 2
@@ -290,7 +290,7 @@
 "Dior": 2,
 "YSL": 2,
 "Valentino": 3,
-"Dolce & Gabbana": 4,
+"Dolce & Gabbana": 2,
 "Creed": 6,
 "Tom Ford": 3,
 "Viktor & Rolf": 3,
@@ -483,7 +483,6 @@
 "chars": 13513,
 "houses": {
 "Rabanne": 1,
-"Carolina Herrera": 1,
 "Viktor & Rolf": 2
 },
 "brand_excerpts": []
@@ -543,7 +542,6 @@
 "houses": {
 "Armani": 1,
 "Jean Paul Gaultier": 2,
-"Carolina Herrera": 1,
 "Dolce & Gabbana": 4,
 "Creed": 1,
 "Lattafa": 1
@@ -630,7 +628,7 @@
 "Versace": 7,
 "Rabanne": 13,
 "Prada": 2,
-"Dolce & Gabbana": 2,
+"Dolce & Gabbana": 1,
 "Viktor & Rolf": 2,
 "Montblanc": 1,
 "Bvlgari": 6
@@ -689,10 +687,10 @@
 "YSL": 6,
 "Versace": 3,
 "Rabanne": 14,
-"Carolina Herrera": 5,
+"Carolina Herrera": 4,
 "Valentino": 4,
 "Prada": 5,
-"Dolce & Gabbana": 7,
+"Dolce & Gabbana": 3,
 "Creed": 3,
 "Hugo Boss": 3,
 "Givenchy": 1,
@@ -716,7 +714,7 @@
 "houses": {
 "Jean Paul Gaultier": 1,
 "Rabanne": 2,
-"Carolina Herrera": 4,
+"Carolina Herrera": 3,
 "Azzaro": 3
 },
 "brand_excerpts": []
@@ -728,7 +726,7 @@
 "chars": 3520,
 "houses": {
 "Rabanne": 4,
-"Carolina Herrera": 1
+"Carolina Herrera": 2
 },
 "brand_excerpts": []
 },
@@ -832,7 +830,7 @@
 "houses": {
 "Dior": 1,
 "Armani": 5,
-"Carolina Herrera": 2,
+"Carolina Herrera": 1,
 "Valentino": 2,
 "Parfums de Marly": 1,
 "Givenchy": 4,
@@ -916,7 +914,6 @@
 "transcript": "read",
 "chars": 18296,
 "houses": {
-"Carolina Herrera": 1,
 "Tom Ford": 3
 },
 "brand_excerpts": []
@@ -1104,7 +1101,7 @@
 "Chanel": 3,
 "Versace": 1,
 "Rabanne": 3,
-"Dolce & Gabbana": 2,
+"Dolce & Gabbana": 1,
 "Gucci": 2
 },
 "brand_excerpts": []
@@ -1117,7 +1114,6 @@
 "houses": {
 "YSL": 2,
 "Rabanne": 1,
-"Dolce & Gabbana": 1,
 "Lattafa": 7
 },
 "brand_excerpts": []
@@ -1225,7 +1221,7 @@
 "Versace": 4,
 "Jean Paul Gaultier": 9,
 "Rabanne": 6,
-"Carolina Herrera": 3,
+"Carolina Herrera": 1,
 "Dolce & Gabbana": 1,
 "Viktor & Rolf": 1,
 "Hugo Boss": 4
@@ -1257,7 +1253,6 @@
 "Armani": 4,
 "YSL": 2,
 "Rabanne": 13,
-"Carolina Herrera": 1,
 "Valentino": 2,
 "Prada": 2,
 "Dolce & Gabbana": 2,
@@ -1500,9 +1495,7 @@
 "title": "Perry Ellis 360 for men cologne review",
 "transcript": "read",
 "chars": 7563,
-"houses": {
-"Dolce & Gabbana": 1
-},
+"houses": {},
 "brand_excerpts": []
 },
 "uhrE7looJxc": {

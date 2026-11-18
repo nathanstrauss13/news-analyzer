@@ -168,7 +168,7 @@
 "Chanel": 2,
 "Versace": 2,
 "Rabanne": 1,
-"Dolce & Gabbana": 4,
+"Dolce & Gabbana": 2,
 "Creed": 5,
 "Ralph Lauren": 2
 },
@@ -255,7 +255,6 @@
 "Dior": 18,
 "YSL": 1,
 "Rabanne": 4,
-"Carolina Herrera": 1,
 "Burberry": 1
 },
 "brand_excerpts": []
@@ -276,7 +275,6 @@
 "transcript": "read",
 "chars": 17182,
 "houses": {
-"Dolce & Gabbana": 1,
 "Viktor & Rolf": 1,
 "Maison Margiela": 17
 },
@@ -314,7 +312,7 @@
 "Dior": 2,
 "YSL": 2,
 "Valentino": 3,
-"Dolce & Gabbana": 4,
+"Dolce & Gabbana": 2,
 "Creed": 6,
 "Tom Ford": 3,
 "Viktor & Rolf": 3,
@@ -409,8 +407,7 @@
 "chars": 7801,
 "houses": {
 "Armani": 1,
-"Versace": 12,
-"Carolina Herrera": 1
+"Versace": 12
 },
 "brand_excerpts": []
 },
@@ -469,7 +466,6 @@
 "Dior": 1,
 "Versace": 5,
 "Rabanne": 1,
-"Carolina Herrera": 2,
 "Dolce & Gabbana": 1,
 "Azzaro": 2
 },
@@ -784,7 +780,6 @@
 "chars": 17617,
 "houses": {
 "YSL": 1,
-"Carolina Herrera": 1,
 "Valentino": 1,
 "Dolce & Gabbana": 1,
 "Tom Ford": 2,
@@ -875,7 +870,7 @@
 "Chanel": 2,
 "Versace": 4,
 "Rabanne": 3,
-"Carolina Herrera": 2,
+"Carolina Herrera": 1,
 "Creed": 5,
 "Tom Ford": 2
 },
@@ -961,7 +956,7 @@
 "houses": {
 "Dior": 1,
 "Armani": 5,
-"Carolina Herrera": 2,
+"Carolina Herrera": 1,
 "Valentino": 2,
 "Parfums de Marly": 1,
 "Givenchy": 4,
@@ -1056,7 +1051,7 @@
 "Chanel": 4,
 "Versace": 1,
 "Rabanne": 2,
-"Dolce & Gabbana": 4,
+"Dolce & Gabbana": 2,
 "Creed": 14,
 "Tom Ford": 1,
 "Montblanc": 1,
@@ -1169,7 +1164,7 @@
 "Chanel": 3,
 "Versace": 1,
 "Rabanne": 3,
-"Dolce & Gabbana": 2,
+"Dolce & Gabbana": 1,
 "Gucci": 2
 },
 "brand_excerpts": []
@@ -1493,7 +1488,7 @@
 "houses": {
 "Dior": 2,
 "Armani": 4,
-"Carolina Herrera": 2,
+"Carolina Herrera": 1,
 "Prada": 1,
 "Creed": 6,
 "Tom Ford": 1,
@@ -1622,9 +1617,9 @@
 "Armani": 3,
 "YSL": 1,
 "Rabanne": 1,
-"Carolina Herrera": 3,
+"Carolina Herrera": 2,
 "Valentino": 2,
-"Dolce & Gabbana": 6,
+"Dolce & Gabbana": 3,
 "Tom Ford": 1,
 "Givenchy": 1,
 "Azzaro": 2,
@@ -1733,7 +1728,7 @@
 "Armani": 9,
 "YSL": 4,
 "Rabanne": 1,
-"Carolina Herrera": 7,
+"Carolina Herrera": 6,
 "Valentino": 1,
 "Prada": 1
 },
@@ -1802,7 +1797,7 @@
 "Versace": 1,
 "Carolina Herrera": 1,
 "Prada": 1,
-"Dolce & Gabbana": 2,
+"Dolce & Gabbana": 1,
 "Hermès": 8
 },
 "brand_excerpts": []
