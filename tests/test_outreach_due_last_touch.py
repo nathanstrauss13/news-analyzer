@@ -116,6 +116,13 @@ class ComputeDue(unittest.TestCase):
             o = A.Outreach(cadence="5,14", followup_count=1, sent_at=TODAY - timedelta(days=35))
             self.assertEqual(A._outreach_compute_due(o), (TODAY - timedelta(days=21)).date())
 
+    def test_new_default_cadence_seven_then_seven(self):
+        self.assertEqual(A.OUTREACH_DEFAULT_CADENCE, "7,14")
+        self.assertEqual(A._cadence_days(""), [7, 14])
+        oid = _card(35, cadence=A.OUTREACH_DEFAULT_CADENCE)
+        due, _, _ = self._mark(oid, "followup")
+        self.assertEqual(due, date(2026, 11, 25))         # 14 - 7 = 7 days after Nov 18
+
     def test_non_increasing_cadence_reads_as_intervals(self):
         self.assertEqual(A._cadence_gap([7, 7], 1), 7)
         self.assertEqual(A._cadence_gap([5, 14], 1), 9)
@@ -175,7 +182,7 @@ class DigestAndBoard(unittest.TestCase):
         card = html.split(f'id="card-{oid}"', 1)[1].split('<div class="card"', 1)[0]
         self.assertNotIn("follow-up due", card)
         self.assertIn('data-dueflag="0"', html.split(f'id="card-{oid}"', 1)[1][:200])
-        self.assertIn("reminders 5 days after sent, then 9 days after the last follow-up", html)
+        self.assertIn("reminders 7 days after sent, then 7 days after the last follow-up", html)
 
 
 class Backfill(unittest.TestCase):
@@ -209,6 +216,54 @@ class Backfill(unittest.TestCase):
         A._backfill_outreach_last_followup()                  # idempotent second boot
         with A.app.app_context():
             self.assertEqual(A.db.session.get(A.Outreach, live_id).next_followup_due, date(2026, 11, 27))
+
+
+class SetRoute(unittest.TestCase):
+    def setUp(self):
+        self.c = A.app.test_client()
+        self.c.get("/outreach?key=test-key")              # sets the operator session cookie
+        self._dt = A.datetime
+        _Clock.now_value = TODAY
+        A.datetime = _Clock
+
+    def tearDown(self):
+        A.datetime = self._dt
+
+    def test_reopen_one_of_the_twelve_for_a_nov_25_followup(self):
+        nov18 = datetime(2026, 11, 18, 14, 30)
+        oid = _card(35, count=2, last_followup_at=nov18, status="followed_up")
+        r = self.c.post(f"/outreach/{oid}/set", data={"cadence": "7,14", "followup_count": "1", "ajax": "1"})
+        self.assertEqual(r.status_code, 204)
+        with A.app.app_context():
+            o = A.db.session.get(A.Outreach, oid)
+            self.assertEqual((o.cadence, o.followup_count), ("7,14", 1))
+            self.assertEqual(o.next_followup_due, date(2026, 11, 25))
+
+    def test_warm_card_takes_three_steps(self):
+        oid = _card(3, cadence="7,14")
+        r = self.c.post(f"/outreach/{oid}/set", data={"cadence": " 7, 14,21 ", "ajax": "1"})
+        self.assertEqual(r.status_code, 204)
+        with A.app.app_context():
+            self.assertEqual(A.db.session.get(A.Outreach, oid).cadence, "7,14,21")
+
+    def test_bad_values_are_refused_and_change_nothing(self):
+        oid = _card(3, cadence="7,14")
+        for data in ({"cadence": "soon"}, {"cadence": "7,0"}, {"followup_count": "3"},
+                     {"followup_count": "-1"}, {"cadence": "7,14", "followup_count": "x", "notes": "n"}):
+            r = self.c.post(f"/outreach/{oid}/set", data=dict(data, ajax="1"))
+            self.assertEqual(r.status_code, 400, data)
+        with A.app.app_context():
+            o = A.db.session.get(A.Outreach, oid)
+            self.assertEqual((o.cadence, o.followup_count, o.notes), ("7,14", 0, None))
+
+    def test_reposting_a_card_keeps_its_cadence(self):
+        with A.app.app_context():
+            o = A._outreach_upsert("Warm Person", "", cadence="7,14,21")
+            self.assertEqual(o.cadence, "7,14,21")
+            o = A._outreach_upsert("Warm Person", "", insight="new line")
+            self.assertEqual(o.cadence, "7,14,21")
+            o2 = A._outreach_upsert("Cold Person", "")
+            self.assertEqual(o2.cadence, "7,14")
 
 
 if __name__ == "__main__":

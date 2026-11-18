@@ -509,11 +509,17 @@ class LinkClick(db.Model):
     clicked_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
+# Cold outreach: one pitch and two follow-ups, at day 7 and day 14, then stop
+# (Nathan, Nov 18, 2026; was '5,14'). Cards created before keep their stored
+# cadence. Warm cards can carry their own, set on /outreach/<id>/set.
+OUTREACH_DEFAULT_CADENCE = '7,14'
+
+
 class Outreach(db.Model):
     """Lightweight outreach CRM: one row per prospect we've pitched a report to.
     Tracks pipeline status, ties to the prospect's tracked link (so a genuine
     open auto-advances status to 'opened'), and drives the follow-up reminder
-    cadence (default 5,14; see _outreach_compute_due for how steps are counted)."""
+    cadence (see _outreach_compute_due for how steps are counted)."""
     __tablename__ = 'outreach'
     id = db.Column(db.Integer, primary_key=True)
     prospect_name = db.Column(db.String(160), nullable=False)
@@ -524,7 +530,7 @@ class Outreach(db.Model):
     channel = db.Column(db.String(24), default='linkedin', nullable=False)  # linkedin | email
     # queued | sent | opened | replied | call_scheduled | won | cold | passed
     status = db.Column(db.String(24), default='queued', nullable=False, index=True)
-    cadence = db.Column(db.String(40), default='5,14', nullable=False)  # comma days from sent; later steps count from the last follow-up
+    cadence = db.Column(db.String(40), default=OUTREACH_DEFAULT_CADENCE, nullable=False)  # comma days from sent; later steps count from the last follow-up
     followup_count = db.Column(db.Integer, default=0, nullable=False)
     insight = db.Column(db.Text, nullable=True)        # one-line lead insight, seeds proposed text
     relationship = db.Column(db.String(240), nullable=True)  # shared-connection hook (e.g. "fellow Oregon alum")
@@ -15515,7 +15521,27 @@ _OUTREACH_ACTIVE = ('sent', 'opened', 'followed_up')
 
 def _cadence_days(cadence):
     out = [int(p.strip()) for p in (cadence or '').split(',') if p.strip().isdigit()]
-    return out or [5, 14]
+    return out or [int(p) for p in OUTREACH_DEFAULT_CADENCE.split(',')]
+
+
+def _clean_cadence(raw):
+    """Normalize an operator-supplied cadence ('7, 14,21' -> '7,14,21'). None
+    when empty or malformed: every step a whole number of days from 1 to 365,
+    at most six steps. Callers treat None as 'leave the cadence alone'."""
+    parts = [p.strip() for p in (raw or '').split(',') if p.strip()]
+    if not parts or len(parts) > 6 or not all(p.isdigit() for p in parts):
+        return None
+    days = [int(p) for p in parts]
+    if not all(1 <= d <= 365 for d in days):
+        return None
+    return ','.join(str(d) for d in days)
+
+
+def _outreach_refresh_due(o):
+    """Recompute the stored reminder after a cadence or count edit. Only cards
+    still in play carry a reminder; closed cards get theirs on reopen."""
+    if o.status in _OUTREACH_ACTIVE:
+        o.next_followup_due = _outreach_compute_due(o)
 
 
 def _outreach_first_name(o):
@@ -15664,10 +15690,13 @@ def _outreach_apply_status(o, status):
 
 
 def _outreach_upsert(name, slug, title=None, company=None, channel='linkedin',
-                     insight=None, cadence='5,14', token=None, relationship=None):
+                     insight=None, cadence=None, token=None, relationship=None):
     """Idempotent create-or-update of a prospect. On first create, mints the
     prospect's tracked link (using `token` if given). Safe against concurrent
-    gunicorn workers via the (prospect_name, slug) unique constraint."""
+    gunicorn workers via the (prospect_name, slug) unique constraint.
+    A new card without a cadence gets OUTREACH_DEFAULT_CADENCE. An update
+    changes the cadence only when one is passed, so re-posting a card's
+    message never resets a warm card's cadence to the cold default."""
     slug = (slug or '').strip()
     o = Outreach.query.filter_by(prospect_name=name, slug=slug).first()
     if not o:
@@ -15678,7 +15707,7 @@ def _outreach_upsert(name, slug, title=None, company=None, channel='linkedin',
         link = _mint_tracked_link(slug, recip, "outreach", token=token) if slug else None
         o = Outreach(prospect_name=name, slug=slug,
                      link_token=(link.token if link else None),
-                     channel=channel or 'linkedin', cadence=cadence or '5,14')
+                     channel=channel or 'linkedin', cadence=cadence or OUTREACH_DEFAULT_CADENCE)
         db.session.add(o)
         try:
             db.session.commit()
@@ -15700,6 +15729,7 @@ def _outreach_upsert(name, slug, title=None, company=None, channel='linkedin',
         o.relationship = relationship; changed = True
     if cadence and o.cadence != cadence:
         o.cadence = cadence; changed = True
+        _outreach_refresh_due(o)
     if changed:
         db.session.commit()
     return o
@@ -16276,8 +16306,7 @@ def _ensure_outreach_seed():
             for s in _OUTREACH_SEED:
                 o = _outreach_upsert(s["name"], s["slug"], title=s["title"],
                                      company=s["company"], channel=s["channel"],
-                                     insight=s["insight"], cadence="5,14",
-                                     token=s["token"])
+                                     insight=s["insight"], token=s["token"])
                 if s.get("message") and o is not None and not (o.message or "").strip():
                     o.message = s["message"]
                     db.session.commit()
@@ -16345,7 +16374,7 @@ def outreach_new():
                      channel=(request.args.get('channel') or 'linkedin'),
                      insight=(request.args.get('insight') or None),
                      relationship=(request.args.get('relationship') or None),
-                     cadence=(request.args.get('cadence') or '5,14'),
+                     cadence=_clean_cadence(request.args.get('cadence')),
                      token=(request.args.get('token') or None))
     msg = request.args.get('message')
     if msg is not None and o is not None:
@@ -16357,13 +16386,32 @@ def outreach_new():
 @app.route('/outreach/<int:oid>/set', methods=['POST'])
 def outreach_set(oid):
     """Inline edit of fields from the board: free-text (relationship hook,
-    message, insight, notes) plus a manual status override. Used both by full
-    form posts and by the board's debounced autosave (fetch), which sends
-    ajax=1 and expects an empty 204 back instead of a full board re-render."""
+    message, insight, notes), cadence and followup_count, plus a manual status
+    override. Used both by full form posts and by the board's debounced
+    autosave (fetch), which sends ajax=1 and expects an empty 204 back instead
+    of a full board re-render."""
     if not _operator_ok():
         abort(404)
     o = Outreach.query.get(oid)
     if o:
+        # Per-card cadence and follow-up count (Nov 18, 2026). A warm prospect
+        # can carry more steps than the cold default ('7,14,21'). followup_count
+        # corrects a card whose cycle was closed by logging an extra follow-up.
+        # Either one recomputes the reminder. Malformed values are refused with
+        # a 400 before anything on the card changes.
+        if 'cadence' in request.form:
+            _c = _clean_cadence(request.form.get('cadence'))
+            if not _c:
+                return ('cadence must be comma-separated whole days, e.g. 7,14,21\n', 400)
+            o.cadence = _c
+        if 'followup_count' in request.form:
+            _n = (request.form.get('followup_count') or '').strip()
+            if not _n.isdigit() or int(_n) > len(_cadence_days(o.cadence)):
+                db.session.rollback()
+                return ('followup_count must be a whole number from 0 to the number of cadence steps\n', 400)
+            o.followup_count = int(_n)
+        if 'cadence' in request.form or 'followup_count' in request.form:
+            _outreach_refresh_due(o)
         if 'relationship' in request.form:
             o.relationship = (request.form.get('relationship') or '').strip()[:240] or None
         if 'message' in request.form:
@@ -16444,7 +16492,7 @@ def outreach_add():
         channel=(request.form.get('channel') or 'linkedin'),
         insight=(request.form.get('insight') or '').strip() or None,
         relationship=(request.form.get('relationship') or '').strip() or None,
-        cadence=(request.form.get('cadence') or '5,14'))
+        cadence=_clean_cadence(request.form.get('cadence')))
     _li = (request.form.get('linkedin') or '').strip()[:255]
     if o is not None and _li.startswith(('http://', 'https://')):
         o.linkedin = _li
@@ -16858,7 +16906,7 @@ def outreach_board():
     else:
         banner = ''
 
-    cadence_label = html.escape(_cadence_label(rows[0].cadence if rows else "5,14"))
+    cadence_label = html.escape("new cards: " + _cadence_label(OUTREACH_DEFAULT_CADENCE))
     toolbar = (
         '<div class="toolbar"><div class="chips">' + chips + '</div>'
         '<div class="tools"><input id="search" class="search" placeholder="Search name / company…">'
