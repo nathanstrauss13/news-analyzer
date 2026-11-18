@@ -12084,11 +12084,13 @@ _MCP_NAMED_PROFILES = {
             {"slug": "azzaro-oct2026", "label": "Azzaro — AI Visibility Audit, November 2026 (100 questions x 6 agents, 600 answers, collected October 26 to November 2, 2026; the v9 deck's file of record)",
              "run_date": "2026-11-02", "classes_file": "data/azzaro_oct2026_classes.json",
              "evidence_file": "data/azzaro_oct2026_checks.json", "evidence_mode": "replace",
-             "videos_file": "data/azzaro_oct2026_videos.json"},
+             "videos_file": "data/azzaro_oct2026_videos.json",
+             "qa_verified": True},   # PD QA pass Nov 17, 2026 (Loreal/collection/2026-10-27/analysis/QA_connector_audits_2026-11-17.md)
             {"slug": "ralph-lauren-oct2026", "label": "Ralph Lauren Fragrances — AI Visibility Audit, November 2026 (100 questions x 6 agents, 600 answers, collected October 26 to November 2, 2026; the combined deck's file of record)",
              "run_date": "2026-11-02", "classes_file": "data/ralph_lauren_oct2026_classes.json",
              "evidence_file": "data/ralph_lauren_oct2026_checks.json", "evidence_mode": "replace",
-             "videos_file": "data/ralph_lauren_oct2026_videos.json"},
+             "videos_file": "data/ralph_lauren_oct2026_videos.json",
+             "qa_verified": True},   # PD QA pass Nov 17, 2026
         ],
     },
     "coco": {
