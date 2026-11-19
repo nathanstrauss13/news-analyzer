@@ -11991,6 +11991,14 @@ def _capture_inbound_lead(status, problem_statement, ip, email, is_operator, att
 #   2. a derived demo key (sha256(operator_secret + ":mcp-demo")) exposing
 #      ONLY the public samples — so Nathan has a working connector with no
 #      dashboard setup. Unknown key -> 404, indistinguishable from no route.
+#
+# Second secret (Nov 19, 2026, Xsight IT review): an entry may carry
+# "secret_sha256": "<hex of sha256(secret)>". The connector must then send
+# "Authorization: Bearer <secret>" on every request; a missing or wrong secret
+# returns 401, an unknown key still 404. Entries without the field behave as
+# before, which is what claude.ai custom connectors need (no custom headers
+# there); Claude Code and the API can send the header. Only the hash is stored
+# and it never reaches a profile, a tool result, or the operator diagnostic.
 
 _MCP_SM = None
 
@@ -12106,21 +12114,79 @@ _MCP_NAMED_PROFILES = {
 }
 
 
-def _mcp_resolve_client(key):
-    if not key or len(key) < 12:
-        return None
+_MCP_ENTRY_SECRET_FIELD = 'secret_sha256'
+
+
+def _mcp_clients_registry():
+    """The SIGNAL_MCP_CLIENTS registry as a dict. Malformed JSON reads as {}
+    (every key revoked); _mcp_registry_boot_check logs that once at boot and
+    /admin/mcp-registry reports parses_as_json so a bad paste is visible."""
     try:
         clients = json.loads(os.environ.get('SIGNAL_MCP_CLIENTS') or '{}')
     except Exception:
-        clients = {}
+        return {}
+    return clients if isinstance(clients, dict) else {}
+
+
+def _mcp_resolve_entry(key):
+    """(entry, profile) for a connector key, or (None, None). The entry is the
+    registry record (it may carry the second-secret hash); the profile is what
+    the tools see and never carries the hash."""
+    if not key or len(key) < 12:
+        return None, None
+    clients = _mcp_clients_registry()
     if key in clients:
         ent = clients[key]
-        if isinstance(ent, dict) and ent.get('profile') and 'audits' not in ent:
-            return _MCP_NAMED_PROFILES.get(ent['profile'])
-        return ent
+        if not isinstance(ent, dict):
+            return None, None
+        if ent.get('profile') and 'audits' not in ent:
+            prof = _MCP_NAMED_PROFILES.get(ent['profile'])
+            return (ent, prof) if prof is not None else (None, None)
+        return ent, {k: v for k, v in ent.items() if k != _MCP_ENTRY_SECRET_FIELD}
     if key == _mcp_demo_key():
-        return _MCP_DEMO_PROFILE
-    return None
+        return {}, _MCP_DEMO_PROFILE
+    return None, None
+
+
+def _mcp_resolve_client(key):
+    return _mcp_resolve_entry(key)[1]
+
+
+def _mcp_secret_ok(entry, auth_header):
+    """True when the entry needs no second secret, or the request's
+    'Authorization: Bearer <secret>' hashes to the entry's secret_sha256.
+    Constant-time compare on the hex digests."""
+    want = (entry or {}).get(_MCP_ENTRY_SECRET_FIELD)
+    if not want:
+        return True
+    import hashlib as _h
+    import hmac as _hmac
+    h = (auth_header or '').strip()
+    if not h.lower().startswith('bearer '):
+        return False
+    given = h[7:].strip()
+    if not given:
+        return False
+    got = _h.sha256(given.encode('utf-8')).hexdigest()
+    return _hmac.compare_digest(got.lower(), str(want).strip().lower())
+
+
+def _mcp_registry_boot_check():
+    """One boot log line when SIGNAL_MCP_CLIENTS is set but is not a JSON
+    object: in that state every connector key resolves to 404."""
+    raw = os.environ.get('SIGNAL_MCP_CLIENTS') or ''
+    if not raw:
+        return
+    try:
+        ok = isinstance(json.loads(raw), dict)
+    except Exception:
+        ok = False
+    if not ok:
+        print("[mcp] SIGNAL_MCP_CLIENTS is set but does not parse as a JSON object; "
+              "every hosted connector key will return 404 until it is fixed")
+
+
+_mcp_registry_boot_check()
 
 
 _MCP_BT = None
@@ -12197,9 +12263,12 @@ def _mcp_registry(profile):
 
 @app.route('/mcp/<key>', methods=['POST', 'GET'])
 def mcp_hosted(key):
-    profile = _mcp_resolve_client(key)
+    entry, profile = _mcp_resolve_entry(key)
     if profile is None:
         abort(404)
+    if not _mcp_secret_ok(entry, request.headers.get('Authorization')):
+        return Response("unauthorized\n", status=401, mimetype='text/plain',
+                        headers={"WWW-Authenticate": 'Bearer realm="signal-mcp"'})
     if request.method == 'GET':
         # No server-initiated stream offered; spec-compliant refusal.
         return Response("Method Not Allowed", status=405)
@@ -12849,9 +12918,10 @@ def admin_mcp_registry():
             prof = _MCP_NAMED_PROFILES.get(v['profile'])
             entries.append({"kind": "named profile", "profile": v['profile'], "resolves": prof is not None,
                             "client": (prof or {}).get('client'), "audits": len((prof or {}).get('audits') or []), "boards": len((prof or {}).get('boards') or []),
-                            "key_length": len(k)})
+                            "key_length": len(k), "second_secret_required": bool(v.get(_MCP_ENTRY_SECRET_FIELD))})
         elif isinstance(v, dict):
-            entries.append({"kind": "inline profile", "client": v.get('client'), "audits": len(v.get('audits') or []), "boards": len(v.get('boards') or []), "key_length": len(k)})
+            entries.append({"kind": "inline profile", "client": v.get('client'), "audits": len(v.get('audits') or []), "boards": len(v.get('boards') or []), "key_length": len(k),
+                            "second_secret_required": bool(v.get(_MCP_ENTRY_SECRET_FIELD))})
         else:
             entries.append({"kind": "malformed", "key_length": len(k)})
     dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
